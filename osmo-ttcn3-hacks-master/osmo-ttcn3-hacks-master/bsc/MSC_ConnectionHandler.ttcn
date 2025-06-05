@@ -1,0 +1,1790 @@
+module MSC_ConnectionHandler {
+
+/* MSC Connection HAndler of BSC Tests in TTCN-3
+ * (C) 2017-2019 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from Osmocom_Types all;
+import from GSM_Types all;
+import from IPA_Emulation all;
+import from SCCPasp_Types all;
+import from BSSAP_Types all;
+import from RAN_Emulation all;
+import from BSSAP_LE_Emulation all;
+import from BSSAP_LE_Types all;
+import from BSSMAP_LE_Templates all;
+import from BSSMAP_Templates all;
+
+import from IPL4asp_Types all;
+import from Native_Functions all;
+
+import from MGCP_CodecPort all;
+import from MGCP_Types all;
+import from MGCP_Templates all;
+import from MGCP_Emulation all;
+import from SDP_Types all;
+import from SDP_Templates all;
+
+import from StatsD_Checker all;
+
+import from RSL_Emulation all;
+import from RSL_Types all;
+
+import from MobileL3_Types all;
+import from MobileL3_CommonIE_Types all;
+import from MobileL3_RRM_Types all;
+import from L3_Templates all;
+
+import from TELNETasp_PortType all;
+import from Osmocom_VTY_Functions all;
+import from TCCConversion_Functions all;
+
+
+/***********************************************************************
+ * Media related handling
+ ***********************************************************************/
+
+/* TODO: import OSMUX_Types.ttcn */
+type INT1 OsmuxCID	(0 .. 255);
+
+/* Get the matching payload type for a specified BSSAP codec type
+ * (see also: BSSAP_Types.ttcn */
+private function f_get_mgcp_pt(BSSMAP_FIELD_CodecType codecType) return SDP_FIELD_PayloadType {
+	if (codecType == GSM_FR) {
+		return PT_GSM;
+	} else if (codecType == GSM_HR) {
+		return PT_GSMHR;
+	} else if (codecType == GSM_EFR) {
+		return PT_GSMEFR;
+	} else if (codecType == FR_AMR or codecType == HR_AMR) {
+		return PT_AMR;
+	} else if (codecType == FR_AMR_WB or codecType == OHR_AMR or codecType == OFR_AMR_WB or codecType == OHR_AMR_WB) {
+		return PT_AMRWB;
+	}
+
+	return PT_PCMU;
+}
+
+/* Tuple containing host/ip and port */
+type record HostPort {
+	HostName	host,
+	PortNumber	port_nr
+};
+
+/* State encapsulating one MGCP Connection */
+type record MgcpConnState {
+	integer crcx_seen,		/* Counts how many CRCX operations happend */
+	integer mdcx_seen,		/* Counts how many MDCX operations happend C */
+	integer crcx_seen_exp,		/* Sets the expected number of CRCX operations */
+	integer mdcx_seen_exp,		/* Sets the expected number of MDCX operations */
+	MgcpConnectionId conn_id,
+	charstring mime_type,		/* e.g. AMR */
+	integer sample_rate,		/* 8000 */
+	integer ptime,			/* 20 */
+	uint7_t rtp_pt,			/* RTP Payload Type */
+	HostPort mgw,			/* MGW side */
+	HostPort peer,			/* CA side */
+	OsmuxCID local_osmux_cid optional,
+	OsmuxCID remote_osmux_cid optional
+};
+
+/* BTS media state */
+type record BtsMediaState {
+	boolean ipa_crcx_seen,
+	boolean ipa_mdcx_seen,
+	uint16_t conn_id,
+	uint7_t rtp_pt,
+	HostPort bts,
+	HostPort peer,
+	OsmuxCID local_osmux_cid optional,
+	OsmuxCID remote_osmux_cid optional
+};
+
+type record MediaState {
+	MgcpEndpoint	mgcp_ep,
+	MgcpConnState	mgcp_conn[2],
+	BtsMediaState	bts,
+	BtsMediaState	bts1 /* only during hand-over */
+};
+
+function f_MediaState_init(inout MediaState g_media, integer nr, HostName bts, HostName mgw, BSSMAP_FIELD_CodecType codecType) {
+	/* BTS Side */
+	g_media.bts := {
+		ipa_crcx_seen := false,
+		ipa_mdcx_seen := false,
+		conn_id := nr,
+		rtp_pt := 0,
+		bts := {
+			host := bts,
+			port_nr := 9000 + nr*2
+		},
+		peer := -,
+		local_osmux_cid := nr,
+		remote_osmux_cid := omit
+	}
+
+	g_media.bts1 := {
+		ipa_crcx_seen := false,
+		ipa_mdcx_seen := false,
+		conn_id := nr,
+		rtp_pt := 0,
+		bts := {
+			host := bts, /* FIXME */
+			port_nr := 9000 + nr*2
+		},
+		peer := -,
+		local_osmux_cid := nr,
+		remote_osmux_cid := omit
+	}
+
+	g_media.mgcp_ep := "rtpbridge/" & int2str(nr) & "@mgw";
+
+	for (var integer i:= 0; i < sizeof(g_media.mgcp_conn); i := i+1) {
+		g_media.mgcp_conn[i].mime_type := f_encoding_name_from_pt(f_get_mgcp_pt(codecType));
+		g_media.mgcp_conn[i].sample_rate := 8000;
+		g_media.mgcp_conn[i].ptime := 20;
+		g_media.mgcp_conn[i].rtp_pt := enum2int(f_get_mgcp_pt(codecType));
+		g_media.mgcp_conn[i].crcx_seen := 0;
+		g_media.mgcp_conn[i].mdcx_seen := 0;
+		g_media.mgcp_conn[i].crcx_seen_exp := 0;
+		g_media.mgcp_conn[i].mdcx_seen_exp := 0;
+		g_media.mgcp_conn[i].conn_id := f_mgcp_alloc_conn_id();
+		g_media.mgcp_conn[i].local_osmux_cid := i;
+		g_media.mgcp_conn[i].remote_osmux_cid := omit;
+	}
+
+	g_media.mgcp_conn[0].mgw := {
+		host := mgw,
+		port_nr := 10000 + nr*2
+	}
+	g_media.mgcp_conn[1].mgw := {
+		host := mgw,
+		port_nr := 11000 + nr*2
+	}
+}
+
+/* Helper function to get the next free MGCP connection identifier. We can
+ * recognize free connection identifiers by the fact that no CRCX happend yet */
+private function f_get_free_mgcp_conn() runs on MSC_ConnHdlr return integer {
+	for (var integer i:= 0; i < sizeof(g_media.mgcp_conn); i := i+1) {
+		if (not g_media.mgcp_conn[i].crcx_seen >= 1) {
+			return i;
+		}
+	}
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Only 2 Connections per EP!");
+	/* Should never be reached */
+	return -1;
+}
+
+/* Helper function to pick a specific connection by its cid. Since we reach out
+ * for a connection that is in-use we also check if there was already exactly
+ * one CRCX happening on that connection. */
+private function f_get_mgcp_conn(MgcpConnectionId cid) runs on MSC_ConnHdlr return integer {
+	for (var integer i:= 0; i < sizeof(g_media.mgcp_conn); i := i+1) {
+		if (g_media.mgcp_conn[i].conn_id == cid and g_media.mgcp_conn[i].crcx_seen == 1) {
+			return i;
+		}
+	}
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("No Connection for ID ", cid));
+	/* Should not be reached */
+	return -1;
+}
+
+/* Verify that CSD CRCX/MDCX has the RSL_IE_IPAC_RTP_CSD_FMT IE, and that
+ * inside it the D value is set to RSL_IPA_RTP_CSD_TRAU_BTS. */
+private function f_ipacc_crcx_mdcx_check_rtp_pt_csd(RSL_Message rsl) runs on MSC_ConnHdlr {
+	var SDP_FIELD_PayloadType pt_csd := PT_CSD;
+	var RSL_IE_Body ie;
+
+	if (g_media.bts.rtp_pt != enum2int(pt_csd)) {
+		return;
+	}
+
+	if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_CSD_FMT, ie)) {
+		if (ie.ipa_rtp_csd_fmt.d != RSL_IPA_RTP_CSD_TRAU_BTS) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"Rx unexpected IPAC CRCX for CSD with RTP_CSD_FMT IE");
+		}
+		return;
+	}
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				"Rx unexpected IPAC CRCX for CSD without RTP_CSD_FMT IE");
+}
+
+/* altstep for handling of IPACC media related commands. Activated by as_Media() to test
+ * RSL level media handling */
+altstep as_Media_ipacc(RSL_DCHAN_PT rsl_pt := RSL, RSL_DCHAN_PT rsl_pt_ho_target := RSL1) runs on MSC_ConnHdlr {
+	var RSL_Message rsl;
+	var RSL_IE_Body ie;
+	var boolean b_unused;
+	[not g_media.bts.ipa_crcx_seen] rsl_pt.receive(tr_RSL_IPA_CRCX(g_chan_nr)) -> value rsl {
+		/* Extract parameters from request + use in response */
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD, ie)) {
+			g_media.bts.rtp_pt := ie.ipa_rtp_pt;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD2, ie)) {
+			g_media.bts.rtp_pt := ie.ipa_rtp_pt2;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_OSMO_OSMUX_CID, ie)) {
+			if (not g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC CRCX with Osmux CID IE");
+			}
+			g_media.bts.remote_osmux_cid := ie.osmux_cid.cid;
+		} else {
+			if (g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC CRCX without Osmux CID IE");
+			}
+			g_media.bts.local_osmux_cid := omit;
+			g_media.bts.remote_osmux_cid := omit;
+		}
+		f_ipacc_crcx_mdcx_check_rtp_pt_csd(rsl);
+		rsl_pt.send(ts_RSL_IPA_CRCX_ACK(g_chan_nr, g_media.bts.conn_id,
+						f_inet_addr(g_media.bts.bts.host),
+						g_media.bts.bts.port_nr,
+						g_media.bts.rtp_pt,
+						g_media.bts.local_osmux_cid));
+		g_media.bts.ipa_crcx_seen := true;
+		repeat;
+		}
+	[g_media.bts.ipa_crcx_seen] rsl_pt.receive(tr_RSL_IPA_MDCX(g_chan_nr, ?)) -> value rsl{
+		/* Extract conn_id, ip, port, rtp_pt2 from request + use in response */
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_CONN_ID, ie);
+		if (g_media.bts.conn_id != ie.ipa_conn_id) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("IPA MDCX for unknown ConnId", rsl));
+		}
+		/* mandatory */
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_REMOTE_IP, ie);
+		g_media.bts.peer.host := f_inet_ntoa(ie.ipa_remote_ip);
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_REMOTE_PORT, ie);
+		g_media.bts.peer.port_nr := ie.ipa_remote_port;
+		/* optional */
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD, ie)) {
+			g_media.bts.rtp_pt := ie.ipa_rtp_pt;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD2, ie)) {
+			g_media.bts.rtp_pt := ie.ipa_rtp_pt2;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_OSMO_OSMUX_CID, ie)) {
+			if (not g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC MDCX with Osmux CID IE");
+			}
+			g_media.bts.remote_osmux_cid := ie.osmux_cid.cid;
+		} else {
+			if (g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC MDCX without Osmux CID IE");
+			}
+			g_media.bts.local_osmux_cid := omit;
+			g_media.bts.remote_osmux_cid := omit;
+		}
+		f_ipacc_crcx_mdcx_check_rtp_pt_csd(rsl);
+		rsl_pt.send(ts_RSL_IPA_MDCX_ACK(g_chan_nr, g_media.bts.conn_id,
+						f_inet_addr(g_media.bts.peer.host),
+						g_media.bts.peer.port_nr,
+						g_media.bts.rtp_pt,
+						g_media.bts.local_osmux_cid));
+		g_media.bts.ipa_mdcx_seen := true;
+		repeat;
+		}
+
+	/* on second (new) BTS during hand-over */
+	[not g_media.bts1.ipa_crcx_seen] rsl_pt_ho_target.receive(tr_RSL_IPA_CRCX(g_chan_nr)) -> value rsl {
+		/* Extract parameters from request + use in response */
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD, ie)) {
+			g_media.bts1.rtp_pt := ie.ipa_rtp_pt;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD2, ie)) {
+			g_media.bts1.rtp_pt := ie.ipa_rtp_pt2;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_OSMO_OSMUX_CID, ie)) {
+			if (not g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC CRCX with Osmux CID IE");
+			}
+			g_media.bts.remote_osmux_cid := ie.osmux_cid.cid;
+		} else {
+			if (g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC CRCX without Osmux CID IE");
+			}
+			g_media.bts.local_osmux_cid := omit;
+			g_media.bts.remote_osmux_cid := omit;
+		}
+		rsl_pt_ho_target.send(ts_RSL_IPA_CRCX_ACK(g_chan_nr, g_media.bts1.conn_id,
+						f_inet_addr(g_media.bts1.bts.host),
+						g_media.bts1.bts.port_nr,
+						g_media.bts1.rtp_pt,
+						g_media.bts.local_osmux_cid));
+		g_media.bts1.ipa_crcx_seen := true;
+		repeat;
+		}
+	/* on second (new) BTS during hand-over */
+	[g_media.bts1.ipa_crcx_seen] rsl_pt_ho_target.receive(tr_RSL_IPA_MDCX(g_chan_nr, ?)) -> value rsl{
+		/* Extract conn_id, ip, port, rtp_pt2 from request + use in response */
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_CONN_ID, ie);
+		if (g_media.bts1.conn_id != ie.ipa_conn_id) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("IPA MDCX for unknown ConnId", rsl));
+		}
+		/* mandatory */
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_REMOTE_IP, ie);
+		g_media.bts1.peer.host := f_inet_ntoa(ie.ipa_remote_ip);
+		b_unused := f_rsl_find_ie(rsl, RSL_IE_IPAC_REMOTE_PORT, ie);
+		g_media.bts1.peer.port_nr := ie.ipa_remote_port;
+		/* optional */
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD, ie)) {
+			g_media.bts1.rtp_pt := ie.ipa_rtp_pt;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_IPAC_RTP_PAYLOAD2, ie)) {
+			g_media.bts1.rtp_pt := ie.ipa_rtp_pt2;
+		}
+		if (f_rsl_find_ie(rsl, RSL_IE_OSMO_OSMUX_CID, ie)) {
+			if (not g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC MDCX with Osmux CID IE");
+			}
+			g_media.bts.remote_osmux_cid := ie.osmux_cid.cid;
+		} else {
+			if (g_pars.use_osmux_bts) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx unexpected IPAC MDCX without Osmux CID IE");
+			}
+			g_media.bts.local_osmux_cid := omit;
+			g_media.bts.remote_osmux_cid := omit;
+		}
+		rsl_pt_ho_target.send(ts_RSL_IPA_MDCX_ACK(g_chan_nr, g_media.bts1.conn_id,
+						f_inet_addr(g_media.bts1.peer.host),
+						g_media.bts1.peer.port_nr,
+						g_media.bts1.rtp_pt,
+						g_media.bts.local_osmux_cid));
+		g_media.bts1.ipa_mdcx_seen := true;
+		repeat;
+		}
+
+
+}
+
+function f_rx_crcx(MgcpCommand mgcp_cmd)
+	 runs on MSC_ConnHdlr return template MgcpResponse {
+	var SDP_Message sdp;
+	var integer cid := f_get_free_mgcp_conn();
+	var charstring local_rtp_addr;
+	var MgcpOsmuxCID osmux_cid;
+
+	if (g_pars.media_mgw_offer_ipv6 == true) {
+		local_rtp_addr := host_mgw_rtp_v6; /* Use IPv6 by default if no remote addr is provided by client */
+	} else {
+		local_rtp_addr := host_mgw_rtp_v4; /* Use IPv4 by default if no remote addr is provided by client */
+	}
+
+	if (match(mgcp_cmd.line.ep, t_MGCP_EP_wildcard)) {
+		if (cid != 0) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "MGCP wildcard EP only works in first CRCX");
+		}
+		/* we keep the endpoint name allocated during MediaState_init */
+	} else {
+		/* Call Agent allocated endpoint, trust/use it always */
+		g_media.mgcp_ep := mgcp_cmd.line.ep;
+	}
+	if (isvalue(mgcp_cmd.sdp)) {
+		sdp := mgcp_cmd.sdp;
+		g_media.mgcp_conn[cid].peer.host := sdp.connection.conn_addr.addr;
+		g_media.mgcp_conn[cid].peer.port_nr := sdp.media_list[0].media_field.ports.port_number;
+		if (sdp.connection.addr_type == "IP6") {
+			local_rtp_addr := host_mgw_rtp_v6;
+		} else {
+			local_rtp_addr := host_mgw_rtp_v4;
+		}
+	}
+	var MgcpConnState mgcp_conn := g_media.mgcp_conn[cid];
+	sdp := valueof(ts_SDP(mgcp_conn.mgw.host, local_rtp_addr, "foo", "21",
+				mgcp_conn.mgw.port_nr, { int2str(mgcp_conn.rtp_pt) },
+			{valueof(ts_SDP_rtpmap(mgcp_conn.rtp_pt,
+						mgcp_conn.mime_type & "/" &
+						int2str(mgcp_conn.sample_rate))),
+			valueof(ts_SDP_ptime(mgcp_conn.ptime)) } ));
+	var template MgcpResponse mgcp_resp;
+	if ((g_pars.use_osmux_cn or g_pars.use_osmux_bts) and
+	    f_MgcpCmd_contains_par(mgcp_cmd, "X-OSMUX")) {
+		osmux_cid := f_MgcpCmd_extract_osmux_cid(mgcp_cmd);
+		if (osmux_cid != -1) {
+			mgcp_conn.remote_osmux_cid := osmux_cid;
+		}
+		mgcp_resp := ts_CRCX_ACK_osmux(mgcp_cmd.line.trans_id, mgcp_conn.conn_id, mgcp_conn.local_osmux_cid, sdp);
+	} else {
+		mgcp_resp := ts_CRCX_ACK(mgcp_cmd.line.trans_id, mgcp_conn.conn_id, sdp);
+	}
+	f_mgcp_par_append(mgcp_resp.params, ts_MgcpParSpecEP(g_media.mgcp_ep));
+	g_media.mgcp_conn[cid].crcx_seen := g_media.mgcp_conn[cid].crcx_seen + 1;
+	return mgcp_resp;
+}
+
+function f_rx_mdcx(MgcpCommand mgcp_cmd)
+	runs on MSC_ConnHdlr return template MgcpResponse {
+	var SDP_Message sdp;
+	var integer cid := f_get_mgcp_conn(f_MgcpCmd_extract_conn_id(mgcp_cmd));
+	var charstring local_rtp_addr;
+	if (isvalue(mgcp_cmd.sdp)) {
+		sdp := mgcp_cmd.sdp;
+		g_media.mgcp_conn[cid].peer.host := sdp.connection.conn_addr.addr;
+		g_media.mgcp_conn[cid].peer.port_nr := sdp.media_list[0].media_field.ports.port_number;
+		if (sdp.connection.addr_type == "IP6") {
+			local_rtp_addr := host_mgw_rtp_v6;
+		} else {
+			local_rtp_addr := host_mgw_rtp_v4;
+		}
+	} else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "MDCX has no [recognizable] SDP");
+	}
+	var MgcpConnState mgcp_conn := g_media.mgcp_conn[cid];
+	sdp := valueof(ts_SDP(mgcp_conn.peer.host, local_rtp_addr, "foo", "21",
+				mgcp_conn.peer.port_nr, { int2str(mgcp_conn.rtp_pt) },
+			{valueof(ts_SDP_rtpmap(mgcp_conn.rtp_pt,
+						mgcp_conn.mime_type & "/" &
+						int2str(mgcp_conn.sample_rate))),
+			valueof(ts_SDP_ptime(mgcp_conn.ptime)) } ));
+	g_media.mgcp_conn[cid].mdcx_seen := g_media.mgcp_conn[cid].mdcx_seen + 1;
+	return ts_MDCX_ACK(mgcp_cmd.line.trans_id, mgcp_conn.conn_id, sdp);
+}
+
+function tr_MGCP_RecvFrom_any(template MgcpMessage msg)
+runs on MSC_ConnHdlr return template MGCP_RecvFrom {
+	var template MGCP_RecvFrom mrf := {
+		connId := ?,
+		remName := ?,
+		remPort := ?,
+		locName := ?,
+		locPort := ?,
+		msg := msg
+	}
+	return mrf;
+}
+
+/* altstep for handling of MGCP media related commands. Activated by as_Media() to test
+ * MGW level media handling */
+
+altstep as_Media_mgw(boolean norepeat := false) runs on MSC_ConnHdlr {
+	var MgcpCommand mgcp_cmd;
+	var template MgcpResponse mgcp_resp;
+	var MGCP_RecvFrom mrf;
+	var template MgcpMessage msg_crcx := {
+		command := tr_CRCX
+	}
+	var template MgcpMessage msg_mdcx := {
+		command := tr_MDCX
+	}
+	var template MgcpMessage msg_dlcx := {
+		command := tr_DLCX
+	}
+	var template MgcpMessage msg_resp;
+
+	[g_pars.aoip] MGCP.receive(tr_CRCX) -> value mgcp_cmd {
+		mgcp_resp := f_rx_crcx(mgcp_cmd);
+		MGCP.send(mgcp_resp);
+		if(norepeat == false) {
+			repeat;
+		}
+	}
+
+	[not g_pars.aoip] MGCP_MULTI.receive(tr_MGCP_RecvFrom_any(msg_crcx)) -> value mrf {
+		mgcp_resp := f_rx_crcx(mrf.msg.command);
+		msg_resp := {
+			response := mgcp_resp
+		}
+		MGCP_MULTI.send(t_MGCP_SendToMrf(mrf, msg_resp));
+		if(norepeat == false) {
+			repeat;
+		}
+	}
+
+	[g_pars.aoip and not g_pars.ignore_mgw_mdcx] MGCP.receive(tr_MDCX) -> value mgcp_cmd {
+		mgcp_resp := f_rx_mdcx(mgcp_cmd);
+		MGCP.send(mgcp_resp);
+		if(norepeat == false) {
+			repeat;
+		}
+	}
+
+	[not g_pars.aoip and not g_pars.ignore_mgw_mdcx]
+			MGCP_MULTI.receive(tr_MGCP_RecvFrom_any(msg_mdcx)) -> value mrf {
+		mgcp_resp := f_rx_mdcx(mrf.msg.command);
+		msg_resp := {
+			response := mgcp_resp
+		}
+		MGCP_MULTI.send(t_MGCP_SendToMrf(mrf, msg_resp));
+		if(norepeat == false) {
+			repeat;
+		}
+	}
+
+	[g_pars.fail_on_dlcx and g_pars.aoip] MGCP.receive(tr_DLCX) {
+		setverdict(fail, "Unexpected DLCX received");
+	}
+
+	[g_pars.fail_on_dlcx and not g_pars.aoip] MGCP_MULTI.receive(tr_MGCP_RecvFrom_any(msg_dlcx)) {
+		setverdict(fail, "Unexpected DLCX received");
+	}
+}
+
+/* Altsteps for handling of media related commands. Can be activated by a given
+ * test case if it expects to see media related handling (i.e. voice calls) */
+altstep as_Media() runs on MSC_ConnHdlr {
+	[not g_pars.ignore_ipa_media] as_Media_ipacc();
+	[] as_Media_mgw();
+}
+
+type port Coord_PT message
+{
+	inout charstring;
+} with { extension "internal" };
+
+/* this component represents a single subscriber connection at the MSC.
+ * There is a 1:1 mapping between SCCP connections and RAN_ConnHdlr components.
+ * We inherit all component variables, ports, functions, ... from RAN_ConnHdlr */
+type component MSC_ConnHdlr extends RAN_ConnHdlr, RSL_DchanHdlr, MGCP_ConnHdlr, BSSAP_LE_ConnHdlr, StatsD_ConnHdlr {
+	/* SCCP Connecction Identifier for the underlying SCCP connection */
+	var integer g_sccp_conn_id;
+
+	/* procedure port back to our parent (RAN_Emulation_CT) for control */
+	port RAN_PROC_PT RAN;
+	port TELNETasp_PT BSCVTY;
+	port Coord_PT COORD;
+	port Coord_PT COORD2;
+
+	/* Proxy MGCP-over-IPA and MGCP-over-UDP */
+	port IPA_MGCP_PT MGCP_MSC_CLIENT;
+	var integer g_trans_id := 0;
+
+	var MediaState g_media;
+	var TestHdlrParams g_pars;
+
+	var charstring host_bts := "127.0.0.2";
+	var charstring host_mgw_mgcp := "127.0.0.3";
+	var charstring host_mgw_rtp_v4 := "127.0.0.5";
+	var charstring host_mgw_rtp_v6 := "::1";
+	var charstring host_msc := "127.0.0.4";
+
+	var boolean g_vty_initialized := false;
+}
+
+function f_MscConnHdlr_init_vty() runs on MSC_ConnHdlr {
+	if (not g_vty_initialized) {
+		map(self:BSCVTY, system:BSCVTY);
+		f_vty_set_prompts(BSCVTY);
+		f_vty_transceive(BSCVTY, "enable");
+		g_vty_initialized := true;
+	}
+}
+
+/* initialize all parameters */
+function f_MscConnHdlr_init(integer i, HostName bts, HostName mgw, BSSMAP_FIELD_CodecType codecType) runs on MSC_ConnHdlr {
+	g_trans_id := i * 1000; /* Avoid different MscConnHdlr submitting same trans_id over MGCP-IPA */
+	f_MediaState_init(g_media, i, bts, mgw, codecType);
+	f_MscConnHdlr_init_vty();
+}
+
+private function get_next_trans_id() runs on MSC_ConnHdlr return MgcpTransId {
+	var MgcpTransId tid := int2str(g_trans_id);
+	g_trans_id := g_trans_id + 1;
+	return tid;
+}
+
+/* Callback function from general RAN_Emulation whenever a connectionless
+ * BSSMAP message arrives.  Can retunr a PDU_BSSAP that should be sent in return */
+private function UnitdataCallback(PDU_BSSAP bssap)
+runs on RAN_Emulation_CT return template PDU_BSSAP {
+	var template PDU_BSSAP resp := omit;
+	var boolean append_osmux_support := g_ran_ops.use_osmux and
+					    (g_ran_ops.transport == BSSAP_TRANSPORT_AoIP);
+
+	/* answer all RESET with a RESET ACK */
+	if (match(bssap, tr_BSSMAP_Reset(append_osmux_support))) {
+		resp := ts_BSSMAP_ResetAck(append_osmux_support);
+	}
+
+	return resp;
+}
+
+/* Callback function from general BSSAP_LE_Emulation whenever a connectionless
+ * BSSAP_LE message arrives.  Can return a PDU_BSSAP_LE that should be sent in return */
+private function BSSAP_LE_UnitdataCallback(PDU_BSSAP_LE bssap)
+runs on BSSAP_LE_Emulation_CT return template PDU_BSSAP_LE {
+	var template PDU_BSSAP_LE resp := omit;
+
+	/* answer all RESET with a RESET ACK */
+	if (match(bssap, tr_BSSMAP_LE_Reset)) {
+		resp := ts_BSSMAP_LE_ResetAck;
+	}
+
+	return resp;
+}
+
+const RanOps MSC_RanOps := {
+	create_cb := refers(RAN_Emulation.ExpectedCreateCallback),
+	unitdata_cb := refers(UnitdataCallback),
+	decode_dtap := false,
+	role_ms := false,
+	protocol := RAN_PROTOCOL_BSSAP,
+	transport := BSSAP_TRANSPORT_AoIP,
+	use_osmux := false,
+	bssap_reset_retries := 1,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+}
+
+const BssapLeOps SMLC_BssapLeOps := {
+	create_cb := refers(BSSAP_LE_Emulation.ExpectedCreateCallback),
+	unitdata_cb := refers(BSSAP_LE_UnitdataCallback),
+	decode_dtap := false,
+	role_ms := false,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+}
+
+const MGCPOps MSC_MGCPOps := {
+	create_cb := refers(MGCP_Emulation.ExpectedCreateCallback),
+	unitdata_cb := refers(MGCP_Emulation.DummyUnitdataCallback)
+}
+
+/* register an expect with the BSSMAP core */
+function f_create_bssmap_exp(octetstring l3_enc) runs on MSC_ConnHdlr {
+	RAN.call(RAN_register:{l3_enc, self}) {
+		[] RAN.getreply(RAN_register:{?, ?}) {};
+	}
+}
+
+type record TestHdlrEncrParams {
+	/* A mask of multiple encryption algorithms, for Encryption Information IE. */
+	OCT1		enc_alg_permitted,
+	/* Expect this encryption algorithm in Channel Activation from the BSC.
+	 * To expect no encryption, set to '01'O == A5/0. */
+	OCT1		enc_alg_expect,
+	/* In BSSMAP, the Chosen Encryption Algorithm IE that the test sends to the BSC.
+	 * When set to omit, the MSC will not send a Chosen Encryption Algorithm IE. */
+	OCT1		enc_alg_chosen optional,
+	octetstring	enc_key,
+	octetstring	enc_kc128 optional
+};
+
+template (value) TestHdlrEncrParams t_EncrParams(OCT1 alg_permitted,
+						 octetstring key, template (omit) octetstring kc128 := omit) := {
+	enc_alg_permitted := alg_permitted,
+	enc_alg_expect := alg_permitted, /* <- for compat with tests before enc_alg_expect was added */
+	enc_alg_chosen := alg_permitted, /* <- for compat with tests before enc_alg_chosen was added */
+	enc_key := key,
+	enc_kc128 := kc128
+}
+
+template (value) TestHdlrEncrParams t_EncrParams2(OCT1 alg_permitted,
+						  OCT1 alg_expect,
+						  template(omit) OCT1 alg_chosen,
+						  octetstring key,
+						  template (omit) octetstring kc128 := omit) := {
+	enc_alg_permitted := alg_permitted,
+	enc_alg_expect := alg_expect,
+	enc_alg_chosen := alg_chosen,
+	enc_key := key,
+	enc_kc128 := kc128
+}
+
+/* Convenience for common t_EncrParams2 usage.
+ *
+ * To test a scenario where only A5/3 is permitted:
+ *   f_encr_params('08'O);
+ * To test a scenario where A5/3 is chosen from A5/0,A5/1,A5/3 (1 | 2 | 8 = 11 = 0xb):
+ *   f_encr_params('0b'O, '08'O);
+ * To test the same, but the Chosen Encryption Algorithm IE should reflect A5/1:
+ *   f_encr_params('0b'O, '08'O, '02'O);
+ * To test the same, but the MSC sends no Chosen Encryption Algorithm IE:
+ *   f_encr_params('0b'O, '08'O, omit);
+ *
+ * Set alg_chosen and alg_expect magically when == '00'O:
+ * - enc_alg_expect is set to alg_chosen if present, else to alg_permitted.
+ * - enc_alg_chosen is set to alg_permitted.
+ * When only alg_permitted is given, alg_permitted must reflect only one algorithm, or f_cipher_mode_bssmap_to_rsl()
+ * will fail.
+ * When alg_chosen is passed as omit, the messages from the MSC will not contain a Chosen Encryption Algorithm IE.
+ */
+function f_encr_params(OCT1 alg_permitted, OCT1 alg_expect := '00'O, template (omit) OCT1 alg_chosen := '00'O,
+		       boolean kc128 := false)
+	 return TestHdlrEncrParams
+{
+	if (not istemplatekind(alg_chosen, "omit")) {
+		if (valueof(alg_chosen) == '00'O) {
+			if (alg_expect != '00'O) {
+				alg_chosen := alg_expect;
+			} else {
+				/* In this case, alg_permitted should have only one permitted algo */
+				alg_chosen := alg_permitted;
+			}
+		}
+		if (alg_expect == '00'O) {
+			alg_expect := valueof(alg_chosen);
+		}
+	}
+	if (alg_expect == '00'O) {
+		/* In this case, alg_permitted should have only one permitted algo */
+		alg_expect := valueof(alg_permitted);
+	}
+	var template (omit) octetstring kc := omit;
+	if (kc128) {
+		kc := f_rnd_octstring(16);
+	}
+	return valueof(t_EncrParams2(alg_permitted, alg_expect, alg_chosen, f_rnd_octstring(8), kc));
+}
+
+type record TestHdlrParamsLcls {
+	GlobalCallReferenceValue gcr optional,
+	/* LCLS Configuration */
+	BIT4 cfg optional,
+	/* LCLS Connection Status Control */
+	BIT4 csc optional,
+	BIT4 exp_sts optional,
+	/* Whether to adjust *cx_seen_exp for LCLS tests */
+	boolean adjust_cx_exp
+}
+
+type record TestHdlrParamsMSCPool {
+	integer bssap_idx,
+	integer rsl_idx,
+	PDU_ML3_MS_NW l3_info optional
+}
+
+type record ASCITest {
+	boolean vgcs_setup_ok,
+	boolean vgcs_assign_ok,
+	boolean vgcs_assign_fail,
+	boolean vgcs_talker_req,
+	boolean vgcs_talker_fail,
+	boolean vgcs_talker_est,
+	boolean vgcs_talker_rel,
+	boolean vgcs_uplink_reject,
+	boolean vgcs_uplink_seized,
+	boolean vgcs_uplink_release,
+	boolean delay_bts,
+	boolean delay_msc
+};
+
+type record TestHdlrParams {
+	OCT1		ra,
+	GsmFrameNumber	fn,
+	hexstring	imsi optional,
+	hexstring	imei optional,
+	RslLinkId	link_id,
+	integer		media_nr, /* determins MGCP EP, port numbers */
+	BSSMAP_IE_SpeechCodecList ass_codec_list optional,
+	RSL_IE_Body	expect_mr_conf_ie optional, /* typically present for AMR codecs */
+	bitstring	expect_mr_s0_s7 optional, /* typically present for AMR codecs */
+	TestHdlrEncrParams encr optional,
+	TestHdlrParamsLcls lcls,
+	SCCP_PAR_Address sccp_addr_msc optional,
+	SCCP_PAR_Address sccp_addr_bsc optional,
+	uint5_t 	exp_ms_power_level,
+	boolean         exp_ms_power_params,
+	boolean		aoip,
+	boolean		use_osmux_cn,
+	boolean		use_osmux_bts,
+	charstring	host_aoip_tla,
+	TestHdlrParamsMSCPool mscpool,
+	integer		mgwpool_idx, /* MGCP_Emulation_CT (vc_MGCP) to use for this MSC ConnHdlr */
+	boolean		media_mgw_offer_ipv6,
+	OCT3		last_used_eutran_plmn optional,
+	boolean		exp_fast_return, /* RR Release expected to contain CellSelectInd ? */
+	boolean		expect_channel_mode_modify,
+	uint3_t		expect_tsc optional,
+	BSSMAP_IE_CellIdentifier	cell_id_source,
+	boolean		expect_ho_fail,
+	boolean		expect_ho_fail_lchan_est,
+	boolean		inter_bsc_ho_in__ho_req_in_initial_sccp_cr,
+	boolean		ignore_mgw_mdcx,
+	boolean		fail_on_dlcx,
+	boolean		ignore_ipa_media,
+	ASCITest	asci_test
+};
+
+/* Note: Do not use valueof() to get a value of this template, use
+ * f_gen_test_hdlr_pars() instead in order to get a configuration that is
+ * matched to the current test situation (aoip vs. sccplite) */
+template (value) TestHdlrParams t_def_TestHdlrPars := {
+	ra := '23'O,
+	fn := 23,
+	imsi := omit, /* set to random in f_gen_test_hdlr_pars() */
+	imei := omit, /* set to random in f_gen_test_hdlr_pars() */
+	link_id := valueof(ts_RslLinkID_DCCH(0)),
+	media_nr := 1,
+	ass_codec_list := omit,
+	expect_mr_conf_ie := omit,
+	expect_mr_s0_s7 := omit,
+	encr := omit,
+	lcls := {
+		gcr := omit,
+		cfg := omit,
+		csc := omit,
+		exp_sts := omit,
+		adjust_cx_exp := true
+	},
+	sccp_addr_msc := omit,
+	sccp_addr_bsc := omit,
+	exp_ms_power_level := 7, /* calculated from osmo-bsc.cfg "ms max power" */
+	exp_ms_power_params := false,
+	aoip := true,
+	use_osmux_cn := false,
+	use_osmux_bts := false,
+	host_aoip_tla := "1.2.3.4",
+	mscpool := {
+		bssap_idx := 0,
+		rsl_idx := 0,
+		l3_info := omit
+	},
+	mgwpool_idx := 0,
+	media_mgw_offer_ipv6 := true,
+	last_used_eutran_plmn := omit,
+	exp_fast_return := false,
+	expect_channel_mode_modify := false,
+	expect_tsc := omit,
+	cell_id_source := valueof(ts_CellID_LAC_CI(1, 1)),
+	expect_ho_fail := false,
+	expect_ho_fail_lchan_est := false,
+	inter_bsc_ho_in__ho_req_in_initial_sccp_cr := true,
+	ignore_mgw_mdcx := false,
+	fail_on_dlcx := true,
+	ignore_ipa_media := false,
+	asci_test := {
+		vgcs_setup_ok := false,
+		vgcs_assign_ok := false,
+		vgcs_assign_fail := false,
+		vgcs_talker_req := false,
+		vgcs_talker_fail := false,
+		vgcs_talker_est := false,
+		vgcs_talker_rel := false,
+		vgcs_uplink_reject := false,
+		vgcs_uplink_seized := false,
+		vgcs_uplink_release := false,
+		delay_bts := false,
+		delay_msc := false
+	}
+}
+
+function f_create_chan_and_exp(template (present) PDU_BSSAP exp_l3_compl := ?)
+runs on MSC_ConnHdlr {
+	var MobileIdentityLV mi;
+	var PDU_ML3_MS_NW l3_info;
+	var octetstring l3_enc;
+	var template uint3_t tsc := ?;
+	timer T;
+
+	if (ispresent(g_pars.imsi)) {
+		mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+	} else if (ispresent(g_pars.imei)) {
+		mi := valueof(ts_MI_IMEI_LV(g_pars.imei));
+	} else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					"Either imsi or imei must be set!");
+	}
+	l3_info := valueof(ts_CM_SERV_REQ(CM_TYPE_MO_CALL, mi));
+	l3_enc := enc_PDU_ML3_MS_NW(l3_info);
+
+	if (not istemplatekind(g_pars.expect_tsc, "omit")) {
+		tsc := g_pars.expect_tsc;
+	}
+
+	if (istemplatekind(exp_l3_compl, "?")) {
+		if (g_pars.aoip == false) {
+			exp_l3_compl := tr_BSSMAP_ComplL3(l3_enc, codec_list := omit);
+		} else {
+			exp_l3_compl := tr_BSSMAP_ComplL3(l3_enc, codec_list := ?);
+		}
+	}
+
+	f_create_bssmap_exp(l3_enc);
+	/* call helper function for CHAN_RQD -> IMM ASS ->EST_IND */
+	RSL_Emulation.f_chan_est(g_pars.ra, l3_enc, g_pars.link_id, g_pars.fn, tsc);
+	/* wait for a COMPL_L3 from the BSC to ensure that the SCCP connection is up */
+	T.start(2.0);
+	alt {
+	[] BSSAP.receive(exp_l3_compl);
+	[] BSSAP.receive(tr_BSSMAP_ComplL3) {
+		setverdict(fail, "Received non-matching COMPLETE LAYER 3 INFORMATION");
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for COMPLETE LAYER 3 INFORMATION");
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+		}
+	}
+}
+
+function f_rsl_send_l3(template PDU_ML3_MS_NW l3, template (omit) RslLinkId link_id := omit,
+			template (omit) RslChannelNr chan_nr := omit, RSL_DCHAN_PT rsl_pt := RSL) runs on MSC_ConnHdlr {
+	if (not isvalue(link_id)) {
+		link_id := ts_RslLinkID_DCCH(0);
+	}
+	if (not isvalue(chan_nr)) {
+		chan_nr := g_chan_nr;
+	}
+	rsl_pt.send(ts_RSL_DATA_IND(valueof(chan_nr), valueof(link_id), enc_PDU_ML3_MS_NW(valueof(l3))));
+}
+
+function f_rsl_reply(template PDU_ML3_MS_NW l3, RSL_Message orig, RSL_DCHAN_PT rsl_pt := RSL) runs on MSC_ConnHdlr {
+	var RslChannelNr chan_nr := orig.ies[0].body.chan_nr;
+	var RslLinkId link_id;
+	if (orig.msg_type == RSL_MT_ENCR_CMD) {
+		link_id := orig.ies[2].body.link_id;
+	} else {
+		link_id := orig.ies[1].body.link_id;
+	}
+	f_rsl_send_l3(l3, link_id, chan_nr, rsl_pt := rsl_pt);
+}
+
+/* Convert the cipher representation on BSSMAP to the representation used on RSL */
+function f_cipher_mode_bssmap_to_rsl(OCT1 alg_bssmap) return RSL_AlgId
+{
+	select (alg_bssmap) {
+	case ('01'O) { return RSL_ALG_ID_A5_0; }
+	case ('02'O) { return RSL_ALG_ID_A5_1; }
+	case ('04'O) { return RSL_ALG_ID_A5_2; }
+	case ('08'O) { return RSL_ALG_ID_A5_3; }
+	case ('10'O) { return RSL_ALG_ID_A5_4; }
+	case ('20'O) { return RSL_ALG_ID_A5_5; }
+	case ('40'O) { return RSL_ALG_ID_A5_6; }
+	case ('80'O) { return RSL_ALG_ID_A5_7; }
+	case else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unexpected Encryption Algorithm: " &
+					oct2str(alg_bssmap));
+		return RSL_ALG_ID_A5_0;
+		}
+	}
+}
+
+/* Convert the cipher representation on BSSMAP to the one used on RR (3GPP TS 44.018) */
+function f_cipher_mode_bssmap_to_rr(OCT1 alg_bssmap) return BIT3
+{
+	select (alg_bssmap) {
+	case ('01'O) /* A5/0 */ { return '000'B; } /* SC=0 */
+	case ('02'O) /* A5/1 */ { return '000'B; } /* SC=1 */
+	case ('04'O) /* A5/2 */ { return '001'B; } /* SC=1 */
+	case ('08'O) /* A5/3 */ { return '010'B; } /* SC=1 */
+	case ('10'O) /* A5/4 */ { return '011'B; } /* SC=1 */
+	case ('20'O) /* A5/5 */ { return '100'B; } /* SC=1 */
+	case ('40'O) /* A5/6 */ { return '101'B; } /* SC=1 */
+	case ('80'O) /* A5/7 */ { return '110'B; } /* SC=1 */
+	case else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unexpected Encryption Algorithm: " &
+					oct2str(alg_bssmap));
+		return '000'B;
+		}
+	}
+}
+
+function f_verify_encr_info(RSL_Message rsl) runs on MSC_ConnHdlr {
+	var RSL_IE_Body encr_info;
+	var RSL_AlgId alg_rsl;
+	var template octetstring expect_kc;
+
+	/* If no encryption is enabled, then make sure there is no RSL_IE_ENCR_INFO */
+	if (not ispresent(g_pars.encr)) {
+		if (f_rsl_find_ie(rsl, RSL_IE_ENCR_INFO, encr_info)) {
+			setverdict(fail, "Found Encryption IE, but expected no encryption in ", rsl.msg_type);
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+			return;
+		}
+		setverdict(pass);
+		return;
+	}
+
+	/* RSL uses a different representation of the encryption algorithm,
+	 * so we need to convert first */
+	alg_rsl := f_cipher_mode_bssmap_to_rsl(g_pars.encr.enc_alg_expect);
+
+	if (alg_rsl == RSL_ALG_ID_A5_4 and ispresent(g_pars.encr.enc_kc128)) {
+		expect_kc := g_pars.encr.enc_kc128;
+	} else if (alg_rsl == RSL_ALG_ID_A5_0) {
+		/* When A5/0 is chosen, no encryption is active, so technically, no key is needed. However, 3GPP TS
+		 * 48.058 9.3.7 Encryption Information stays quite silent about presence or absence of a key for A5/0.
+		 * The only thing specified is how to indicate the length of the key; the possibility that the key may
+		 * be zero length is not explicitly mentioned. So it seems that we should always send the key along,
+		 * even for A5/0. Still, let's also allow a zero length key for A5/0. */
+		expect_kc := (g_pars.encr.enc_key, ''O);
+	} else {
+		expect_kc := g_pars.encr.enc_key;
+	}
+	log("for encryption algo ", alg_rsl, " expect kc = ", expect_kc);
+
+	if (not f_rsl_find_ie(rsl, RSL_IE_ENCR_INFO, encr_info)) {
+		if (alg_rsl == RSL_ALG_ID_A5_0) {
+			/* For A5/0, encryption is not active. It is fine to omit the Encryption Information in this
+			 * case. Note that the first channel may see an RSL Encryption Command with A5/0 indicated, and
+			 * a subsequent handover may activate a new channel without any Encryption Information. */
+			setverdict(pass);
+			return;
+		}
+		setverdict(fail, "Missing Encryption Information IE in ", rsl.msg_type);
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+		return;
+	}
+
+	if (not match(encr_info, tr_EncrInfo(alg_rsl, expect_kc))) {
+		setverdict(fail, "Unexpected Kc in Encryption Information IE in ", rsl.msg_type);
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+		return;
+	}
+	setverdict(pass);
+}
+
+function f_cipher_mode(TestHdlrEncrParams enc, boolean exp_fail := false,
+                       RSL_DCHAN_PT rsl_pt := RSL, RSLEM_PROC_PT rsl_proc_pt := RSL_PROC)
+runs on MSC_ConnHdlr {
+	var PDU_BSSAP bssap;
+	var RSL_Message rsl;
+
+	if (isvalue(enc.enc_kc128)) {
+		BSSAP.send(ts_BSSMAP_CipherModeCmdKc128(enc.enc_alg_permitted, enc.enc_key, valueof(enc.enc_kc128)));
+	} else {
+		BSSAP.send(ts_BSSMAP_CipherModeCmd(enc.enc_alg_permitted, enc.enc_key));
+	}
+
+	alt {
+	/* RSL/UE Side */
+	[] rsl_pt.receive(tr_RSL_ENCR_CMD(g_chan_nr)) -> value rsl {
+		var PDU_ML3_NW_MS l3 := dec_PDU_ML3_NW_MS(rsl.ies[3].body.l3_info.payload);
+		log("Rx L3 from net: ", l3);
+
+		f_verify_encr_info(rsl);
+
+		if (ischosen(l3.msgs.rrm.cipheringModeCommand)) {
+			f_rsl_reply(ts_RRM_CiphModeCompl, rsl, rsl_pt := rsl_pt);
+		}
+		repeat;
+		}
+	[] BSSAP.receive(tr_BSSMAP_CipherModeCompl) -> value bssap {
+		if (exp_fail == true) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unexpected Cipher Mode Complete");
+		} else {
+			setverdict(pass);
+			var RSL_AlgId alg_rsl := f_cipher_mode_bssmap_to_rsl(g_pars.encr.enc_alg_expect);
+			if (oct2int(bssap.pdu.bssmap.cipherModeComplete.chosenEncryptionAlgorithm.algorithmIdentifier) != enum2int(alg_rsl)) {
+				setverdict(fail, "Unexpected Encryption Algorithm ID in BSSMAP Cipher Mode Complete");
+			}
+		}
+		}
+	[] BSSAP.receive(tr_BSSMAP_CipherModeRej) -> value bssap {
+		if (exp_fail == false) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Ciphering Mode Reject");
+		} else {
+			setverdict(pass);
+		}
+		}
+	}
+}
+
+/* Convert from Ericsson ChanDesc2 format to Osmocom RslChannelNr format */
+function f_ChDesc2RslChanNr(ChannelDescription2_V ch_desc, out RslChannelNr chan_nr, out GsmArfcn arfcn) {
+	var BIT5 inp := ch_desc.channelTypeandTDMAOffset;
+	var uint3_t tn := bit2int(ch_desc.timeslotNumber);
+
+	select (inp) {
+	case ('00001'B) { /* TCH/F */
+		chan_nr := valueof(t_RslChanNr_Bm(tn));
+		}
+	case ('11101'B) { /* VAMOS TCH/F */
+		chan_nr := valueof(t_RslChanNr_Osmo_VAMOS_Bm(tn));
+		}
+	case ('0001?'B) { /* TCH/H */
+		chan_nr := valueof(t_RslChanNr_Lm(tn, bit2int(substr(inp, 4, 1))));
+		}
+	case ('1111?'B) { /* VAMOS TCH/H */
+		chan_nr := valueof(t_RslChanNr_Osmo_VAMOS_Lm(tn, bit2int(substr(inp, 4, 1))));
+		}
+	case ('001??'B) { /* SDCCH/4 */
+		chan_nr := valueof(t_RslChanNr_SDCCH4(tn, bit2int(substr(inp, 3, 2))));
+		}
+	case ('01???'B) { /* SDCCH/8 */
+		chan_nr := valueof(t_RslChanNr_SDCCH8(tn, bit2int(substr(inp, 2, 3))));
+		}
+	case else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unknown ChDesc!");
+		}
+	}
+
+	if (ch_desc.octet3 and4b '10'O == '10'O) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "No support for Hopping");
+	} else {
+		var OCT2 concat := ch_desc.octet3 & ch_desc.octet4;
+		arfcn := oct2int(concat);
+	}
+}
+
+type record AssignmentState {
+	/* global */
+	boolean rtp_stream,
+	boolean is_assignment,
+	/* Assignment related bits */
+	boolean rr_ass_cmpl_seen,
+	boolean old_lchan_deact_sacch_seen,
+	boolean old_lchan_rll_rel_req_seen,
+	boolean assignment_done,
+	RslChannelNr old_chan_nr,
+	/* Modify related bits */
+	PDU_ML3_NW_MS rr_channel_mode_modify_msg optional,
+	boolean rr_modify_seen,
+	RSL_Message rsl_mode_modify_msg optional,
+	boolean modify_done
+}
+
+template (value) AssignmentState ts_AssignmentStateInit := {
+	rtp_stream := false,
+	is_assignment := false,
+	rr_ass_cmpl_seen := false,
+	old_lchan_deact_sacch_seen := false,
+	old_lchan_rll_rel_req_seen := false,
+	assignment_done := false,
+	old_chan_nr := -,
+	rr_channel_mode_modify_msg := omit,
+	rr_modify_seen := false,
+	rsl_mode_modify_msg := omit,
+	modify_done := false
+}
+
+private template RSL_IE_Body tr_EncrInfo(template RSL_AlgId alg, template octetstring key) := {
+	encr_info := {
+		len := ?,
+		alg_id := alg,
+		key := key
+	}
+}
+
+/* ensure the RSL CHAN ACT (during assignment) contains values we expect depending on test case */
+private function f_check_chan_act(AssignmentState st, RSL_Message chan_act) runs on MSC_ConnHdlr {
+	var RSL_IE_Body encr_info;
+	var RSL_IE_Body ms_power_param;
+	var RSL_IE_Body ms_power;
+
+	if (ispresent(g_pars.encr) and g_pars.encr.enc_alg_permitted != '01'O) {
+		if (not f_rsl_find_ie(chan_act, RSL_IE_ENCR_INFO, encr_info)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Missing Encryption IE in CHAN ACT");
+		} else {
+			var RSL_AlgId alg := f_cipher_mode_bssmap_to_rsl(g_pars.encr.enc_alg_expect);
+			var octetstring expect_key;
+			if (alg == RSL_ALG_ID_A5_4) {
+				expect_key := g_pars.encr.enc_kc128;
+			} else {
+				expect_key := g_pars.encr.enc_key;
+			}
+			if (not match(encr_info, tr_EncrInfo(alg, expect_key))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Unexpected Kc in Encryption IE in RSL ENCR CMD");
+			}
+		}
+	} else {
+		if (f_rsl_find_ie(chan_act, RSL_IE_ENCR_INFO, encr_info)) {
+			if (encr_info.encr_info.alg_id != RSL_ALG_ID_A5_0) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unexpected Encryption in CHAN ACT");
+			}
+		}
+	}
+	/* FIXME: validate RSL_IE_ACT_TYPE, RSL_IE_CHAN_MODE, RSL_IE_CHAN_IDENT, RSL_IE_BS_POWER,
+	 * RSL_IE_TIMING_ADVANCE */
+
+	if (g_pars.exp_ms_power_params and not f_rsl_find_ie(chan_act, RSL_IE_MS_POWER_PARAM, ms_power_param)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "IE MS Power Parameters not found in CHAN ACT");
+	}
+
+	if (not f_rsl_find_ie(chan_act, RSL_IE_MS_POWER, ms_power)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "IE MS Power not found in CHAN ACT");
+	} else {
+		if (not match(ms_power.ms_power, tr_RSL_IE_MS_Power(g_pars.exp_ms_power_level, false))) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Wrong MS Power IE in CHAN ACT, ", ms_power.ms_power.power_level, " vs exp ", g_pars.exp_ms_power_level));
+		}
+	}
+
+}
+
+function rr_chan_desc_tsc(ChannelDescription2_V cd2)
+	return uint3_t
+{
+	var uint3_t tsc := oct2int(cd2.octet3);
+	tsc := tsc / 32; /* shl 5 */
+	return tsc;
+}
+
+altstep as_assignment(inout AssignmentState st, RSL_DCHAN_PT rsl_pt := RSL, RSLEM_PROC_PT rsl_proc_pt := RSL_PROC) runs on MSC_ConnHdlr {
+	var RSL_Message rsl;
+	[not st.rr_ass_cmpl_seen] rsl_pt.receive(tr_RSL_DATA_REQ(g_chan_nr)) -> value rsl {
+		var PDU_ML3_NW_MS l3 := dec_PDU_ML3_NW_MS(rsl.ies[2].body.l3_info.payload);
+		log("Rx L3 from net: ", l3);
+		if (ischosen(l3.msgs.rrm.assignmentCommand)) {
+			var RslChannelNr new_chan_nr;
+			var GsmArfcn arfcn;
+
+			if (not istemplatekind(g_pars.expect_tsc, "omit")) {
+				var uint3_t got_tsc := rr_chan_desc_tsc(l3.msgs.rrm.assignmentCommand.descrOf1stChAfterTime);
+				if (not match(got_tsc, g_pars.expect_tsc)) {
+					setverdict(fail, "RR Assignment: unexpected TSC in Channel Description: expected ",
+						   g_pars.expect_tsc, " got ", got_tsc);
+					mtc.stop;
+				}
+			}
+
+			f_ChDesc2RslChanNr(l3.msgs.rrm.assignmentCommand.descrOf1stChAfterTime,
+					   new_chan_nr, arfcn);
+			/* FIXME: Determine TRX NR by ARFCN, instead of hard-coded TRX0! */
+
+			/* register our component for this channel number at the RSL Emulation */
+			f_rslem_register(0, new_chan_nr, PT := rsl_proc_pt);
+			/* dispatch queued messages for this channel (if any) */
+			f_rslem_dchan_queue_dispatch(PT := rsl_proc_pt);
+
+			var PDU_ML3_MS_NW l3_tx := valueof(ts_RRM_AssignmentComplete('00'O));
+			/* send assignment complete over the new channel */
+			rsl_pt.send(ts_RSL_EST_IND(new_chan_nr, valueof(ts_RslLinkID_DCCH(0)),
+						 enc_PDU_ML3_MS_NW(l3_tx)));
+			/* by default, send via the new channel from now */
+			st.old_chan_nr := g_chan_nr;
+			g_chan_nr := new_chan_nr;
+			st.rr_ass_cmpl_seen := true;
+			/* obtain channel activation from RSL_Emulation for new channel */
+			var RSL_Message chan_act := f_rslem_get_last_act(rsl_proc_pt, 0, g_chan_nr);
+			/* check it (e.g. for correct ciphering parameters) */
+			f_check_chan_act(st, chan_act);
+			repeat;
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected L3 received", l3));
+		}
+		}
+	[st.rr_ass_cmpl_seen] rsl_pt.receive(tr_RSL_DEACT_SACCH(st.old_chan_nr)) {
+		st.old_lchan_deact_sacch_seen := true;
+		repeat;
+		}
+	[st.rr_ass_cmpl_seen] rsl_pt.receive(tr_RSL_REL_REQ(st.old_chan_nr, tr_RslLinkID_DCCH(0))) {
+		st.old_lchan_rll_rel_req_seen := true;
+		rsl_pt.send(ts_RSL_REL_CONF(st.old_chan_nr, valueof(ts_RslLinkID_DCCH(0))));
+		repeat;
+		}
+	[st.rr_ass_cmpl_seen] rsl_pt.receive(tr_RSL_RF_CHAN_REL(st.old_chan_nr)) {
+		rsl_pt.send(ts_RSL_RF_CHAN_REL_ACK(st.old_chan_nr));
+		/* unregister for old channel number in RSL emulation */
+		/* FIXME: Determine TRX NR by ARFCN, instead of hard-coded TRX0! */
+		f_rslem_unregister(0, st.old_chan_nr, PT := rsl_proc_pt);
+		st.assignment_done := true;
+		repeat;
+		}
+}
+
+altstep as_modify(inout AssignmentState st) runs on MSC_ConnHdlr {
+	/* no assignment, just mode modify */
+	var RSL_Message rsl;
+
+	[st.rtp_stream and not st.rr_modify_seen] RSL.receive(tr_RSL_DATA_REQ(g_chan_nr)) -> value rsl {
+		var PDU_ML3_NW_MS l3 := dec_PDU_ML3_NW_MS(rsl.ies[2].body.l3_info.payload);
+		log("Rx L3 from net: ", l3);
+		if (ischosen(l3.msgs.rrm.channelModeModify)) {
+			st.rr_channel_mode_modify_msg := l3;
+			f_rsl_reply(ts_RRM_ModeModifyAck(l3.msgs.rrm.channelModeModify.channelDescription,
+							 l3.msgs.rrm.channelModeModify.channelMode), rsl);
+			st.rr_modify_seen := true;
+		}
+		repeat;
+		}
+	[st.rtp_stream and st.rr_modify_seen] RSL.receive(tr_RSL_MsgTypeD(RSL_MT_MODE_MODIFY_REQ)) -> value rsl {
+		st.rsl_mode_modify_msg := rsl;
+		RSL.send(ts_RSL_MODE_MODIFY_ACK(g_chan_nr));
+		st.modify_done := true;
+		repeat;
+		}
+}
+
+/* Determine if given rsl_chan_nr is compatible with given BSSMAP ChannelType */
+function f_channel_compatible(BSSMAP_IE_ChannelType bssmap, RslChannelNr rsl_chan_nr)
+return boolean {
+	select (bssmap.speechOrDataIndicator) {
+		case ('0011'B) { /* Signalling */
+			/* all channels support signalling */
+			return true;
+			}
+		case else { /* Speech, Speech+CTM or CSD */
+			select (bssmap.channelRateAndType) {
+				case ('08'O) { /* TCH/F */
+					select (rsl_chan_nr) {
+						case (t_RslChanNr_Bm(?)) { return true; }
+					}
+				}
+				case ('09'O) { /* TCH/H */
+					select (rsl_chan_nr) {
+						case (t_RslChanNr_Lm(?, ?)) { return true; }
+					}
+				}
+				case else { /* full or half-rate */
+					select (rsl_chan_nr) {
+						case (t_RslChanNr_Bm(?)) { return true; }
+						case (t_RslChanNr_Lm(?, ?)) { return true; }
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
+
+/* Determine if the channel mode specified within rsl_chan_nr requires a
+ * MODE MODIFY in to match the channel mode specified by given BSSMAP
+ * ChannelType */
+function f_channel_needs_modify(TELNETasp_PT vty, BSSMAP_IE_ChannelType bssmap, RslChannelNr rsl_chan_nr)
+return boolean {
+
+	var boolean current_signalling := false;
+	var boolean desired_signalling := false;
+
+	select (rsl_chan_nr) {
+	       case (t_RslChanNr_SDCCH4(?, ?)) { current_signalling := true; }
+	       case (t_RslChanNr_SDCCH8(?, ?)) { current_signalling := true; }
+	       case (t_RslChanNr_Bm(?)) {
+			/* TCH/F, always subslot 0 */
+			var charstring res := f_vty_transceive_ret(vty, "show lchan 0 0 " & int2str(rsl_chan_nr.tn) & " 0");
+			if (f_strstr(res, "Channel Mode / Codec: SIGNALLING", 0) >= 0) {
+				current_signalling := true;
+			}
+	       }
+	       case (t_RslChanNr_Lm(?, ?)) {
+			/* TCH/H */
+			var charstring res := f_vty_transceive_ret(vty, "show lchan 0 0 " & int2str(rsl_chan_nr.tn)
+								   & " " & int2str(rsl_chan_nr.u.lm.sub_chan));
+			if (f_strstr(res, "Channel Mode / Codec: SIGNALLING", 0) >= 0) {
+				current_signalling := true;
+			}
+	       }
+	}
+
+	if (bssmap.speechOrDataIndicator == '0011'B) {
+		desired_signalling := true;
+	}
+
+	if (current_signalling == desired_signalling) {
+		/* The desired channel mode is equal to the one we currently
+		 * have, there is no mode modification needed or expected */
+	       return false;
+	} else {
+		/* The desired channel mode and the current channel mode do
+		 * not match. A mode modification is required */
+	       return true;
+	}
+}
+
+/* patch an BSSMAP ASS REQ with LCLS related IEs, depending on g_params */
+function f_ass_patch_lcls(inout template (omit) PDU_BSSAP ass_tpl,
+			  inout template PDU_BSSAP ass_cpl) runs on MSC_ConnHdlr {
+	if (istemplatekind(ass_tpl, "omit")) {
+		return;
+	}
+	if (ispresent(g_pars.lcls.gcr)) {
+		ass_tpl.pdu.bssmap.assignmentRequest.globalCallReference := ts_BSSMAP_IE_GCR(g_pars.lcls.gcr);
+	}
+	if (ispresent(g_pars.lcls.cfg)) {
+		ass_tpl.pdu.bssmap.assignmentRequest.lCLS_Configuration := ts_BSSMAP_IE_LclsCfg(g_pars.lcls.cfg);
+	}
+	if (ispresent(g_pars.lcls.csc)) {
+		ass_tpl.pdu.bssmap.assignmentRequest.lCLS_ConnectionStatusControl := ts_BSSMAP_IE_LclsCsc(g_pars.lcls.csc);
+	}
+	if (ischosen(ass_cpl.pdu.bssmap.assignmentComplete)) {
+		if (ispresent(g_pars.lcls.exp_sts)) {
+			ass_cpl.pdu.bssmap.assignmentComplete.lCLS_BSS_Status := tr_BSSMAP_IE_LclsSts(g_pars.lcls.exp_sts);
+		} else {
+			ass_cpl.pdu.bssmap.assignmentComplete.lCLS_BSS_Status := omit;
+		}
+	}
+}
+
+/* Send a MGCP request through MGCP-over-IPA from MSC side and receive a (matching!) response */
+function mgcp_transceive_mgw(template MgcpCommand cmd, template MgcpResponse resp := ?) runs on MSC_ConnHdlr {
+	template MgcpResponse resp_any := ?
+	var MgcpResponse resp_val;
+	resp.line.trans_id := cmd.line.trans_id;
+	timer T := 5.0;
+
+	BSSAP.send(cmd);
+	T.start;
+	alt {
+		[] as_Media_mgw();
+		[] BSSAP.receive(resp) -> value resp_val { }
+		[] BSSAP.receive(resp_any) {
+			setverdict(fail, "Response didn't match template");
+			mtc.stop;
+			}
+		[] BSSAP.receive { repeat; }
+		[] T.timeout {
+			setverdict(fail, "Timeout waiting for response to ", cmd);
+			mtc.stop;
+			}
+	}
+	T.stop;
+}
+
+/* Helper function to check if the activity on the MGCP matches what we
+ * expected */
+function f_check_mgcp_expectations() runs on MSC_ConnHdlr {
+	for (var integer i:= 0; i < sizeof(g_media.mgcp_conn); i := i+1) {
+		log(testcasename(), ": Check MGCP test expectations for g_media.mgcp_conn[", i , "]:",
+		    " crcx_seen=", g_media.mgcp_conn[i].crcx_seen, ", crcx_seen_exp=", g_media.mgcp_conn[i].crcx_seen_exp,
+		    ", mdcx_seen=", g_media.mgcp_conn[i].mdcx_seen, ", mdcx_seen_exp=", g_media.mgcp_conn[i].mdcx_seen_exp);
+
+		if(g_media.mgcp_conn[i].crcx_seen != g_media.mgcp_conn[i].crcx_seen_exp) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "unexpected number of MGW-CRCX transactions on g_media.mgcp_conn[" & int2str(i) & "]");
+		}
+		if(g_media.mgcp_conn[i].mdcx_seen != g_media.mgcp_conn[i].mdcx_seen_exp) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "unexpected number of MGW-MDCX transactions on g_media.mgcp_conn[" & int2str(i) & "]");
+		}
+	}
+}
+
+/* establish a channel fully, expecting an assignment matching 'exp' */
+function f_establish_fully(template (omit) PDU_BSSAP ass_tpl, template PDU_BSSAP exp_ass_cpl)
+runs on MSC_ConnHdlr {
+
+	var BSSMAP_FIELD_CodecType codecType;
+	timer T := 10.0;
+
+	if (not istemplatekind(ass_tpl, "omit") and isvalue(ass_tpl.pdu.bssmap.assignmentRequest.codecList)) {
+		codecType := valueof(ass_tpl.pdu.bssmap.assignmentRequest.codecList.codecElements[0].codecType);
+	} else {
+		/* Make sure a meaningful default is assigned in case the
+		 * codecList is not populated */
+		codecType := FR_AMR;
+	}
+
+	f_MscConnHdlr_init(g_pars.media_nr, host_bts, host_mgw_mgcp, codecType);
+
+	/* patch in the LCLS related items, as needed */
+	f_ass_patch_lcls(ass_tpl, exp_ass_cpl);
+
+	f_create_chan_and_exp();
+
+	/* start ciphering, if requested */
+	if (ispresent(g_pars.encr)) {
+		f_cipher_mode(g_pars.encr);
+	}
+
+	/* bail out early if no assignment requested */
+	if (istemplatekind(ass_tpl, "omit")) {
+		return;
+	}
+
+	var PDU_BSSAP ass_cmd := valueof(ass_tpl);
+	var PDU_BSSAP bssap;
+	var boolean exp_compl := ischosen(exp_ass_cpl.pdu.bssmap.assignmentComplete);
+	var boolean exp_fail := ischosen(exp_ass_cpl.pdu.bssmap.assignmentFailure);
+	var boolean exp_modify;
+
+	var ExpectCriteria mgcpcrit := {
+		connid := omit,
+		endpoint := omit,
+		transid := omit
+	};
+	var AssignmentState st := valueof(ts_AssignmentStateInit);
+	/* if the channel type is SIGNAL, we're not handling an rtp stream */
+	if (ass_cmd.pdu.bssmap.assignmentRequest.channelType.speechOrDataIndicator != '0011'B) {
+		st.rtp_stream := true;
+		exp_modify := true;
+	}
+
+	/* determine if the current channel can support the given service or not */
+	if (not f_channel_compatible(ass_cmd.pdu.bssmap.assignmentRequest.channelType, g_chan_nr)) {
+		st.is_assignment := true;
+
+		/* We decided to assign a new channel, so we do not expect
+		 * any mode modify messages on RSL */
+		exp_modify := false;
+	} else {
+		/* We will continue working with the currently assigned
+		 * channel, we must now check if the mode of the current
+		 * channel is compatible. If not we expect the BSC to modify
+		 * the mode */
+		st.is_assignment := false;
+		exp_modify := f_channel_needs_modify(BSCVTY, ass_cmd.pdu.bssmap.assignmentRequest.channelType, g_chan_nr);
+	}
+
+	/* Some test situations will involve MGCP transactions on a media
+	 * gateway. Depending on the situation, we set up how many of each MGCP
+	 * message type are expected to be exchanged. */
+	if (isbound(exp_ass_cpl.pdu.bssmap.assignmentFailure)) {
+		/* For tests that expect the assignment to fail, assume that
+		 * there will be no MGW communication as well. */
+		g_media.mgcp_conn[0].crcx_seen_exp := 0;
+		g_media.mgcp_conn[0].mdcx_seen_exp := 0;
+		g_media.mgcp_conn[1].crcx_seen_exp := 0;
+		g_media.mgcp_conn[1].mdcx_seen_exp := 0;
+	} else if (st.rtp_stream) {
+		/* For RTP streams we expect the following MGCP activity */
+		g_media.mgcp_conn[0].crcx_seen_exp := 1;
+		g_media.mgcp_conn[0].mdcx_seen_exp := 1;
+		g_media.mgcp_conn[1].crcx_seen_exp := 1;
+		g_media.mgcp_conn[1].mdcx_seen_exp := 0;
+	}
+
+	/* On receipt of the BSSAP Assignment Command, the IUT (osmo-bsc) will allocate
+	 * a channel and send us RR Assignment Command together with ip.access CRCX.
+	 * There is a risk that the RSL Emulation component would dequeue and process
+	 * ip.access CRCX faster than we process the Assignment Command and register
+	 * the corresponding handler for the indicated RSL channel number. This would
+	 * result in a failure, because at that moment there will be no handler for
+	 * ip.access CRCX. Let's guard against this and enable additional queueing. */
+	f_rslem_dchan_queue_enable();
+
+	f_create_mgcp_expect(mgcpcrit);
+	BSSAP.send(ass_cmd);
+
+	T.start;
+	alt {
+	/* assignment related bits */
+	[st.is_assignment] as_assignment(st);
+
+	/* modify related bits */
+	[not st.is_assignment and exp_modify] as_modify(st);
+
+	/* RTP stream related bits (IPA CRCX/MDCX + MGCP) */
+	[st.rtp_stream] as_Media();
+
+	/* if we receive exactly what we expected, always return + pass */
+	[st.is_assignment and st.assignment_done or (not st.is_assignment and (st.modify_done or not exp_modify))] BSSAP.receive(exp_ass_cpl) -> value bssap {
+		setverdict(pass);
+		}
+	[exp_fail] BSSAP.receive(exp_ass_cpl) -> value bssap {
+		setverdict(pass);
+		}
+	[(st.is_assignment and st.assignment_done or
+	 (not st.is_assignment and (st.modify_done or not exp_modify))) and
+	 exp_compl] BSSAP.receive(tr_BSSMAP_AssignmentComplete) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received non-matching ASSIGNMENT COMPLETE");
+		}
+	[exp_compl] BSSAP.receive(tr_BSSMAP_AssignmentFail) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received unexpected ASSIGNMENT FAIL");
+		}
+	[not exp_compl] BSSAP.receive(tr_BSSMAP_AssignmentComplete) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received unexpected ASSIGNMENT COMPLETE");
+		}
+	[not exp_compl] BSSAP.receive(tr_BSSMAP_AssignmentFail) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received non-matching ASSIGNMENT FAIL");
+		}
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Timeout waiting for ASSIGNMENT COMPLETE");
+		}
+	}
+	log("g_media ", g_media);
+	if (not isbound(bssap)) {
+		mtc.stop;
+	}
+
+	if (exp_modify) {
+		/* Verify that the RR Channel Mode Modify and RSL MODE MODIFY message asked for the expected channel
+		 * mode. */
+		/* TODO: more precisely expect the different types of speech? */
+		var OCT1 rr_channel_mode := st.rr_channel_mode_modify_msg.msgs.rrm.channelModeModify.channelMode.mode;
+
+		if (st.rtp_stream and rr_channel_mode == '00'O) {
+			setverdict(fail, "f_establish_fully(): Expected RR Channel Mode Modify",
+				   " to a speech mode, but got channelMode == ", rr_channel_mode);
+			mtc.stop;
+		} else if (not st.rtp_stream and rr_channel_mode != '00'O) {
+			setverdict(fail, "f_establish_fully(): Expected RR Channel Mode Modify",
+				   " to signalling mode, but got channelMode == ", rr_channel_mode);
+			mtc.stop;
+		}
+
+		var RSL_IE_Body chan_mode_ie;
+		if (not f_rsl_find_ie(st.rsl_mode_modify_msg, RSL_IE_CHAN_MODE, chan_mode_ie)) {
+			setverdict(fail, "RSL MODE MODIFY message lacks a Channel Mode IE");
+			mtc.stop;
+		}
+		var RSL_SpeechDataInd rsl_spd_ind := chan_mode_ie.chan_mode.spd_ind;
+		if (st.rtp_stream and rsl_spd_ind != RSL_SPDI_SPEECH) {
+			setverdict(fail, "f_establish_fully(): Expected RSL MODE MODIFY",
+				   " to a speech mode, but got spd_ind == ", rsl_spd_ind);
+			mtc.stop;
+		} else if (not st.rtp_stream and rsl_spd_ind != RSL_SPDI_SIGN) {
+			setverdict(fail, "f_establish_fully(): Expected RSL MODE MODIFY",
+				   " to signalling mode, but got spd_ind == ", rsl_spd_ind);
+			mtc.stop;
+		}
+
+		if (not istemplatekind(g_pars.expect_tsc, "omit")) {
+			var uint3_t got_tsc := rr_chan_desc_tsc(st.rr_channel_mode_modify_msg.msgs.rrm.channelModeModify.channelDescription);
+			if (not match(got_tsc, g_pars.expect_tsc)) {
+				setverdict(fail, "RR Channel Mode Modify: unexpected TSC in Channel Description: expected ",
+					   g_pars.expect_tsc, " got ", got_tsc);
+				mtc.stop;
+			}
+		}
+
+	} else {
+		/* not exp_modify, so this did a Channel Activate */
+
+		/* Check the TSC */
+		if (not istemplatekind(g_pars.expect_tsc, "omit")) {
+			var RSL_Message chan_act := f_rslem_get_last_act(RSL_PROC, 0, g_chan_nr);
+			var RSL_IE_Body ie;
+			if (f_rsl_find_ie(chan_act, RSL_IE_CHAN_IDENT, ie)) {
+				var uint3_t got_tsc := ie.chan_ident.ch_desc.v.tsc;
+				if (not match(got_tsc, g_pars.expect_tsc)) {
+					setverdict(fail, "RSL CHANnel ACTIVation: unexpected TSC in Channel Description: expected ",
+						   g_pars.expect_tsc, " got ", got_tsc);
+					mtc.stop;
+				}
+			}
+		}
+	}
+
+	/* When the BSC detects that LCLS is possible it will cross the
+	 * connetions that point to the PBX side of the MGW. In our case this
+	 * is mgcp_conn[1]. The BSC performs this operation already before the
+	 * assignment complete is generated. This means we expect another MDCX
+	 * at mgcp_conn[1] when LCLS is expected. */
+	if (g_pars.lcls.adjust_cx_exp and ispresent(exp_ass_cpl.pdu.bssmap.assignmentComplete.lCLS_BSS_Status.lCLS_BSS_StatusValue)) {
+		if (valueof(exp_ass_cpl.pdu.bssmap.assignmentComplete.lCLS_BSS_Status.lCLS_BSS_StatusValue) == LCLS_STS_locally_switched) {
+			g_media.mgcp_conn[1].mdcx_seen_exp := g_media.mgcp_conn[1].mdcx_seen_exp + 1;
+
+		}
+	}
+
+	if (not exp_fail and st.rtp_stream and not g_pars.aoip) {
+		/* With SCCPLite, connect to BSC-located MGW using a CRCX + SDP.
+		   It is sent in MGCP over IPA in the BSC<->MSC (BSC-NAT)
+		   connection. BSC will forward it to its MGW. */
+		var template MgcpCommand cmd;
+		var template MgcpResponse resp;
+		var integer cic := f_bssmap_ie_cic_2_int(ass_cmd.pdu.bssmap.assignmentRequest.circuitIdentityCode);
+		var MgcpEndpoint ep := int2str(cic) & "@mgw"; /* matches value configured in BSC_Tests.ttcn pass in AssignReq */
+		var MgcpCallId call_id := '51234'H;
+		var SDP_attribute_list attributes := { valueof(ts_SDP_ptime(20)) };
+		if (g_pars.use_osmux_cn) {
+			cmd := ts_CRCX_osmux(get_next_trans_id(), ep, "sendrecv", call_id, cic);
+			resp := tr_CRCX_ACK_osmux;
+		} else {
+			cmd := ts_CRCX(get_next_trans_id(), ep, "sendrecv", call_id);
+			resp := tr_CRCX_ACK;
+		}
+		cmd.sdp := ts_SDP(host_msc, host_mgw_rtp_v4, "23", "42",
+			     14000, { int2str(g_media.mgcp_conn[1].rtp_pt) },
+			     { valueof(ts_SDP_ptime(20)) });
+		mgcp_transceive_mgw(cmd, resp);
+	}
+
+	f_check_mgcp_expectations();
+
+	if (st.is_assignment and st.assignment_done) {
+	    if (not st.old_lchan_deact_sacch_seen) {
+		setverdict(fail, "f_establish_fully(): Assignment completed, but the old lchan was not",
+			   " released properly: expected a Deact SACCH on the old lchan, but saw none.");
+	    }
+	    if (st.old_lchan_rll_rel_req_seen) {
+		setverdict(fail, "f_establish_fully(): Assignment completed, but the old lchan was not",
+			   " released properly: saw an RLL Release on the old lchan, but expecting none.");
+	    }
+	}
+
+	var charstring lchan_info := f_vty_transceive_ret(BSCVTY, "show lchan 0 0 " & int2str(g_chan_nr.tn) & " 0");
+	if (f_strstr(lchan_info, "State: ESTABLISHED") < 0) {
+		log("after f_establish_fully(), 'show lchan' replied: ", lchan_info);
+		setverdict(fail, "lchan is not in state ESTABLISHED");
+		mtc.stop;
+	}
+}
+
+type record HandoverState {
+	/* Assignment related bits */
+	boolean rr_ho_cmpl_seen,
+	integer mdcx_seen_before_ho,
+	boolean handover_done,
+	RslChannelNr old_chan_nr,
+	uint3_t expect_target_tsc optional
+};
+
+altstep as_handover(inout HandoverState st) runs on MSC_ConnHdlr {
+	var RSL_Message rsl;
+	[not st.rr_ho_cmpl_seen] RSL.receive(tr_RSL_DATA_REQ(g_chan_nr)) -> value rsl {
+		var PDU_ML3_NW_MS l3 := dec_PDU_ML3_NW_MS(rsl.ies[2].body.l3_info.payload);
+		log("Rx L3 from net: ", l3);
+		if (ischosen(l3.msgs.rrm.handoverCommand)) {
+			var RslChannelNr new_chan_nr;
+			var GsmArfcn arfcn;
+			f_ChDesc2RslChanNr(l3.msgs.rrm.handoverCommand.channelDescription2,
+					   new_chan_nr, arfcn);
+			/* FIXME: Determine TRX NR by ARFCN, instead of hard-coded TRX0! */
+
+			/* Verify correct TSC in handoverCommand */
+			if (ispresent(st.expect_target_tsc)) {
+				var uint3_t got_tsc := rr_chan_desc_tsc(l3.msgs.rrm.handoverCommand.channelDescription2);
+				if (not match(got_tsc, st.expect_target_tsc)) {
+					setverdict(fail, "RR Handover Command: unexpected TSC in Channel Description: expected ",
+						   st.expect_target_tsc, " got ", got_tsc);
+					mtc.stop;
+				} else {
+					log("handoverCommand: verified TSC = ", got_tsc, " (matches ",
+					    st.expect_target_tsc, ")");
+				}
+			}
+
+			/* register our component for this channel number at the RSL Emulation */
+			f_rslem_register(0, new_chan_nr, RSL1_PROC);
+
+			/* resume processing of RSL DChan messages, which was temporarily suspended
+			 * before performing a hand-over */
+			f_rslem_resume(RSL1_PROC);
+
+			/* send handover detect */
+			RSL1.send(ts_RSL_HANDO_DET(new_chan_nr));
+			f_sleep(0.3);
+
+			/* send handover complete over the new channel */
+			var PDU_ML3_MS_NW l3_tx := valueof(ts_RRM_HandoverComplete('00'O));
+			RSL1.send(ts_RSL_EST_IND(new_chan_nr, valueof(ts_RslLinkID_DCCH(0)),
+						  enc_PDU_ML3_MS_NW(l3_tx)));
+			/* by default, send via the new channel from now */
+			st.old_chan_nr := g_chan_nr;
+			g_chan_nr := new_chan_nr;
+			st.rr_ho_cmpl_seen := true;
+
+			/* Memorize how many MDCX we have seen before. We need this number to detect
+			 * that we have received the handover related MDCX */
+			st.mdcx_seen_before_ho := g_media.mgcp_conn[0].mdcx_seen;
+			repeat;
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected L3 received", l3));
+		}
+		}
+	[st.rr_ho_cmpl_seen] as_Media_ipacc();
+	[st.rr_ho_cmpl_seen] as_Media_mgw();
+	[st.rr_ho_cmpl_seen] RSL.receive(tr_RSL_DEACT_SACCH(st.old_chan_nr)) {
+		repeat;
+		}
+	[st.rr_ho_cmpl_seen] RSL.receive(tr_RSL_REL_REQ(st.old_chan_nr, tr_RslLinkID_DCCH(0))) {
+		RSL.send(ts_RSL_REL_CONF(st.old_chan_nr, valueof(ts_RslLinkID_DCCH(0))));
+		repeat;
+		}
+	[st.rr_ho_cmpl_seen] RSL.receive(tr_RSL_RF_CHAN_REL(st.old_chan_nr)) {
+		RSL.send(ts_RSL_RF_CHAN_REL_ACK(st.old_chan_nr));
+		/* unregister for old channel number in RSL emulation */
+		/* FIXME: Determine TRX NR by ARFCN, instead of hard-coded TRX0! */
+		f_rslem_unregister(0, st.old_chan_nr);
+
+		/* The channel release must not necessarly be synchronized to the RSL handover
+		 * procedure since those events may happen independently nearly at the same
+		 * time. When we receive the RSL_RF_CHAN_REL command the media negotiation on
+		 * IPACC or MGCP level may be still in progress. In order to make sure that
+		 * we do only stop when we have seen an MDCX on MGCP level and another a CRCX
+		 * as well as an MDCX on IPACC level.
+		 * If ipa_crcx_seen is false, this is not a voice channel and we need not check MGCP at all.. */
+		if (g_media.bts.ipa_crcx_seen
+		    and (g_media.mgcp_conn[0].mdcx_seen <= st.mdcx_seen_before_ho or
+		         g_media.bts1.ipa_mdcx_seen == false or g_media.bts1.ipa_crcx_seen == false)) {
+			repeat;
+		} else {
+			st.handover_done := true;
+		}
+		}
+}
+
+
+
+}

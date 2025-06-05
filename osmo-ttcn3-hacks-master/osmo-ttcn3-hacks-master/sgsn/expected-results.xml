@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<testsuite name='Titan' tests='74' failures='4' errors='0' skipped='0' inconc='0' time='MASKED'>
+  <testcase classname='SGSN_Tests' name='TC_attach' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_mnc3' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_umts_aka_umts_res' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_umts_aka_gsm_sres' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_timeout_after_pdp_act' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_auth_id_timeout' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_auth_sai_timeout' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_auth_sai_reject' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_gsup_lu_timeout' time='MASKED'>
+    <failure type='fail-verdict'>
+      SGSN_Tests.ttcn:MASKED SGSN_Tests control part
+      SGSN_Tests.ttcn:MASKED TC_attach_gsup_lu_timeout testcase
+    </failure>
+  </testcase>
+  <testcase classname='SGSN_Tests' name='TC_attach_gsup_lu_reject' time='MASKED'>
+    <failure type='fail-verdict'>
+      SGSN_Tests.ttcn:MASKED SGSN_Tests control part
+      SGSN_Tests.ttcn:MASKED TC_attach_gsup_lu_reject testcase
+    </failure>
+  </testcase>
+  <testcase classname='SGSN_Tests' name='TC_attach_combined' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_accept_all' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_closed' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_no_imei_response' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_no_imsi_response' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_closed_add_vty' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_check_subscriber_list' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_detach_check_subscriber_list' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_check_complete_resend' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_hlr_location_cancel_request_update' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_hlr_location_cancel_request_withdraw' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_hlr_location_cancel_request_unknown_subscriber_withdraw' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_hlr_location_cancel_request_unknown_subscriber_update' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_rau_unknown' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_rau' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_rau_a_a' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_rau_a_b' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_rau_a_b_wrong_old_ra' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_resync' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_a54_a54' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_a54_a53' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_a53_a54' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_a50_a54' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_usim_a54_a50' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_detach_unknown_nopoweroff' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_detach_unknown_poweroff' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_detach_nopoweroff' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_detach_poweroff' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_pdp_act_unattached' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_user' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_ggsn_reject' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_user_deact_mo' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_user_deact_mt' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_deact_dup' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_second_attempt' time='MASKED'>
+    <failure type='fail-verdict'>Tguard timeout
+      SGSN_Tests.ttcn:MASKED SGSN_Tests control part
+      SGSN_Tests.ttcn:MASKED TC_attach_second_attempt testcase
+    </failure>
+  </testcase>
+  <testcase classname='SGSN_Tests' name='TC_attach_echo_timeout' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_restart_ctr_echo' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_restart_ctr_create' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_deact_mt_t3395_expire' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_deact_gtp_retrans' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_deact_gtp_retrans_resp' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_user_error_ind_ggsn' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_pdp_act_gmm_detach' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_gmm_attach_req_while_gmm_attach' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_xid_empty_l3' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_xid_n201u' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_llc_null' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_llc_sabm_dm_llgmm' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_llc_sabm_dm_ll5' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_suspend_nopaging' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_suspend_resume' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_suspend_rau' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_paging_ps' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_bssgp_rim_single_report' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_rim_eutran_to_geran' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_cell_change_different_rai_ci_attach' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_cell_change_different_rai_ci_data' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_cell_change_different_ci_attach' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_cell_change_different_ci_data' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_sgsn_context_req_in' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_sgsn_context_req_out' time='MASKED'/>
+  <testcase classname='SGSN_Tests' name='TC_attach_req_id_req_ra_update' time='MASKED'/>
+  <!-- SGSN_Tests_Iu testcases start here -->
+  <testcase classname='SGSN_Tests_Iu' name='TC_iu_attach' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_iu_attach_encr' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_iu_attach_geran_rau' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_geran_attach_iu_rau' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_user' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_user_addr_itu_x213_ipv4len7' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_user_addr_itu_x213_ipv4len20' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_user_addr_itu_x213_ipv4toolarge' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_pmm_idle' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_attach_pdp_act_pmm_idle_lost_pdp_status' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_pmm_idle_rx_mt_data' time='MASKED'/>
+  <testcase classname='SGSN_Tests_Iu' name='TC_update_ctx_err_ind_from_ggsn' time='MASKED'/>
+  <!-- SGSN_Tests_NS (handle_sns == true) testcases start here -->
+  <testcase classname='SGSN_Tests_NS' name='TC_SNS_size' time='MASKED'/>
+  <testcase classname='SGSN_Tests_NS' name='TC_SNS_size_too_big' time='MASKED'/>
+  <testcase classname='SGSN_Tests_NS' name='TC_SNS_config_bss' time='MASKED'/>
+  <testcase classname='SGSN_Tests_NS' name='TC_SNS_config_sgsn' time='MASKED'/>
+  <testcase classname='SGSN_Tests_NS' name='TC_SNS_and_alive' time='MASKED'/>
+  <!-- SGSN_Tests_NS (handle_sns == false) testcases start here -->
+  <testcase classname='SGSN_Tests_NS' name='TC_NS_connect_alive' time='MASKED'/>
+  <testcase classname='SGSN_Tests_NS' name='TC_NS_connect_reset' time='MASKED'/>
+</testsuite>

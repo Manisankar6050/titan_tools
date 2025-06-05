@@ -1,0 +1,231 @@
+module IuUP_Emulation {
+
+/* IuUP emulation, uses the encoding/decoding from IuUP_Types.
+ *
+ * rather than running in a separate component with related primitives,
+ * we just implement a set of functions and data types which can be used
+ * by other code (such as an RTP endpoint) to implement IuUP support.
+ *
+ * (C) 2017 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+import from IuUP_Types all;
+
+
+type record IuUP_RabFlowCombination {
+	IuUP_RFCI rfci,
+	/* number of bits per sub-flow */
+	RecOfU8	sub_flow_bits,
+	/* IPTI value in number of ITIs for the corresponding RFCI */
+	uint8_t ipti
+};
+type record of IuUP_RabFlowCombination IuUP_RabFlowCombinationList;
+
+template (value) IuUP_RabFlowCombination t_IuUP_RFC(IuUP_RFCI rfci, RecOfU8 subflow_bits, uint8_t ipti) := {
+	rfci := rfci,
+	sub_flow_bits := subflow_bits,
+	ipti := ipti
+}
+
+template (value) IuUP_RabFlowCombination t_IuUP_RFC_AMR_12_2(IuUP_RFCI rfci) := t_IuUP_RFC(rfci, {81, 103, 60}, 1);
+template (value) IuUP_RabFlowCombination t_IuUP_RFC_AMR_SID(IuUP_RFCI rfci) := t_IuUP_RFC(rfci, {39, 0, 0}, 7);
+template (value) IuUP_RabFlowCombination t_IuUP_RFC_AMR_NO_DATA(IuUP_RFCI rfci) := t_IuUP_RFC(rfci, {0, 0, 0}, 1);
+
+
+const IuUP_RabFlowCombinationList c_IuUP_Config_RabFlowCombination_def := {
+	{
+		rfci := 0,
+		sub_flow_bits := {81, 103, 60},
+		ipti := 1
+	}, {
+		rfci := 1,
+		sub_flow_bits := {39, 0, 0},
+		ipti := 7
+	}, {
+		rfci := 2,
+		sub_flow_bits := {0, 0, 0},
+		ipti := 1
+	}
+};
+type record IuUP_Config {
+	/* actively send INIT (true) or only passively respond (false) */
+	boolean active_init,
+	boolean data_pdu_type_0,
+	/* RAB Flow Combinations */
+	IuUP_RabFlowCombinationList rab_flow_combs
+};
+
+template (value) IuUP_Config t_IuUP_Config(boolean active_init := true,
+					 boolean data_pdu_type_0 := true,
+					 template (value) IuUP_RabFlowCombinationList rab_flow_combs :=
+						c_IuUP_Config_RabFlowCombination_def) := {
+	active_init := active_init,
+	data_pdu_type_0 := true,
+	rab_flow_combs := rab_flow_combs
+}
+
+const IuUP_Config c_IuUP_Config_def := {
+	active_init := true,
+	data_pdu_type_0 := true,
+	rab_flow_combs := c_IuUP_Config_RabFlowCombination_def
+}
+
+type enumerated IuUP_Em_State {
+	ST_INIT,
+	ST_DATA_TRANSFER_READY
+};
+
+type record IuUP_Entity {
+	IuUP_Config cfg,
+	IuUP_Em_State state,
+	IuUP_FrameNr tx_next_frame_nr,
+	IuUP_FrameNr rx_last_frame_nr optional,
+	IuUP_PDU pending_tx_pdu optional
+};
+
+template (value) IuUP_Entity t_IuUP_Entity(template (value) IuUP_Config cfg) := {
+	cfg := cfg,
+	state := ST_INIT,
+	tx_next_frame_nr := 0,
+	rx_last_frame_nr := omit,
+	pending_tx_pdu := omit
+}
+
+
+function f_IuUP_Em_rx_decaps(inout IuUP_Entity st, octetstring inp) return octetstring {
+	var IuUP_PDU pdu := dec_IuUP_PDU(inp);
+	if (ischosen(pdu.type_0)) {
+		if (st.cfg.data_pdu_type_0) {
+			/* FIXME: check header / CRC */
+			st.rx_last_frame_nr := pdu.type_0.frame_nr;
+			return pdu.type_0.payload;
+		} else {
+			setverdict(fail, "PDU Type 0 received but 1 configured");
+			mtc.stop;
+		}
+	} else if (ischosen(pdu.type_1)) {
+		if (st.cfg.data_pdu_type_0 == false) {
+			/* FIXME: check header / CRC */
+			st.rx_last_frame_nr := pdu.type_1.frame_nr;
+			return pdu.type_1.payload;
+		} else {
+			setverdict(fail, "PDU Type 1 received but 0 configured");
+			mtc.stop;
+		}
+	} else if (ischosen(pdu.type_14)) {
+		if (match(pdu, tr_IuUP_INIT)) {
+			if (st.cfg.active_init == true) {
+				setverdict(fail, "INIT received in ACTIVE role");
+				mtc.stop;
+			} else {
+				/* store an INIT_ACK to be transmitted later */
+				st.pending_tx_pdu := valueof(ts_IuUP_INIT_ACK(pdu.type_14.frame_nr,
+									pdu.type_14.u.proc.hdr.iuup_version));
+			}
+		} else if (match(pdu, tr_IuUP_INIT_ACK)) {
+			if (st.cfg.active_init == true) {
+				log("IuUP INIT_ACK Received");
+				st.pending_tx_pdu := omit; /* Drop pending Init retrans */
+				st.state := ST_DATA_TRANSFER_READY;
+			} else {
+				setverdict(fail, "INIT_ACK received in PASSIVE role");
+				mtc.stop;
+			}
+		}
+		return ''O;
+	} else {
+		setverdict(fail, "Impossible IuUP PDU decoded from ", inp);
+		mtc.stop;
+	}
+	self.stop;
+}
+
+private function f_ts_IuUP_INIT(inout IuUP_Entity st) return IuUP_PDU
+{
+	var IuUP_PDU pdu;
+	var uint4_t data_pdu_type;
+	var template (omit) IuUP_InitRfci rfci := omit;
+	var IuUP_IPTI_List IPTIs := {};
+	var uint4_t num_rfci := lengthof(st.cfg.rab_flow_combs);
+
+	if (st.cfg.data_pdu_type_0 == true) {
+		data_pdu_type := 0;
+	} else {
+		data_pdu_type := 1;
+	}
+
+	/* Build RFCI list: */
+	for (var integer remain := num_rfci; remain > 0; remain := remain - 1) {
+		var IuUP_RabFlowCombination comb := st.cfg.rab_flow_combs[remain - 1];
+		var boolean lri := false;
+		if (remain == num_rfci) {
+			lri := true;
+		}
+		rfci := ts_IuUP_InitRfci(lri, false, comb.rfci, comb.sub_flow_bits, omit, rfci)
+	}
+
+	/* Build IPTI list: */
+	for (var integer i := 0; i < num_rfci; i := i + 1) {
+		IPTIs := IPTIs & { st.cfg.rab_flow_combs[i].ipti };
+	}
+
+	template (value) IuUP_PDU14_ProcSending_INIT tpl := ts_IuUP_PDU14_ProcSending_INIT(
+		ti := true,
+		subflows_per_rfci := num_rfci,
+		chain_ind := false,
+		rfci := rfci,
+		IPTIs := IPTIs,
+		versions_supported := '0000000000000001'B,
+		data_pdu_type := data_pdu_type
+		);
+	pdu := valueof(ts_IuUP_INIT(tpl));
+	return pdu;
+}
+
+function f_IuUP_Em_tx_encap(inout IuUP_Entity st, in octetstring payload) return octetstring {
+	var IuUP_PDU pdu;
+	select (st.state) {
+		case (ST_INIT) {
+			if (st.cfg.active_init) {
+				if (not isvalue(st.pending_tx_pdu)) {
+					/* send INIT */
+					pdu := f_ts_IuUP_INIT(st);
+					st.pending_tx_pdu := pdu;
+				} /* else: wait for INIT-ACK return ''O at the end */
+
+			} else {
+				/* wait for INIT */
+				if (isvalue(st.pending_tx_pdu)) {
+					/* we're waiting to transmit the INIT_ACK in response to an
+					 * init (passive) */
+					pdu := st.pending_tx_pdu;
+					st.pending_tx_pdu := omit;
+					st.state := ST_DATA_TRANSFER_READY;
+				}
+			}
+		}
+		case (ST_DATA_TRANSFER_READY) {
+			if (st.cfg.data_pdu_type_0) {
+				pdu := valueof(ts_IuUP_Type0(st.tx_next_frame_nr, 0, payload));
+			} else {
+				pdu := valueof(ts_IuUP_Type1(st.tx_next_frame_nr, 0, payload));
+			}
+			st.tx_next_frame_nr := (st.tx_next_frame_nr + 1) mod 16;
+		}
+	}
+	if (isvalue(pdu)) {
+		return f_enc_IuUP_PDU(pdu);
+	} else {
+		return ''O;
+	}
+}
+
+
+}

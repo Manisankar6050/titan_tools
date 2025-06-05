@@ -1,0 +1,2485 @@
+module GGSN_Tests {
+
+/* GGSN test suite in TTCN-3
+ * (C) 2017-2019 Harald Welte <laforge@gnumonks.org>
+ * (C) 2018-2019 sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+	import from TCCEncoding_Functions all;
+
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from Misc_Helpers all;
+	import from IPL4asp_PortType all;
+	import from IPL4asp_Types all;
+	import from GTPv1C_CodecPort all;
+	import from GTPv1U_CodecPort all;
+	import from GTPv1C_CodecPort_CtrlFunct all;
+	import from GTPv1U_CodecPort_CtrlFunct all;
+	import from GTPC_Types all;
+	import from GTPU_Types all;
+	import from GTPv1C_Templates all;
+	import from GTPv1U_Templates all;
+	import from PCO_Types all;
+	import from IPCP_Types all;
+	import from IPCP_Templates all;
+	import from PAP_Types all;
+	import from IP_Types all;
+	import from ICMP_Types all;
+	import from ICMPv6_Types all;
+	import from ICMP_Templates all;
+	import from ICMPv6_Templates all;
+	import from Native_Functions all;
+	import from Osmocom_VTY_Functions all;
+	import from TELNETasp_PortType all;
+
+	import from DIAMETER_Types all;
+	import from DIAMETER_Templates all;
+	import from DIAMETER_ts29_212_Templates all;
+	import from DIAMETER_ts29_272_Templates all;
+	import from DIAMETER_ts32_299_Templates all;
+	import from DIAMETER_Emulation all;
+
+	const integer GTP0_PORT := 3386;
+	const integer GTP1C_PORT := 2123;
+	const integer GTP1U_PORT := 2152;
+	const integer PCRF_PORT := 3868;
+	const integer OCS_PORT := 3869;
+
+	type enumerated GGSN_Impl {
+		GGSN_IMPL_OSMOCOM,
+		GGSN_IMPL_OPEN5GS
+	};
+
+	type enumerated GGSN_Conf {
+		GGSN_CONF_ALL,
+		GGSN_CONF_V4_ONLY,
+		GGSN_CONF_V6_ONLY,
+		GGSN_CONF_V4V6_ONLY
+	};
+
+	modulepar {
+		/* Default IP addresses. May be overridden by GGSN_Tests configuration files. */
+
+		/* The SGSN simulated by TTCN3 will bind to these addresses for GTP control and GTP user planes. */
+		charstring m_bind_ip_gtpc := "127.23.42.1";
+		charstring m_bind_ip_gtpu := "127.23.42.1";
+
+		/* Addresses the GGSN which is being tested is listening on for SGSN connections. */
+		charstring m_ggsn_ip_gtpc := "127.0.0.6";
+		charstring m_ggsn_ip_gtpu := "127.0.0.6";
+
+		/*
+		 * Our tests expect to see these DNS servers in 'Create PDP context responses' sent by the GGSN.
+		 * These addresses must therefore match 'ip[v6] dns' options configured in osmo-ggsn.conf.
+		 *
+		 * These addresses are not expected to serve actual DNS requests. However, tests may expect to be
+		 * able to ping these addresses (currently, IPv4 addresses must respond with an ICMP 'echo reply',
+		 * and IPv6 addresses may respond with either ICMPv6 'echo reply' or 'destination unreachable').
+		 */
+		charstring m_ggsn_ip4_dns1 := "192.168.100.1"
+		charstring m_ggsn_ip4_dns2 := "8.8.8.8"
+		charstring m_ggsn_ip6_dns1 := "2001:4860:4860::8888"
+		charstring m_ggsn_ip6_dns2 := "2001:4860:4860::8844"
+
+		/*
+		 * Additional address ranges are defined in osmo-ggsn.conf from which addresses are assigned
+		 * to MS "behind" the simulated SGSN. These addresses appear on tun devices used by osmo-ggsn.
+		 * The tests expect to be able to send ping packets between any two simulated MS within the same
+		 * address range. This requires IP forwarding to be enabled on the corresponding tun interfaces.
+		 */
+		integer mp_t3_response := 5; /* local T3-RESPONSE timeout, seconds */
+		integer mp_n3_requests := 3; /* local N3-REQUESTS counter */
+
+		/* MTU to configure and expect when testing related tests.
+		 * This needs to match the value in configured file for open5gs
+		 * since there's no support to configure it dynamically over VTY.
+		 */
+		uint16_t m_configured_mtu := 1400;
+
+		GGSN_Impl m_ggsn_impl := GGSN_IMPL_OSMOCOM;
+		GGSN_Conf m_ggsn_conf := GGSN_CONF_ALL;
+	}
+
+	type set PdpContext {
+		hexstring	imsi,
+		octetstring	msisdn optional,
+		octetstring	apn,
+		ProtConfigOptions	pco_req optional,
+		ProtConfigOptions	pco_neg optional,
+		EndUserAddress	eua,
+		OCT16		ip6_prefix optional,
+		BIT4		nsapi,
+		/* TEI (Data) local side */
+		OCT4		teid,
+		/* TEI (Control) local side */
+		OCT4		teic,
+		/* TEI (Data) remote side */
+		OCT4		teid_remote,
+		/* TEI (Control) remote side */
+		OCT4		teic_remote,
+		OCT1		ratType optional,
+		UserLocationInformation uli optional,
+		OCT2 charging_char optional,
+		OCT8 imeisv optional,
+		MS_TimeZone ms_tz optional
+	}
+
+	type component GT_CT {
+		port GTPC_PT GTPC;
+		port GTPU_PT GTPU;
+
+		var boolean g_initialized := false;
+
+		var OCT1 g_restart_ctr := '01'O;
+		/* FIXME: unify with g_bind_ip + parse from config file */
+		var OCT4 g_sgsn_ip_c;
+		var OCT4 g_sgsn_ip_u;
+		/* FIXME: parse remName from config file */
+		var Gtp1cPeer g_peer_c := { connId := 0, remName := m_ggsn_ip_gtpc, remPort := GTP1C_PORT };
+		var Gtp1uPeer g_peer_u := { connId := 0, remName := m_ggsn_ip_gtpu, remPort := GTP1U_PORT };
+		timer T_default := 3.0;
+
+		/* next to-be-sent GTP-C sequence number */
+		var uint16_t g_c_seq_nr;
+		/* next to-be-sent GTP-U sequence number */
+		var uint16_t g_d_seq_nr;
+
+		port TELNETasp_PT GGSNVTY;
+		var boolean use_gtpu_txseq := false;
+		var integer g_use_echo_intval := 0; /* 0 = disabled */
+
+		/* Emulated PCRF, used with m_ggsn_impl = GGSN_IMPL_OPEN5GS */
+		var DIAMETER_conn_parameters g_gx_pars;
+		var DIAMETER_Emulation_CT vc_Gx;
+		port DIAMETER_PT Gx_UNIT;
+		port DIAMETEREM_PROC_PT Gx_PROC;
+
+		/* Emulated OCS, used with m_ggsn_impl = GGSN_IMPL_OPEN5GS */
+		var DIAMETER_conn_parameters g_gy_pars;
+		var DIAMETER_Emulation_CT vc_Gy;
+		port DIAMETER_PT Gy_UNIT;
+		port DIAMETEREM_PROC_PT Gy_PROC;
+		var integer g_gy_validity_time := 0; /* In seconds. 0 => disabled, !0 => grant over CC-Time period */
+		var integer g_gy_volume_quota := 0; /* In octets. 0 => disabled, !0 => request IUT to revalidate after N octets */
+		var integer g_gy_volume_threshold := 0; /* In octets. Request IUT to revalidate at N octets before reaching g_gy_volume_quota */
+		var PDU_DIAMETER g_rx_gy; /* Store last received Gy message */
+	}
+
+	private function f_init_vty() runs on GT_CT {
+		map(self:GGSNVTY, system:GGSNVTY);
+		f_vty_set_prompts(GGSNVTY);
+		f_vty_transceive(GGSNVTY, "enable");
+	}
+
+	private function f_vty_set_gpdu_txseq(boolean enable) runs on GT_CT {
+		f_vty_enter_config(GGSNVTY);
+		f_vty_transceive(GGSNVTY, "ggsn ggsn0");
+
+		f_vty_transceive(GGSNVTY, "apn internet");
+		if (enable) {
+			f_vty_transceive(GGSNVTY, "g-pdu tx-sequence-numbers");
+		} else {
+			f_vty_transceive(GGSNVTY, "no g-pdu tx-sequence-numbers");
+		}
+		f_vty_transceive(GGSNVTY, "exit");
+
+		f_vty_transceive(GGSNVTY, "apn inet6");
+		if (enable) {
+			f_vty_transceive(GGSNVTY, "g-pdu tx-sequence-numbers");
+		} else {
+			f_vty_transceive(GGSNVTY, "no g-pdu tx-sequence-numbers");
+		}
+		f_vty_transceive(GGSNVTY, "exit");
+
+		f_vty_transceive(GGSNVTY, "apn inet46");
+		if (enable) {
+			f_vty_transceive(GGSNVTY, "g-pdu tx-sequence-numbers");
+		} else {
+			f_vty_transceive(GGSNVTY, "no g-pdu tx-sequence-numbers");
+		}
+		f_vty_transceive(GGSNVTY, "end");
+	}
+
+	private function f_verify_gtpu_txseq(in PDU_GTPU gtpu, in boolean expect_gptu_txseq) return boolean {
+			if (expect_gptu_txseq) {
+				if (gtpu.s_bit != '1'B) {
+					log("GTPU sequence number expected but not present")
+					return false;
+				}
+			} else {
+				if (gtpu.s_bit != '0'B) {
+					log("GTPU sequence number not expected but present")
+					return false;
+				}
+			}
+			return true;
+	}
+
+	private function f_vty_enable_echo_interval(integer intval_sec) runs on GT_CT {
+		f_vty_enter_config(GGSNVTY);
+		f_vty_transceive(GGSNVTY, "ggsn ggsn0");
+		if (intval_sec > 0) {
+			f_vty_transceive(GGSNVTY, "echo-interval " & int2str(intval_sec));
+		} else {
+			f_vty_transceive(GGSNVTY, "no echo-interval");
+		}
+		f_vty_transceive(GGSNVTY, "end");
+	}
+
+	/* -1 = osmo-ggsn default mtu */
+	private function f_vty_set_mtu(integer mtu, boolean do_apply := true) runs on GT_CT {
+		var charstring val_str;
+		var charstring apply_str := "";
+		var charstring mtu_cmd;
+		if (mtu >= 0) {
+			val_str := int2str(mtu);
+		} else {
+			val_str := "default";
+		}
+		if (do_apply) {
+			apply_str := " apply"
+		}
+		mtu_cmd := "mtu " & val_str & apply_str;
+
+		f_vty_enter_config(GGSNVTY);
+		f_vty_transceive(GGSNVTY, "ggsn ggsn0");
+
+		f_vty_transceive(GGSNVTY, "apn internet");
+		f_vty_transceive(GGSNVTY, mtu_cmd);
+		f_vty_transceive(GGSNVTY, "exit");
+
+		f_vty_transceive(GGSNVTY, "apn inet6");
+		f_vty_transceive(GGSNVTY, mtu_cmd);
+		f_vty_transceive(GGSNVTY, "exit");
+
+		f_vty_transceive(GGSNVTY, "apn inet46");
+		f_vty_transceive(GGSNVTY, mtu_cmd);
+		f_vty_transceive(GGSNVTY, "end");
+	}
+
+	private function DiameterForwardUnitdataCallback(PDU_DIAMETER msg)
+	runs on DIAMETER_Emulation_CT return template PDU_DIAMETER {
+		DIAMETER_UNIT.send(msg);
+		return omit;
+	}
+
+	private function f_init_diameter(charstring id) runs on GT_CT {
+		var DIAMETEROps ops := {
+			create_cb := refers(DIAMETER_Emulation.ExpectedCreateCallback),
+			unitdata_cb := refers(DiameterForwardUnitdataCallback),
+			raw := true /* handler mode (single component for all IMSI)) */
+		};
+
+		/* Gx setup: */
+		g_gx_pars := {
+			remote_ip := m_ggsn_ip_gtpc,
+			remote_sctp_port := -1,
+			local_ip := m_bind_ip_gtpc,
+			local_sctp_port := PCRF_PORT,
+			origin_host := "pcrf.localdomain",
+			origin_realm := "localdomain",
+			auth_app_id := omit,
+			vendor_app_id := c_DIAMETER_3GPP_Gx_AID
+		};
+		vc_Gx := DIAMETER_Emulation_CT.create(id);
+		map(vc_Gx:DIAMETER, system:DIAMETER_CODEC_PT);
+		connect(vc_Gx:DIAMETER_UNIT, self:Gx_UNIT);
+		connect(vc_Gx:DIAMETER_PROC, self:Gx_PROC);
+		vc_Gx.start(DIAMETER_Emulation.main(ops, g_gx_pars, id));
+
+		/* Gy setup: */
+		g_gy_pars := {
+			remote_ip := m_ggsn_ip_gtpc,
+			remote_sctp_port := -1,
+			local_ip := m_bind_ip_gtpc,
+			local_sctp_port := OCS_PORT,
+			origin_host := "ocs.localdomain",
+			origin_realm := "localdomain",
+			auth_app_id := c_DIAMETER_CREDIT_CONTROL_AID,
+			vendor_app_id := omit
+		};
+		vc_Gy := DIAMETER_Emulation_CT.create(id);
+		map(vc_Gy:DIAMETER, system:DIAMETER_CODEC_PT);
+		connect(vc_Gy:DIAMETER_UNIT, self:Gy_UNIT);
+		connect(vc_Gy:DIAMETER_PROC, self:Gy_PROC);
+		vc_Gy.start(DIAMETER_Emulation.main(ops, g_gy_pars, id));
+
+		f_diameter_wait_capability(Gx_UNIT);
+		f_diameter_wait_capability(Gy_UNIT);
+		/* Give some time for our emulation to get out of SUSPECT list of SUT (3 watchdog ping-pongs):
+		 * RFC6733 sec 5.1
+		 * RFC3539 sec 3.4.1 [5]
+		 * https://github.com/freeDiameter/freeDiameter/blob/master/libfdcore/p_psm.c#L49
+		 */
+		f_sleep(1.0);
+	}
+
+	function f_init() runs on GT_CT {
+		if (g_initialized == true) {
+			return;
+		}
+		g_initialized := true;
+
+		g_sgsn_ip_c := f_inet_addr(m_bind_ip_gtpc);
+		g_sgsn_ip_u := f_inet_addr(m_bind_ip_gtpu);
+
+		var Result res;
+		map(self:GTPC, system:GTPC);
+		res := GTPv1C_CodecPort_CtrlFunct.f_IPL4_listen(GTPC, m_bind_ip_gtpc, GTP1C_PORT, {udp:={}});
+		log("GTP1C ConnectionID: ", res.connId);
+		g_peer_c.connId := res.connId;
+
+		map(self:GTPU, system:GTPU);
+		res := GTPv1U_CodecPort_CtrlFunct.f_GTPU_listen(GTPU, m_bind_ip_gtpu, GTP1U_PORT, {udp:={}});
+		g_peer_u.connId:= res.connId;
+
+		g_restart_ctr := f_rnd_octstring(1);
+		g_c_seq_nr := f_rnd_int(65535);
+		g_d_seq_nr := f_rnd_int(65535);
+
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_init_vty();
+			f_vty_set_gpdu_txseq(use_gtpu_txseq);
+			f_vty_enable_echo_interval(g_use_echo_intval);
+			/* Emit a marker to appear in the SUT's own logging output */
+			f_logp(GGSNVTY, testcasename() & "() start");
+		} else if (m_ggsn_impl == GGSN_IMPL_OPEN5GS) {
+			f_init_diameter(testcasename());
+		}
+	}
+
+	function f_shutdown_helper() runs on GT_CT {
+		/* Sleep (T3-RESPONSE * N3-REQUESTS) seconds.
+		 * This ensures all retransmit queues are cleared before jumping
+		 * into next tests, hence avoding situation where a test resuses
+		 * a seqnum still in the GGSN's resp queue (dup req detector).
+		 * See OS#5485 avout decreasing time. We could also add a new
+		 * VTY command that calls gtp_clear_queues() */
+		f_sleep(int2float(mp_t3_response * mp_n3_requests));
+		setverdict(pass);
+	}
+
+	/* Altstep implementing responses to any incoming echo requests */
+	private altstep pingpong() runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		var Gtp1uUnitdata udu;
+		[g_use_echo_intval > 0] GTPC.receive(tr_GTPC_PING(?)) -> value ud {
+			var uint16_t seq := oct2int(ud.gtpc.opt_part.sequenceNumber);
+			GTPC.send(ts_GTPC_PONG(ud.peer, seq, g_restart_ctr));
+			repeat;
+		};
+		[g_use_echo_intval == 0] GTPC.receive(tr_GTPC_PING(?)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"GTP Echo Req rceived but not enabled in VTY");
+		};
+		[] T_default.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"pingpong T_default timeout");
+		};
+	}
+
+	/* 'internet' in DNS encoding */
+	const octetstring c_ApnInternet := '08696E7465726E6574'O;
+	const octetstring c_ApnInet6 := '05696E657436'O;
+	const octetstring c_ApnInet46 := '06696E65743436'O;
+
+	/* return random NSAPI */
+	function f_rnd_nsapi() return BIT4 {
+		return int2bit(f_rnd_int(16), 4);
+	}
+
+	/* return random TEI[DC] */
+	function f_rnd_tei() return OCT4 {
+		return int2oct(f_rnd_int(4294967296), 4);
+	}
+
+	/* return random IMEI(SV) */
+	function f_rnd_imeisv() return OCT8 {
+		return hex2oct(f_rnd_hexstring(16, 10));
+	}
+
+	/* define an (internal) representation of a PDP context */
+	template PdpContext t_DefinePDP(hexstring imsi, charstring msisdn, octetstring apn,
+					EndUserAddress eua, OCT1 ratType := '02'O /* GERAN */) := {
+		imsi := imsi,
+		msisdn := '11'O  & f_enc_TBCD(msisdn), /* encoded as TS 29.060 7.7.33, TS 29.002 */
+		nsapi := f_rnd_nsapi(),
+		apn := apn,
+		pco_req := omit,
+		eua := eua,
+		teid := f_rnd_tei(),
+		teic := f_rnd_tei(),
+		ratType := ratType,
+		uli := {
+			type_gtpc := '98'O,
+			lengthf := 0 /* filled in by encoder */,
+			geographicLocationType := '00'O /* CGI */,
+			geographicLocation := {
+				geographicLocationCGI := ts_GeographicLocationCGI('262'H, '42F'H, '0001'O, '0002'O)
+			}
+		},
+		charging_char := '0000'O,
+		imeisv := f_rnd_imeisv(),
+		ms_tz := f_ts_MS_TimeZone('03'O, '01'B)
+	}
+
+	/* send GTP-C for a given context and increment sequence number */
+	function f_send_gtpc(in template Gtp1cUnitdata data) runs on GT_CT {
+		GTPC.send(data);
+		g_c_seq_nr := (g_c_seq_nr + 1) mod 65536;
+	}
+
+	/* send GTP-U for a given context and increment sequence number */
+	function f_send_gtpu(inout PdpContext ctx, in octetstring data) runs on GT_CT {
+		var template (omit) GTPU_Header_optional_part opt_part := omit;
+
+		if (use_gtpu_txseq) {
+			opt_part := f_GTPU_opt_part_from_seq(g_d_seq_nr);
+			g_d_seq_nr := (g_d_seq_nr + 1) mod 65536;
+		}
+
+		GTPU.send(ts_GTP1U_GPDU(g_peer_u, opt_part, ctx.teid_remote, data));
+	}
+
+	function f_handle_create_req(inout PdpContext ctx, in Gtp1cUnitdata ud, in template OCT1 exp_cause := '80'O) runs on GT_CT {
+		var CreatePDPContextResponse cpr := ud.gtpc.gtpc_pdu.createPDPContextResponse;
+
+		if (not match(cpr.cause.causevalue, exp_cause)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"CreatePDPContextResp: cause expectancies didn't match");
+		}
+
+		if (cpr.cause.causevalue == '80'O) { /* Accepted */
+			/*  Check if EUA type corresponds to requested type */
+			if (match(ctx.eua, t_EuaIPv4(?)) and
+			    not match(cpr.endUserAddress, tr_EuaIPv4(?))){
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"EUAv4 expectancies didn't match");
+			}
+			if (match(ctx.eua, t_EuaIPv6(?)) and
+			    not match(cpr.endUserAddress, tr_EuaIPv6(?))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"EUAv6 expectancies didn't match");
+			}
+			if (match(ctx.eua, t_EuaIPv4v6(?, ?)) and
+			    not match(cpr.endUserAddress, tr_EuaIPv4v6(?, ?))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"EUAv4v6 expectancies didn't match");
+			}
+		} else if (cpr.cause.causevalue == '81'O) { /* Cause: New PDP type due to network preference */
+			/* ETSI TS 129 060 7.3.2 Create PDP Context Response. OS#5449 */
+			/* This should only happen if EUA requested type is v4v6: */
+			if (not ischosen(ctx.eua.endUserAddress.endUserAddressIPv4andIPv6)) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Cause not expected when requesting a non v4v6 EUA");
+			}
+			if (not match(cpr.endUserAddress, (tr_EuaIPv4(?), tr_EuaIPv6(?)))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Cause not expected when requesting+receiving EUAv4v6");
+			}
+		} else {
+			if (ispresent(cpr.endUserAddress)) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					"EUA received on createPDPContextResponse cause=" & oct2str(cpr.cause.causevalue));
+			}
+			setverdict(pass);
+			return;
+		}
+
+		/* Check if PCO response corresponds to request */
+		if (ispresent(ctx.pco_req)) {
+			if (match(ctx.pco_req, ts_PCO_IPv4_DNS_CONT) and
+				not match(cpr.protConfigOptions, tr_PCO_IPv4_DNS_CONT_resp(?))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"IPv4 DNS Container requested, but missing");
+			}
+			if (match(ctx.pco_req, ts_PCO_IPv6_DNS) and
+				not match(cpr.protConfigOptions, tr_PCO_IPv6_DNS_resp(?))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"IPv6 DNS Container requested, but missing");
+			}
+		}
+		ctx.teid_remote := cpr.teidDataI.teidDataI;
+		ctx.teic_remote := cpr.teidControlPlane.teidControlPlane;
+		ctx.eua := cpr.endUserAddress;
+		ctx.pco_neg := cpr.protConfigOptions;
+		setverdict(pass);
+	}
+
+	private function f_handle_update_resp(inout PdpContext ctx, in Gtp1cUnitdata ud, in OCT1 exp_cause := '80'O) runs on GT_CT {
+		var UpdatePDPContextResponseGGSN upr := ud.gtpc.gtpc_pdu.updatePDPContextResponse.updatePDPContextResponseGGSN;
+		if (exp_cause == '80'O and exp_cause == upr.cause.causevalue) {
+			ctx.teid_remote := upr.teidDataI.teidDataI;
+			ctx.teic_remote := upr.teidControlPlane.teidControlPlane;
+			if (ispresent(upr.protConfigOptions)) {
+				ctx.pco_neg := upr.protConfigOptions;
+			}
+			setverdict(pass);
+		} else if (exp_cause != '80'O and exp_cause == upr.cause.causevalue) {
+			setverdict(pass);
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"UpdatePDPContextResp: cause expectancies didn't match");
+		}
+	}
+
+	private altstep as_DIA_Gx_CCR(DCC_NONE_CC_Request_Type req_type) runs on GT_CT {
+		var PDU_DIAMETER rx_dia;
+		[] Gx_UNIT.receive(tr_DIA_Gx_CCR(req_type := req_type)) -> value rx_dia {
+			var template (omit) AVP avp;
+			var octetstring sess_id;
+			var AVP_Unsigned32 req_num;
+
+			avp := f_DIAMETER_get_avp(rx_dia, c_AVP_Code_BASE_NONE_Session_Id);
+			sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+
+			avp := f_DIAMETER_get_avp(rx_dia, c_AVP_Code_DCC_NONE_CC_Request_Number);
+			req_num := valueof(avp.avp_data.avp_DCC_NONE_CC_Request_Number);
+
+			Gx_UNIT.send(ts_DIA_Gx_CCA(rx_dia.hop_by_hop_id, rx_dia.end_to_end_id, sess_id,
+						 req_type, req_num));
+		}
+		[] Gx_UNIT.receive(PDU_DIAMETER:?) -> value rx_dia {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Received unexpected DIAMETER ", rx_dia));
+		}
+	}
+
+	private function f_tr_DIA_Gy_CCR(template (omit) PdpContext ctx, DCC_NONE_CC_Request_Type req_type)
+	runs on GT_CT return template (present) PDU_DIAMETER
+	{
+		var template (present) PDU_DIAMETER tpl;
+		var charstring smf_origin_host := "smf.localdomain";
+		var template (present) octetstring imsi := ?;
+		var template (present) octetstring msisdn := ?;
+		var template (present) octetstring imeisv := ?;
+		var template (present) octetstring rat_type := ?;
+		var template (present) OCT4 charging_char := ?;
+		var template (present) OCT1 nsapi := ?;
+		if (not istemplatekind(ctx, "omit")) {
+			var PdpContext ctx_val := valueof(ctx);
+			imsi := char2oct(f_dec_TBCD(imsi_hex2oct(ctx_val.imsi)));
+			msisdn := char2oct(f_dec_TBCD(substr(ctx_val.msisdn, 1, lengthof(ctx_val.msisdn) -1)));
+			imeisv := char2oct(f_dec_TBCD(ctx_val.imeisv));
+			rat_type := ctx_val.ratType;
+			charging_char := char2oct(oct2str(ctx_val.charging_char));
+			nsapi := char2oct(hex2str(bit2hex(ctx_val.nsapi)));
+		}
+		select (req_type) {
+			case (INITIAL_REQUEST) {
+				tpl := tr_DIAMETER(flags:='11000000'B, cmd_code:=Credit_Control,
+					avps := superset(
+						tr_AVP_SessionId,
+						tr_AVP_OriginHost(smf_origin_host),
+						tr_AVP_OriginRealm(g_gy_pars.origin_realm),
+						tr_AVP_DestinationRealm(g_gy_pars.origin_realm),
+						tr_AVP_AuthAppId(int2oct(c_DIAMETER_CREDIT_CONTROL_AID, 4)),
+						tr_AVP_ServiceContextId,
+						tr_AVP_CcReqType(req_type),
+						tr_AVP_CcReqNum(?),
+						tr_AVP_EventTimestamp(?),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_IMSI), tr_AVP_SubcrIdData(imsi)}),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_E164), tr_AVP_SubcrIdData(msisdn)}),
+						tr_AVP_RequestedAction(DIRECT_DEBITING),
+						tr_AVP_3GPP_AoCRequestType,
+						tr_AVP_MultipleServicesIndicator,
+						tr_AVP_Multiple_Services_Credit_Control(content := superset(
+							tr_AVP_Requested_Service_Unit,
+							tr_AVP_PCC_3GPP_QoS_Information
+						)),
+						tr_AVP_3GPP_ServiceInformation(content := superset(
+							tr_AVP_3GPP_PSInformation(content := superset(
+								tr_AVP_3GPP_ChargingId,
+								tr_AVP_3GPP_PDPType((IPv4,IPv6,IPv4v6)),
+								tr_AVP_3GPP_PDPAddress(tr_AVP_Address((IP,IP6), ?)),
+								tr_AVP_3GPP_SGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_bind_ip_gtpc))),
+								tr_AVP_3GPP_GGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_ggsn_ip_gtpc))),
+								tr_AVP_3GPP_CalledStationId,
+								tr_AVP_3GPP_SelectionMode,
+								tr_AVP_3GPP_ChargingCharacteristics(charging_char),
+								tr_AVP_3GPP_SGSNMCCMNC,
+								tr_AVP_3GPP_NSAPI(nsapi),
+								tr_AVP_3GPP_MS_TimeZone,
+								tr_AVP_3GPP_ULI,
+								tr_AVP_GI_3GPP_RatType(rat_type),
+								tr_AVP_UserEquipmentInfo({
+									tr_AVP_UserEquipmentInfoType(IMEISV),
+									tr_AVP_UserEquipmentInfoValue(imeisv)
+								})
+							))
+						))
+					));
+			}
+			case (UPDATE_REQUEST) {
+				tpl := tr_DIAMETER(flags:='11000000'B, cmd_code:=Credit_Control,
+					avps := superset(
+						tr_AVP_SessionId,
+						tr_AVP_OriginHost(smf_origin_host),
+						tr_AVP_OriginRealm(g_gy_pars.origin_realm),
+						tr_AVP_DestinationRealm(g_gy_pars.origin_realm),
+						tr_AVP_AuthAppId(int2oct(c_DIAMETER_CREDIT_CONTROL_AID, 4)),
+						tr_AVP_ServiceContextId,
+						tr_AVP_CcReqType(req_type),
+						tr_AVP_CcReqNum(?),
+						tr_AVP_DestinationHost(?),
+						tr_AVP_EventTimestamp(?),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_IMSI), tr_AVP_SubcrIdData(imsi)}),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_E164), tr_AVP_SubcrIdData(msisdn)}),
+						tr_AVP_RequestedAction(DIRECT_DEBITING),
+						tr_AVP_3GPP_AoCRequestType,
+						tr_AVP_Multiple_Services_Credit_Control(content := superset(
+							tr_AVP_Requested_Service_Unit,
+							tr_AVP_Used_Service_Unit,
+							/* tr_AVP_3GPP_Reporting_Reason, can be sometimes inside UsedServiceUnit */
+							tr_AVP_PCC_3GPP_QoS_Information
+						)),
+						tr_AVP_3GPP_ServiceInformation(content := superset(
+							tr_AVP_3GPP_PSInformation(content := superset(
+								tr_AVP_3GPP_ChargingId,
+								/* tr_AVP_3GPP_PDPType, Only in INIT */
+								tr_AVP_3GPP_PDPAddress(tr_AVP_Address((IP,IP6), ?)),
+								tr_AVP_3GPP_SGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_bind_ip_gtpc))),
+								tr_AVP_3GPP_GGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_ggsn_ip_gtpc))),
+								tr_AVP_3GPP_CalledStationId,
+								tr_AVP_3GPP_SelectionMode,
+								tr_AVP_3GPP_ChargingCharacteristics(charging_char),
+								tr_AVP_3GPP_SGSNMCCMNC,
+								tr_AVP_3GPP_NSAPI(nsapi),
+								tr_AVP_3GPP_MS_TimeZone,
+								tr_AVP_3GPP_ULI,
+								tr_AVP_GI_3GPP_RatType(rat_type),
+								tr_AVP_UserEquipmentInfo({
+									tr_AVP_UserEquipmentInfoType(IMEISV),
+									tr_AVP_UserEquipmentInfoValue(imeisv)
+								})
+							))
+						))
+					));
+			}
+			case (TERMINATION_REQUEST) {
+				tpl := tr_DIAMETER(flags:='11000000'B, cmd_code:=Credit_Control,
+					avps := superset(
+						tr_AVP_SessionId,
+						tr_AVP_OriginHost(smf_origin_host),
+						tr_AVP_OriginRealm(g_gy_pars.origin_realm),
+						tr_AVP_DestinationRealm(g_gy_pars.origin_realm),
+						tr_AVP_AuthAppId(int2oct(c_DIAMETER_CREDIT_CONTROL_AID, 4)),
+						tr_AVP_ServiceContextId,
+						tr_AVP_CcReqType(req_type),
+						tr_AVP_CcReqNum(?),
+						tr_AVP_DestinationHost(?),
+						tr_AVP_EventTimestamp(?),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_IMSI), tr_AVP_SubcrIdData(imsi)}),
+						tr_AVP_SubcrId({tr_AVP_SubcrIdType(END_USER_E164), tr_AVP_SubcrIdData(msisdn)}),
+						tr_AVP_TerminationCause(?),
+						tr_AVP_RequestedAction(DIRECT_DEBITING),
+						tr_AVP_3GPP_AoCRequestType,
+						tr_AVP_Multiple_Services_Credit_Control(content := superset(
+							/* tr_AVP_Requested_Service_Unit, Only in INIT and UPDATE */
+							tr_AVP_Used_Service_Unit,
+							tr_AVP_3GPP_Reporting_Reason(FINAL),
+							tr_AVP_PCC_3GPP_QoS_Information
+						)),
+						tr_AVP_3GPP_ServiceInformation(content := superset(
+							tr_AVP_3GPP_PSInformation(content := superset(
+								tr_AVP_3GPP_ChargingId,
+								/* tr_AVP_3GPP_PDPType, Only in INIT */
+								tr_AVP_3GPP_PDPAddress(tr_AVP_Address((IP,IP6), ?)),
+								tr_AVP_3GPP_SGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_bind_ip_gtpc))),
+								tr_AVP_3GPP_GGSNAddress(tr_AVP_Address(IP, f_inet_addr(m_ggsn_ip_gtpc))),
+								tr_AVP_3GPP_CalledStationId,
+								tr_AVP_3GPP_SelectionMode,
+								tr_AVP_3GPP_ChargingCharacteristics(charging_char),
+								tr_AVP_3GPP_SGSNMCCMNC,
+								tr_AVP_3GPP_NSAPI(nsapi),
+								tr_AVP_3GPP_MS_TimeZone,
+								tr_AVP_3GPP_ULI,
+								tr_AVP_GI_3GPP_RatType(rat_type),
+								tr_AVP_UserEquipmentInfo({
+									tr_AVP_UserEquipmentInfoType(IMEISV),
+									tr_AVP_UserEquipmentInfoValue(imeisv)
+								})
+							))
+						))
+					));
+			}
+		}
+		return tpl;
+	}
+
+	private altstep as_DIA_Gy_CCR(template (omit) PdpContext ctx, DCC_NONE_CC_Request_Type req_type) runs on GT_CT {
+		[] Gy_UNIT.receive(f_tr_DIA_Gy_CCR(ctx, req_type := req_type)) -> value g_rx_gy {
+			var template (value) PDU_DIAMETER tx_dia;
+			var template (omit) AVP avp;
+			var octetstring sess_id;
+			var AVP_Unsigned32 req_num;
+
+			avp := f_DIAMETER_get_avp(g_rx_gy, c_AVP_Code_BASE_NONE_Session_Id);
+			sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+
+			avp := f_DIAMETER_get_avp(g_rx_gy, c_AVP_Code_DCC_NONE_CC_Request_Number);
+			req_num := valueof(avp.avp_data.avp_DCC_NONE_CC_Request_Number);
+			if (g_gy_validity_time > 0) {
+				if (g_gy_volume_quota > 0) {
+					tx_dia := ts_DIA_Gy_CCA_ValidityTimeVolumeThreshold(
+							g_rx_gy.hop_by_hop_id, g_rx_gy.end_to_end_id,
+							sess_id, req_type, req_num,
+							g_gy_validity_time,
+							g_gy_volume_quota, g_gy_volume_threshold);
+				} else {
+					tx_dia := ts_DIA_Gy_CCA_ValidityTime(
+							g_rx_gy.hop_by_hop_id, g_rx_gy.end_to_end_id,
+							sess_id, req_type, req_num,
+							g_gy_validity_time);
+				}
+			} else {
+				tx_dia := ts_DIA_Gy_CCA(g_rx_gy.hop_by_hop_id, g_rx_gy.end_to_end_id, sess_id,
+							DIAMETER_SUCCESS, req_type, req_num);
+			}
+			Gy_UNIT.send(tx_dia);
+		}
+		[] Gy_UNIT.receive(PDU_DIAMETER:?) -> value g_rx_gy {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Received unexpected DIAMETER Gy", g_rx_gy));
+		}
+	}
+
+	/* send a PDP context activation */
+	function f_pdp_ctx_act(inout PdpContext ctx, template OCT1 exp_cause := '80'O) runs on GT_CT return CreatePDPContextResponse {
+		var Gtp1cUnitdata ud;
+		var CreatePDPContextResponse cpr;
+		var default d;
+
+		log("sending CreatePDP");
+		f_send_gtpc(ts_GTPC_CreatePDP(g_peer_c, g_c_seq_nr, ctx.imsi, g_restart_ctr,
+						  ctx.teid, ctx.teic, ctx.nsapi, ctx.eua, ctx.apn,
+						  g_sgsn_ip_c, g_sgsn_ip_u, ctx.msisdn, ctx.pco_req, ctx.ratType,
+						  ctx.uli, ctx.charging_char, ctx.imeisv, ctx.ms_tz));
+		T_default.start;
+		d := activate(pingpong());
+		if (Gx_PROC.checkstate("Connected")) {
+			as_DIA_Gx_CCR(INITIAL_REQUEST);
+		}
+		if (Gy_PROC.checkstate("Connected")) {
+			as_DIA_Gy_CCR(ctx, INITIAL_REQUEST);
+		}
+		alt {
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, createPDPContextResponse, ctx.teic)) -> value ud {
+				f_handle_create_req(ctx, ud, exp_cause);
+				cpr := ud.gtpc.gtpc_pdu.createPDPContextResponse;
+			}
+		}
+		deactivate(d);
+		T_default.stop;
+		return cpr;
+	}
+
+	function f_pdp_ctx_exp_del_req(PdpContext ctx, template (omit) OCT1 expect_cause := omit, boolean expect_teardown := false) runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		var default d;
+
+		T_default.start;
+		d := activate(pingpong());
+		alt {
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextRequest, ctx.teic)) -> value ud {
+				if (istemplatekind(expect_cause, "omit") and not ispresent(ud.gtpc.gtpc_pdu.deletePDPContextRequest.cause.causevalue)) {
+					setverdict(pass);
+				} else if (not istemplatekind(expect_cause, "omit") and
+					   ispresent(ud.gtpc.gtpc_pdu.deletePDPContextRequest.cause.causevalue) and
+					   ud.gtpc.gtpc_pdu.deletePDPContextRequest.cause.causevalue == valueof(expect_cause)) {
+					setverdict(pass);
+				} else {
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+								"DeletePDPContextReq: cause expectancies didn't match");
+				}
+
+				if (expect_teardown == ispresent(ud.gtpc.gtpc_pdu.deletePDPContextRequest.tearDownIndicator)) {
+					setverdict(pass);
+				} else {
+					setverdict(fail);
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+								"DeletePDPContextReq: tearDownIndicator expectancies didn't match");
+				}
+			}
+		}
+		deactivate(d);
+		T_default.stop;
+	}
+
+	function f_pdp_ctx_del(PdpContext ctx, template BIT1 teardown_ind, OCT1 expect_causevalue := '80'O, boolean expect_diameter := true) runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		var default d;
+		var OCT4 expect_teid;
+
+		/* 3GPP TS 29.060 sec 7.3.6 specifies TEID used in response
+		   message with cause value "Non existent" shall be zero. */
+		if (expect_causevalue == 'C0'O) {
+			expect_teid := '00000000'O;
+		} else {
+			expect_teid := ctx.teic;
+		}
+
+		f_send_gtpc(ts_GTPC_DeletePDP(g_peer_c, g_c_seq_nr, ctx.teic_remote, ctx.nsapi, teardown_ind));
+		T_default.start;
+		d := activate(pingpong());
+		if (Gx_PROC.checkstate("Connected") and expect_diameter) {
+			as_DIA_Gx_CCR(TERMINATION_REQUEST);
+		}
+		if (Gy_PROC.checkstate("Connected") and expect_diameter) {
+			as_DIA_Gy_CCR(ctx, TERMINATION_REQUEST);
+		}
+		alt {
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextResponse, expect_teid)) -> value ud {
+				if (ud.gtpc.gtpc_pdu.deletePDPContextResponse.cause.causevalue == expect_causevalue) {
+					setverdict(pass);
+				} else {
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+								"DeletePDPContextResp: cause expectancies didn't match");
+				}
+			}
+		}
+		deactivate(d);
+		T_default.stop;
+	}
+
+	/* send a Update PdP Context Request, expect Response */
+	function f_pdp_ctx_update(inout PdpContext ctx, OCT1 exp_cause := '80'O, template (omit) OCT4 new_teid := omit, template (omit) OCT4 new_teic := omit) runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		var default d;
+
+		if (not istemplatekind(new_teid, "omit")) {
+			ctx.teid := valueof(new_teid);
+		}
+		if (not istemplatekind(new_teic, "omit")) {
+			ctx.teic := valueof(new_teic);
+		}
+
+		log("sending UpdatePDP");
+		f_send_gtpc(ts_GTPC_UpdatePDP(g_peer_c, ctx.teic_remote, g_c_seq_nr, ctx.imsi, g_restart_ctr,
+						  ctx.teid, ctx.teic, ctx.nsapi, g_sgsn_ip_c, g_sgsn_ip_u,
+						  ctx.pco_req, ctx.ratType, ctx.uli));
+		T_default.start;
+		d := activate(pingpong());
+		alt {
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, updatePDPContextResponse, ctx.teic)) -> value ud {
+				f_handle_update_resp(ctx, ud, exp_cause);
+			}
+		}
+		deactivate(d);
+		T_default.stop;
+	}
+
+	/* Get link-id from PDP Context EUA */
+	function f_ctx_get_ipv6_interface_id(in PdpContext ctx) return OCT16 {
+		var OCT16 interface_id;
+		if (ischosen(ctx.eua.endUserAddress.endUserAddressIPv4andIPv6)) {
+			interface_id := ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address;
+		} else if (ischosen(ctx.eua.endUserAddress.endUserAddressIPv6)) {
+			interface_id := ctx.eua.endUserAddress.endUserAddressIPv6.ipv6_address;
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unexpected request to submit icmpv6 rs in IPv4 PDP context");
+		}
+		return interface_id;
+	}
+
+	/* create ICMPv6 router solicitation deriving link-id from PDP Context EUA */
+	function f_icmpv6_rs_for_pdp(in PdpContext ctx) return octetstring {
+		var OCT16 interface_id := f_ctx_get_ipv6_interface_id(ctx);
+		return f_gen_icmpv6_router_solicitation(interface_id);
+	}
+
+	/* generate and encode ICMPv6 neighbor solicitation for PDP Context */
+	function f_gen_icmpv6_neigh_solicit_for_pdp(in PdpContext ctx) return octetstring {
+		var OCT16 interface_id := f_ctx_get_ipv6_interface_id(ctx);
+		var OCT16 link_local := f_ipv6_link_local(interface_id);
+		var OCT16 daddr := f_ipv6_sol_node_mcast(link_local);
+
+		return f_gen_icmpv6_neigh_solicit(link_local, daddr, link_local);
+	}
+
+	/* Wait for ICMPv4 from GTP */
+	function f_wait_icmp4(PdpContext ctx, template PDU_ICMP expected) runs on GT_CT {
+		var Gtp1uUnitdata ud;
+		T_default.start;
+		alt {
+			[] GTPU.receive(tr_GTPU_GPDU(g_peer_u, ctx.teid)) -> value ud {
+				if (f_verify_gtpu_txseq(ud.gtpu, use_gtpu_txseq) == false) {
+					setverdict(fail);
+					stop;
+				}
+				var octetstring gpdu := ud.gtpu.gtpu_IEs.g_PDU_IEs.data;
+				var IPv4_packet ip4 := f_IPv4_dec(gpdu);
+				if (ip4.header.ver != 4) {
+					repeat;
+				}
+				var PDU_ICMP icmp4 := f_dec_PDU_ICMP(ip4.payload);
+				if (not match(icmp4, expected)) {
+					repeat;
+				}
+			}
+			[] GTPU.receive(tr_GTPU_GPDU(g_peer_u, ?)) -> value ud {
+				setverdict(fail, "Received wrong local TEID");
+			}
+			[] GTPU.receive { setverdict(fail); }
+			[] T_default.timeout { setverdict(fail); }
+		}
+		T_default.stop;
+	}
+
+	/* Wait for ICMPv4 echo request from GTP */
+	function f_wait_icmp4_echo_request(PdpContext ctx) runs on GT_CT {
+		f_wait_icmp4(ctx, tr_ICMPv4_ERQ);
+	}
+
+	/* Wait for ICMPv4 echo reply (or unreachable) from GTP */
+	function f_wait_icmp4_echo_reply(PdpContext ctx) runs on GT_CT {
+		f_wait_icmp4(ctx, (tr_ICMPv4_ERP, tr_ICMPv4_DU));
+	}
+
+	/* Wait for ICMPv6 from GTP */
+	function f_wait_icmp6(PdpContext ctx, template PDU_ICMPv6 expected) runs on GT_CT {
+		var Gtp1uUnitdata ud;
+		T_default.start;
+		alt {
+			[] GTPU.receive(tr_GTPU_GPDU(g_peer_u, ?)) -> value ud {
+				if (f_verify_gtpu_txseq(ud.gtpu, use_gtpu_txseq) == false) {
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+								log2str("Received GTPU with wrong txseq while waiting for ICMPv6: ", expected));
+				}
+				var octetstring gpdu := ud.gtpu.gtpu_IEs.g_PDU_IEs.data;
+				var IPv6_packet ip6 := f_IPv6_dec(gpdu);
+				if (ip6.header.ver != 6 or ip6.header.nexthead != 58) {
+					repeat;
+				}
+				var PDU_ICMPv6 icmp6 := f_dec_PDU_ICMPv6(ip6.payload);
+				if (not match(icmp6, expected)) {
+					repeat;
+				}
+				/* We are waiting for RA, update ctx */
+				if (match(icmp6, tr_ICMPv6_RA(?))) {
+					for (var integer i := 0; i < lengthof(icmp6.routerAdvertisement.options); i := i + 1) {
+						var OptionField opt := icmp6.routerAdvertisement.options[i];
+						if (ischosen(opt.prefixInformation)) {
+							ctx.ip6_prefix := opt.prefixInformation.prefix;
+							log("RA with /64 prefix ", ctx.ip6_prefix);
+						}
+					}
+				}
+			}
+			[] GTPU.receive(tr_GTPU_GPDU(?, ?)) { repeat; }
+			[] GTPU.receive  {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Received unexpected GTPU while waiting for ICMPv6: ", expected));
+			}
+			[] T_default.timeout {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Timeout waiting for ICMPv6: ", expected));
+			}
+		}
+		T_default.stop;
+	}
+
+	/* wait for GGSN to send us an ICMPv6 router advertisement */
+	function f_wait_rtr_adv(PdpContext ctx, template integer mtu := *) runs on GT_CT {
+		var template (present) OptionField opt_prefix := tr_ICMP6_OptPrefix(?, 64);
+		var template (present) Options opts;
+		if (istemplatekind(mtu, "*")) {
+			opts := ( { opt_prefix }, { opt_prefix, tr_ICMP6_OptMTU(?) } );
+		} else {
+			opts := { opt_prefix, tr_ICMP6_OptMTU(mtu) };
+		}
+		f_wait_icmp6(ctx, tr_ICMPv6_RA(opts));
+	}
+
+	/* Wait for ICMPv6 echo request from GTP */
+	function f_wait_icmp6_echo_request(PdpContext ctx) runs on GT_CT {
+		f_wait_icmp6(ctx, tr_ICMPv6_ERQ);
+	}
+
+	/* Wait for ICMPv6 echo reply (or unreachable) from GTP */
+	function f_wait_icmp6_echo_reply(PdpContext ctx) runs on GT_CT {
+		f_wait_icmp6(ctx, (tr_ICMPv6_ERP,tr_ICMPv6_DU));
+	}
+
+	/* create ICMPv6 router solicitation deriving link-id from PDP Context EUA */
+	function f_icmpv6_rs_for_pdp46(in PdpContext ctx) return octetstring {
+		var OCT16 interface_id := ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address;
+		return f_gen_icmpv6_router_solicitation(interface_id);
+	}
+
+	/* generate and encode ICMPv6 neighbor solicitation for PDP Context */
+	function f_gen_icmpv6_neigh_solicit_for_pdp46(in PdpContext ctx) return octetstring {
+		var OCT16 interface_id := ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address;
+		var OCT16 link_local := f_ipv6_link_local(interface_id);
+		var OCT16 daddr := f_ipv6_sol_node_mcast(link_local);
+
+		return f_gen_icmpv6_neigh_solicit(link_local, daddr, link_local);
+	}
+
+	/* Assert we don't receive a ICMPv4/6 echo reply (or unreachable) from GTP */
+	function f_wait_gtpu_fail(PdpContext ctx) runs on GT_CT {
+		T_default.start;
+		alt {
+			[] GTPU.receive { setverdict(fail); }
+			[] T_default.timeout { }
+		}
+		T_default.stop;
+	}
+
+	/* list of protocols where we don't accept duplicates */
+	const OCT2List protocol_ids_nodupes := { 'C021'O, 'C023'O, 'C223'O, '8021'O };
+	private function f_PCO_permits_duplicates(OCT2 id) return boolean {
+		var integer i;
+		for (i := 0; i < lengthof(protocol_ids_nodupes); i := i+1) {
+			if (id == protocol_ids_nodupes[i]) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/* ensure that every given protocol Identifier exist only exactly once in the PCO */
+	function f_PCO_ensure_no_duplicates(ProtConfigOptions pco) {
+		var OCT2List protocol_ids := {};
+		var integer i, j;
+		for (i := 0; i < lengthof(pco.protocols); i := i+1) {
+			var OCT2 id := pco.protocols[i].protocolID;
+			for (j := 0; j < lengthof(protocol_ids); j := j+1) {
+				if (not f_PCO_permits_duplicates(id) and id == protocol_ids[j]) {
+					setverdict(fail,  "Duplicate ProtocolID ", id, " already present in ", pco.protocols);
+				}
+			}
+			protocol_ids := protocol_ids & { id };
+		}
+	}
+
+	/* Test IPv6 context activation for dynamic IPv6 EUA without request of IPv6 DNS */
+	testcase TC_pdp6_act_deact() runs on GT_CT {
+		f_init();
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		f_pdp_ctx_act(ctx);
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv6 context activation for dynamic IPv6 EUA wirh request of IPv6 DNS in PCO */
+	testcase TC_pdp6_act_deact_pcodns() runs on GT_CT {
+		f_init();
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains both primary and secondary DNS */
+		var OCT4 ggsn_ip6_dns1 := f_inet6_addr(m_ggsn_ip6_dns1);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '0003'O, 1), ggsn_ip6_dns1)) {
+				setverdict(fail, "Primary DNS IPv6 PCO option not found");
+		}
+
+		var OCT4 ggsn_ip6_dns2 := f_inet6_addr(m_ggsn_ip6_dns2);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '0003'O, 2), ggsn_ip6_dns2)) {
+				setverdict(fail, "Secondary DNS IPv6 PCO option not found");
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv6 EUA with IPv6 DNS in PCO and router solicitation/advertisement */
+	testcase TC_pdp6_act_deact_icmp6() runs on GT_CT {
+		f_init();
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv6 EUA with MTU in router solicitation/advertisement */
+	testcase TC_pdp6_act_deact_mtu() runs on GT_CT {
+		f_init();
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(m_configured_mtu);
+		} else {
+			/* In GGSN_IMPL_OPEN5GS we expect open5gs-smfd to be
+			 * configured with mtu value m_configured_mtu */
+		}
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx, m_configured_mtu);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		f_pdp_ctx_del(ctx, '1'B);
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(-1);
+		}
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv6 EUA with IPv6 DNS in PCO and router solicitation/advertisement.
+	   Test we can send ICMPv6 ping over GTPU to DNS server. */
+	testcase TC_pdp6_act_deact_gtpu_access() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT16 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '0003'O);
+
+		/* Check if we can use valid global src addr, should work */
+		var OCT16 saddr_glob := f_ipv6_global(ctx.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		f_send_gtpu(ctx, f_gen_icmpv6_echo(saddr_glob, dns1_addr));
+		f_wait_icmp6_echo_reply(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Same as TC_pdp6_act_deact_gtpu_access, but using the ll addr as src address.
+	 * The ability to reach the DNS IP using this ll-addr is not really
+	 * well-specified, and it really depends on the network/routing setup,
+	 * the address of the DNS server, etc.
+	 * osmo-ggsn (userspace) and open5gs allow using it, but open5gs doesn't support it.
+	 * Also osmo-ggsn (gtp-u kernel module) is unable to use it due to kernel implementation
+	 * constrains, see OS#6382.
+	 * Hence, run the test for completeness to test the GGSN, but expect/allow both behaviors.
+	 */
+	testcase TC_pdp6_act_deact_gtpu_access_ll_saddr() runs on GT_CT {
+		var Gtp1uUnitdata ud;
+
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT16 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '0003'O);
+
+		/* Check if we can use valid link-local src addr.  */
+		var OCT16 saddr_ll := f_ipv6_link_local(ctx.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		f_send_gtpu(ctx, f_gen_icmpv6_echo(saddr_ll, dns1_addr));
+		T_default.start;
+		alt {
+		[] GTPU.receive(tr_GTPU_GPDU(g_peer_u, ?)) -> value ud {
+			var octetstring gpdu := ud.gtpu.gtpu_IEs.g_PDU_IEs.data;
+			var IPv6_packet ip6 := f_IPv6_dec(gpdu);
+			if (ip6.header.ver != 6 or ip6.header.nexthead != 58) {
+				repeat;
+			}
+			var PDU_ICMPv6 icmp6 := f_dec_PDU_ICMPv6(ip6.payload);
+			if (not match(icmp6, (tr_ICMPv6_ERP,tr_ICMPv6_DU))) {
+				repeat;
+			}
+			log("This GGSN does support forwarding link-local source address.");
+			T_default.stop;
+		}
+		[] GTPU.receive(tr_GTPU_GPDU(?, ?)) { repeat; }
+		[] GTPU.receive  {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Received unexpected GTPU while waiting for ICMPv6: ", (tr_ICMPv6_ERP,tr_ICMPv6_DU)));
+		}
+		[] T_default.timeout {
+			log("This GGSN does NOT support forwarding link-local source address.");
+		}
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Check that attempting RA with another ll src addr won't work, packet dropped: */
+	testcase TC_pdp6_act_deact_gtpu_access_wrong_ll_saddr() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT16 saddr_ll := f_ipv6_link_local(ctx.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		var OCT16 saddr_ll_wrong := f_ipv6_mangle(saddr_ll, 8);
+		f_send_gtpu(ctx, f_gen_icmpv6_router_solicitation(saddr_ll_wrong));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Assert that packets with wrong global src addr are dropped by GGSN */
+	testcase TC_pdp6_act_deact_gtpu_access_wrong_global_saddr() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT16 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '0003'O);
+		var OCT16 saddr_glob := f_ipv6_global(ctx.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		var OCT16 saddr_wrong := f_ipv6_mangle(saddr_glob);
+		f_send_gtpu(ctx, f_gen_icmpv6_echo(saddr_wrong, dns1_addr));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Send an IPv4 ICMP ECHO REQUEST to APN6, should fail (packet dropped */
+	testcase TC_pdp6_act_deact_gtpu_access_ipv4_apn6() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT4 saddr_v4 := f_inet_addr("192.168.10.2");
+		var OCT4 daddr_v4 := f_inet_addr("8.8.8.8");
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr_v4, daddr_v4));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Validate if different clients (pdp ctx) can reach one another through GGSN. */
+	testcase TC_pdp6_clients_interact() runs on GT_CT {
+		f_init();
+		var PdpContext ctxA := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		var PdpContext ctxB := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet6, valueof(t_EuaIPv6Dyn)));
+		f_pdp_ctx_act(ctxA);
+		f_send_gtpu(ctxA, f_icmpv6_rs_for_pdp(ctxA));
+		f_wait_rtr_adv(ctxA);
+		f_send_gtpu(ctxA, f_gen_icmpv6_neigh_solicit_for_pdp(ctxA));
+
+		f_pdp_ctx_act(ctxB);
+		f_send_gtpu(ctxB, f_icmpv6_rs_for_pdp(ctxB));
+		f_wait_rtr_adv(ctxB);
+		f_send_gtpu(ctxB, f_gen_icmpv6_neigh_solicit_for_pdp(ctxB));
+
+		var OCT16 addrA_ll := f_ipv6_link_local(ctxA.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		var OCT16 addrB_ll := f_ipv6_link_local(ctxB.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		var OCT16 addrA_glob := f_ipv6_global(ctxA.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+		var OCT16 addrB_glob := f_ipv6_global(ctxB.eua.endUserAddress.endUserAddressIPv6.ipv6_address);
+
+		/* Validate if clients can interact using ll addr. */
+		f_send_gtpu(ctxA, f_gen_icmpv6_echo(addrA_ll, addrB_ll));
+		f_wait_gtpu_fail(ctxB);
+
+		/* Validate if clients can interact using global addr. */
+		f_send_gtpu(ctxA, f_gen_icmpv6_echo(addrA_glob, addrB_glob));
+		f_wait_gtpu_fail(ctxB);
+
+		f_pdp_ctx_del(ctxA, '1'B);
+		f_pdp_ctx_del(ctxB, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4 EUA without DNS request */
+	testcase TC_pdp4_act_deact() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		f_pdp_ctx_act(ctx);
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4 EUA with IPv4 DNS in IPCP */
+	testcase TC_pdp4_act_deact_ipcp() runs on GT_CT {
+		f_init();
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		var uint8_t ipcp_req_id := oct2int(f_rnd_octstring(1));
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_IPCP(ipcp_req_id));
+		f_pdp_ctx_act(ctx);
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify IPCP is at all contained */
+		if (not match(ctx.pco_neg, tr_PCO_Contains('8021'O))) {
+			setverdict(fail, "IPCP not found in PCO");
+		}
+		/* verify IPCP contains both primary and secondary DNS */
+		var IpcpPacket ipcp := dec_IpcpPacket(f_PCO_extract_proto(ctx.pco_neg, '8021'O));
+		if (not match(ipcp, tr_IPCP_Ack_DNS(ipcp_req_id, ggsn_ip4_dns1, ggsn_ip4_dns2))) {
+			if (not match(ipcp, tr_IPCP_Ack_DNS(ipcp_req_id))) {
+				if (not match(ipcp, tr_IPCP_Ack_DNS(?))) {
+					setverdict(fail, "Primary/Secondary DNS PCO IPCP option not found");
+				} else {
+					setverdict(fail, "Primary/Secondary DNS PCO IPCP option found but not matching expected identifier");
+				}
+			} else {
+				setverdict(fail, "Primary/Secondary DNS PCO IPCP option found but not matching expected values");
+			}
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4 EUA with IPv4 DNS in IPCP + PAP authentication (broken) */
+	testcase TC_pdp4_act_deact_ipcp_pap_broken() runs on GT_CT {
+		f_init();
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_PAP_IPv4_DNS);
+		f_pdp_ctx_act(ctx);
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify IPCP is at all contained */
+		if (not match(ctx.pco_neg, tr_PCO_Contains('8021'O))) {
+			setverdict(fail, "IPCP not found in PCO");
+		}
+		/* verify IPCP contains both primary and secondary DNS */
+		var IpcpPacket ipcp := dec_IpcpPacket(f_PCO_extract_proto(ctx.pco_neg, '8021'O));
+		if (not match(ipcp, tr_IPCP_Ack_DNS(0, ggsn_ip4_dns1, ggsn_ip4_dns2))) {
+			if (not match(ipcp, tr_IPCP_Ack_DNS(0))) {
+				setverdict(fail, "Primary/Secondary DNS PCO IPCP option not found");
+			} else {
+				setverdict(fail, "Primary/Secondary DNS PCO IPCP option found but not matching expected values");
+			}
+		}
+		/* verify that PAP is contained */
+		if (not match(ctx.pco_neg, tr_PCO_Contains('C023'O))) {
+			setverdict(fail, "PAP not found in PCO");
+		}
+		var PapPacket pap := dec_PapPacket(f_PCO_extract_proto(ctx.pco_neg, 'C023'O));
+		if (not match(pap, tr_PAP_AuthAck)) {
+			setverdict(fail, "PAP isn't an AuthenticateAck: ", pap);
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4 EUA with IPv4 DNS in PCO */
+	testcase TC_pdp4_act_deact_pcodns() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains both primary and secondary DNS */
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '000d'O, 1), ggsn_ip4_dns1)) {
+				setverdict(fail, "Primary DNS IPv4 PCO option not found");
+		}
+
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '000d'O, 2), ggsn_ip4_dns2)) {
+				setverdict(fail, "Secondary DNS IPv4 PCO option not found");
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation requesting MTU in PCO */
+	testcase TC_pdp4_act_deact_mtu() runs on GT_CT {
+		f_init();
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(m_configured_mtu);
+		} else {
+			/* In GGSN_IMPL_OPEN5GS we expect open5gs-smfd to be
+			 * configured with mtu value m_configured_mtu */
+		}
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_MTU);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains MTU */
+		var octetstring rx_mtu_octstr := f_PCO_extract_proto(ctx.pco_neg, PCO_P_to_OCT2(PCO_P_IPv4_LINK_MTU), 1);
+		if (not match(rx_mtu_octstr, decmatch tr_PCO_P_UV_U16(m_configured_mtu))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Rx Unexpected MTU ", rx_mtu_octstr,
+								" vs exp ", tr_PCO_P_UV_U16(m_configured_mtu)));
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(-1);
+		}
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4 EUA.
+	   Test we can send ICMPv4 ping over GTPU to DNS server. */
+	testcase TC_pdp4_act_deact_gtpu_access() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+
+		/* Check if we can use valid global src addr, should work */
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Assert that packets with wrong global src addr are dropped by GGSN  */
+	testcase TC_pdp4_act_deact_gtpu_access_wrong_saddr() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		var OCT4 saddr_wrong := substr(saddr, 0, 3) & (saddr[3] xor4b '11'O);
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr_wrong, dns1_addr));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Send an IPv6 RA to APN4, should fail (packet dropped) */
+	testcase TC_pdp4_act_deact_gtpu_access_ipv6_apn4() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		/* Send an IPv6 RA to APN4, should fail (packet dropped) */
+		var OCT16 saddr_v6 := f_inet6_addr("fde4:8dba:82e1:2000:1:2:3:4");
+		f_send_gtpu(ctx, f_gen_icmpv6_router_solicitation(saddr_v6));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Helper function for tests below. */
+	function f_pdp4_clients_interact() runs on GT_CT {
+		f_init();
+		var PdpContext ctxA := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		var PdpContext ctxB := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		f_pdp_ctx_act(ctxA);
+		f_pdp_ctx_act(ctxB);
+		var OCT4 addrA := ctxA.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		var OCT4 addrB := ctxB.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		f_send_gtpu(ctxA, f_gen_icmpv4_echo(addrA, addrB));
+		f_wait_icmp4_echo_request(ctxB);
+
+		f_pdp_ctx_del(ctxA, '1'B);
+		f_pdp_ctx_del(ctxB, '1'B);
+	}
+
+	/* Validate if different clients (pdp ctx) can reach one another through GGSN. */
+	testcase TC_pdp4_clients_interact_with_txseq() runs on GT_CT {
+		use_gtpu_txseq := true;
+		f_pdp4_clients_interact();
+		f_shutdown_helper();
+	}
+
+	/* Validate if different clients (pdp ctx) can reach one another through GGSN (without Tx sequence number). */
+	testcase TC_pdp4_clients_interact_without_txseq() runs on GT_CT {
+		use_gtpu_txseq := false;
+		f_pdp4_clients_interact();
+		f_shutdown_helper();
+	}
+
+	testcase TC_echo_req_resp() runs on GT_CT {
+		f_init();
+		f_send_gtpc(ts_GTPC_PING(g_peer_c, g_c_seq_nr));
+		T_default.start;
+		alt {
+			[] GTPC.receive(tr_GTPC_PONG(g_peer_c)) { setverdict(pass); };
+			[] GTPC.receive { repeat; };
+			[] T_default.timeout { setverdict(fail); }
+		}
+		T_default.stop;
+		f_shutdown_helper();
+	}
+
+	testcase TC_echo_req_resp_gtpu() runs on GT_CT {
+		f_init();
+		GTPU.send(ts_GTPU_PING(g_peer_u, g_d_seq_nr));
+		T_default.start;
+		alt {
+			[] GTPU.receive(tr_GTPU_PONG(g_peer_u)) { setverdict(pass); };
+			[] GTPU.receive { repeat; };
+			[] T_default.timeout { setverdict(fail); }
+		}
+		T_default.stop;
+		f_shutdown_helper();
+	}
+
+	/* Test if the parser can cope with PCO that only contain either a
+	 * single primary DNS or a secondary DNS. */
+	testcase TC_pdp4_act_deact_with_single_dns() runs on GT_CT {
+
+		/* Note: an unpatched osmo-ggsn version will enter an endless-loop when
+		 * the test is executed.
+		 * see also: Change-Id Icffde89f9bc5d8fcadf6e2dd6c0b4de03440edd5 and OS#3288 */
+
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		var octetstring pco_neg_dns;
+		var octetstring pco_neg_dns_expected;
+
+		/* PCO with primary DNS only */
+		ctx.pco_req := valueof(ts_PCO_IPv4_PRI_DNS_IPCP);
+		f_pdp_ctx_act(ctx);
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		pco_neg_dns := f_PCO_extract_proto(ctx.pco_neg, '8021'O, 1);
+		pco_neg_dns_expected := '0200000A8106'O & ggsn_ip4_dns1
+		/* Note: The prepended hex bytes encode the following information:
+		 * 0x02   = Configuration ACK
+		 * 0x00   = Identifier
+		 * 0x000a = Length
+		 * 0x81   = Type (Primary DNS Server Address)
+		 * 0x06   = Length
+		 * (4 byte IP-Address appended) */
+		if (not match(pco_neg_dns, pco_neg_dns_expected)) {
+			setverdict(fail, "Primary DNS IPv4 PCO option not found");
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+
+		/* PCO with secondary DNS only */
+		ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_SEC_DNS_IPCP);
+		f_pdp_ctx_act(ctx);
+		pco_neg_dns := f_PCO_extract_proto(ctx.pco_neg, '8021'O, 1);
+		pco_neg_dns_expected := '0200000A8306'O & ggsn_ip4_dns2
+		if (not match(pco_neg_dns, pco_neg_dns_expected)) {
+			setverdict(fail, "Secondary DNS IPv4 PCO option not found");
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test if the parser can cope with PCO that contains primary and secondary DNS in a separate IPCP container.
+	 * Note: an unpatched osmo-ggsn version will enter an endless-loop when the test is run
+	 * see Change-Id Icffde89f9bc5d8fcadf6e2dd6c0b4de03440edd5 and OS#3288. */
+	testcase TC_pdp4_act_deact_with_separate_dns() runs on GT_CT {
+
+		/* Note: an unpatched osmo-ggsn version will enter an endless-loop when
+		 * the test is executed.
+		 * see also: Change-Id Icffde89f9bc5d8fcadf6e2dd6c0b4de03440edd5 and OS#3288 */
+
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		var octetstring pco_neg_dns;
+		var octetstring pco_neg_dns_expected;
+
+		ctx.pco_req := valueof(ts_PCO_IPv4_SEPARATE_DNS_IPCP);
+		f_pdp_ctx_act(ctx);
+
+		/* Check if primary DNS is contained */
+		pco_neg_dns := f_PCO_extract_proto(ctx.pco_neg, '8021'O, 1);
+		pco_neg_dns_expected := '0200000A8106'O & ggsn_ip4_dns1
+		if (not match(pco_neg_dns, pco_neg_dns_expected)) {
+			setverdict(fail, "Primary DNS IPv4 PCO option not found");
+		}
+
+		/* Check if secondary DNS is contained */
+		/* This used to fail due to a bug in osmo-ggsn, see OS#3381 */
+		pco_neg_dns := f_PCO_extract_proto(ctx.pco_neg, '8021'O, 2);
+		pco_neg_dns_expected := '0200000A8306'O & ggsn_ip4_dns2
+		if (not match(pco_neg_dns, pco_neg_dns_expected)) {
+			setverdict(fail, "Secondary DNS IPv4 PCO option not found");
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Validate that SUT updates remote TEIC when requested through UpdatePDPContextRequest */
+	testcase TC_pdp4_act_update_teic() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		/* UpdatePDPContestRequest changing the local TEIC */
+		var OCT4 new_teic := ctx.teic;
+		new_teic[3] := new_teic[3] xor4b '11'O;
+		f_pdp_ctx_update(ctx, new_teic := new_teic);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Validate that SUT updates remote TEID when requested through UpdatePDPContextRequest */
+	testcase TC_pdp4_act_update_teid() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+
+		/* Data is sent (back) to the local TEID established during CreatePDPContext */
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		/* UpdatePDPContestRequest changing the local TEID */
+		var OCT4 new_teid := ctx.teid;
+		new_teid[3] := new_teid[3] xor4b '11'O;
+		f_pdp_ctx_update(ctx, new_teid := new_teid);
+
+		/* Check if we can send data after updating the PDP context. Answer should be sent to the new TEID */
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv4v6 context activation for dynamic IPv4v6 EUA without DNS request */
+	testcase TC_pdp46_act_deact() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		f_pdp_ctx_act(ctx);
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4v6 EUA with IPv4 DNS in IPCP */
+	testcase TC_pdp46_act_deact_ipcp() runs on GT_CT {
+		f_init();
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_IPCP);
+		f_pdp_ctx_act(ctx);
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify IPCP is at all contained */
+		if (not match(ctx.pco_neg, tr_PCO_Contains('8021'O))) {
+			setverdict(fail, "IPCP not found in PCO");
+		}
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify IPCP contains both primary and secondary IPv4 DNS */
+		var IpcpPacket ipcp := dec_IpcpPacket(f_PCO_extract_proto(ctx.pco_neg, '8021'O));
+		if (not match(ipcp, tr_IPCP_Ack_DNS(0, ggsn_ip4_dns1, ggsn_ip4_dns2))) {
+			if (not match(ipcp, tr_IPCP_Ack_DNS(0))) {
+				setverdict(fail, "Primary/Secondary DNS PCO IPCP option not found");
+			} else {
+				setverdict(fail, "Primary/Secondary DNS PCO IPCP option found but not matching expected values");
+			}
+		}
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4v6 EUA with IPv6 DNS in PCO and router solicitation/advertisement */
+	testcase TC_pdp46_act_deact_icmp6() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp46(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp46(ctx));
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv4v6 context activation for dynamic IPv4v6 EUA with request of IPv4 DNS in PCO */
+	testcase TC_pdp46_act_deact_pcodns4() runs on GT_CT {
+		f_init();
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains both primary and secondary IPv4 DNS */
+		var OCT4 ggsn_ip4_dns1 := f_inet_addr(m_ggsn_ip4_dns1);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '000d'O, 1), ggsn_ip4_dns1)) {
+				setverdict(fail, "Primary DNS IPv4 PCO option not found");
+		}
+
+		var OCT4 ggsn_ip4_dns2 := f_inet_addr(m_ggsn_ip4_dns2);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '000d'O, 2), ggsn_ip4_dns2)) {
+				setverdict(fail, "Secondary DNS IPv4 PCO option not found");
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv4v6 context activation for dynamic IPv4v6 EUA with request of IPv6 DNS in PCO */
+	testcase TC_pdp46_act_deact_pcodns6() runs on GT_CT {
+		f_init();
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains both primary and secondary IPv6 DNS */
+		var OCT4 ggsn_ip6_dns1 := f_inet6_addr(m_ggsn_ip6_dns1);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '0003'O, 1), ggsn_ip6_dns1)) {
+				setverdict(fail, "Primary DNS IPv6 PCO option not found");
+		}
+
+		var OCT4 ggsn_ip6_dns2 := f_inet6_addr(m_ggsn_ip6_dns2);
+		if (not match(f_PCO_extract_proto(ctx.pco_neg, '0003'O, 2), ggsn_ip6_dns2)) {
+				setverdict(fail, "Secondary DNS IPv6 PCO option not found");
+		}
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv4v6 context activation requesting MTU in PCO */
+	testcase TC_pdp46_act_deact_mtu() runs on GT_CT {
+		f_init();
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(m_configured_mtu);
+		} else {
+			/* In GGSN_IMPL_OPEN5GS we expect open5gs-smfd to be
+			 * configured with mtu value m_configured_mtu */
+		}
+
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_MTU);
+		f_pdp_ctx_act(ctx);
+
+		f_PCO_ensure_no_duplicates(ctx.pco_neg);
+		/* verify PCO contains MTU */
+		var octetstring rx_mtu_octstr := f_PCO_extract_proto(ctx.pco_neg, PCO_P_to_OCT2(PCO_P_IPv4_LINK_MTU), 1);
+		if (not match(rx_mtu_octstr, decmatch tr_PCO_P_UV_U16(m_configured_mtu))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Rx Unexpected MTU ", rx_mtu_octstr,
+								" vs exp ", tr_PCO_P_UV_U16(m_configured_mtu)));
+		}
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx, m_configured_mtu);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		f_pdp_ctx_del(ctx, '1'B);
+		if (m_ggsn_impl == GGSN_IMPL_OSMOCOM) {
+			f_vty_set_mtu(-1);
+		}
+		f_shutdown_helper();
+	}
+
+	/* Test PDP context activation for dynamic IPv4v6 EUA.
+	   Test we can send ICMPv6 ping over GTPU to DNS server. */
+	testcase TC_pdp46_act_deact_gtpu_access() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+
+		/* Check if we can use valid global src addr, should work */
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv4_address;
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Assert that packets with wrong ipv4 src addr are dropped by GGSN on APN IPv4v6 */
+	testcase TC_pdp46_act_deact_gtpu_access_wrong_saddr_ipv4() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv4_address;
+		var OCT4 saddr_wrong := substr(saddr, 0, 3) & (saddr[3] xor4b '11'O);
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr_wrong, dns1_addr));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Check that attempting RA with another ll src addr won't work, packet dropped: */
+	testcase TC_pdp46_act_deact_gtpu_access_wrong_ll_saddr_ipv6() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		var OCT16 saddr_ll := f_ipv6_link_local(ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+		var OCT16 saddr_ll_wrong := f_ipv6_mangle(saddr_ll, 8);
+		f_send_gtpu(ctx, f_gen_icmpv6_router_solicitation(saddr_ll_wrong));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Assert that packets with wrong ipv6 global src addr are dropped by GGSN on APN IPv4v6 */
+	testcase TC_pdp46_act_deact_gtpu_access_wrong_global_saddr_ipv6() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv6_DNS);
+		f_pdp_ctx_act(ctx);
+
+		f_send_gtpu(ctx, f_icmpv6_rs_for_pdp(ctx));
+		f_wait_rtr_adv(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv6_neigh_solicit_for_pdp(ctx));
+
+		var OCT16 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '0003'O);
+		var OCT16 saddr_glob := f_ipv6_global(ctx.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+		var OCT16 saddr_wrong := f_ipv6_mangle(saddr_glob);
+		f_send_gtpu(ctx, f_gen_icmpv6_echo(saddr_wrong, dns1_addr));
+		f_wait_gtpu_fail(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Validate if different clients (pdp ctx) can reach one another through GGSN. */
+	testcase TC_pdp46_clients_interact() runs on GT_CT {
+		f_init();
+		var PdpContext ctxA := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		var PdpContext ctxB := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInet46, valueof(t_EuaIPv4Dynv6Dyn)));
+		f_pdp_ctx_act(ctxA);
+		f_send_gtpu(ctxA, f_icmpv6_rs_for_pdp46(ctxA));
+		f_wait_rtr_adv(ctxA);
+		f_send_gtpu(ctxA, f_gen_icmpv6_neigh_solicit_for_pdp46(ctxA));
+
+		f_pdp_ctx_act(ctxB);
+		f_send_gtpu(ctxB, f_icmpv6_rs_for_pdp46(ctxB));
+		f_wait_rtr_adv(ctxB);
+		f_send_gtpu(ctxB, f_gen_icmpv6_neigh_solicit_for_pdp46(ctxB));
+
+		var OCT16 addrA_ll := f_ipv6_link_local(ctxA.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+		var OCT16 addrB_ll := f_ipv6_link_local(ctxB.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+		var OCT16 addrA_glob := f_ipv6_global(ctxA.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+		var OCT16 addrB_glob := f_ipv6_global(ctxB.eua.endUserAddress.endUserAddressIPv4andIPv6.ipv6_address);
+
+		/* Validate if clients can interact using ll addr. */
+		f_send_gtpu(ctxA, f_gen_icmpv6_echo(addrA_ll, addrB_ll));
+		f_wait_gtpu_fail(ctxB);
+
+		/* Validate if clients can interact using global addr. */
+		f_send_gtpu(ctxA, f_gen_icmpv6_echo(addrA_glob, addrB_glob));
+		f_wait_gtpu_fail(ctxB);
+
+		f_pdp_ctx_del(ctxA, '1'B);
+		f_pdp_ctx_del(ctxB, '1'B);
+		f_shutdown_helper();
+	}
+
+	/* Test IPv4v6 context activation for dynamic IPv4v6 EUA on a v4-only APN */
+	testcase TC_pdp46_act_deact_apn4() runs on GT_CT {
+		const OCT1 cause_accept := '80'O; /* Normal accept cause */
+		const OCT1 cause_new_pdp_type := '81'O; /* Cause: New PDP type due to network preference */
+		const OCT1 cause_unknown_pdp := 'DC'O; /* Cause: Unknown PDP address or PDP type */
+		var CreatePDPContextResponse cpr;
+
+		f_init();
+		var PdpContext ctx46 := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dynv6Dyn)));
+		cpr := f_pdp_ctx_act(ctx46, (cause_unknown_pdp, cause_new_pdp_type));
+
+		if (cpr.cause.causevalue == cause_new_pdp_type) {
+			/* 3GPP TS 23.060 sec 9.2.1: "If the MS requests PDP type IPv4v6,
+			 * but the operator preferences dictate the use of a single IP
+			 * version only, the PDP type shall be changed to a single address
+			 * PDP type (IPv4 or IPv6) and a reason cause shall be returned to
+			 * the MS indicating that only the assigned PDP type is allowed. In
+			 * this case, the MS shall not request another PDP context for the
+			 * other PDP type during the existence of the PDP context." */
+			f_pdp_ctx_del(ctx46, '1'B);
+		} else {
+			/* 3GPP TS 23.060 sec 9.2.1 NOTE 5: If the MS requests PDP type
+			 * IPv4v6, and the PDP context is rejected due to "unknown PDP
+			 * type", the MS can attempt to establish dual-stack connectivity
+			 * by performing two PDP context request procedures to activate an
+			 * IPv4 PDP context and an IPv6 PDP context, both to the same APN. A
+			 * typical MS first attempts v4v6, and if rejected, then tries v4
+			 * and v6 separetly */
+			var PdpContext ctx4 := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+			f_pdp_ctx_act(ctx4, cause_accept); /* Normal accept cause */
+
+			var PdpContext ctx6 := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv6Dyn)));
+			f_pdp_ctx_act(ctx6, cause_unknown_pdp); /* Cause: Unknown PDP address or PDP type */
+
+			f_pdp_ctx_del(ctx4, '1'B);
+		}
+		f_shutdown_helper();
+	}
+
+	/* Validate if 2nd CtxCreateReq with increased Recovery IE causes ggsn to drop 1st one (while keeping 2nd one). */
+	testcase TC_pdp_act2_recovery() runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		var default d;
+		var boolean ctxA_deleted := false;
+		var boolean ctxB_created := false;
+
+		f_init();
+		var PdpContext ctxA := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		var PdpContext ctxB := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		f_pdp_ctx_act(ctxA);
+
+		g_restart_ctr := int2oct((oct2int(g_restart_ctr) + 1) mod 256, 1);
+
+		log("sending 2nd CreatePDP (recovery increased)");
+		f_send_gtpc(ts_GTPC_CreatePDP(g_peer_c, g_c_seq_nr, ctxB.imsi, g_restart_ctr,
+						  ctxB.teid, ctxB.teic, ctxB.nsapi, ctxB.eua, ctxB.apn,
+						  g_sgsn_ip_c, g_sgsn_ip_u, ctxB.msisdn, ctxB.pco_req));
+		T_default.start;
+		d := activate(pingpong());
+		alt {
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, createPDPContextResponse, ctxB.teic)) -> value ud {
+				f_handle_create_req(ctxB, ud);
+				if (not ctxB_created) {
+					ctxB_created := true;
+					setverdict(pass);
+				} else {
+					setverdict(fail, "Repeated createPDPContextResponse(ctxB)");
+				}
+
+				if (not ctxA_deleted) {
+					repeat;
+				}
+			}
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextRequest, ctxA.teic)) -> value ud {
+				if (ispresent(ud.gtpc.gtpc_pdu.deletePDPContextRequest.tearDownIndicator)) {
+					setverdict(pass);
+				} else {
+					setverdict(fail);
+				}
+
+				if (not ctxA_deleted) {
+					ctxA_deleted := true;
+					setverdict(pass);
+				} else {
+					setverdict(fail, "Repeated deletePDPContextRequest(ctxA)");
+				}
+
+				if (not ctxB_created) {
+					repeat;
+				}
+			}
+			[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextRequest, ctxB.teic)) -> value ud {
+				setverdict(fail, "GGSN dropping still valid pdp ctx");
+			}
+		}
+		deactivate(d);
+		T_default.stop;
+
+		f_pdp_ctx_del(ctxB, '1'B);
+		f_shutdown_helper();
+	}
+
+
+	/* Send a duplicate echo req. osmo-ggsn maintains a queue for sent responses (T3-RESPONSE * N3-REQUESTS):
+	 * If same delete req is sent and duplicate is detected, saved duplicate response should be sent back. */
+	testcase TC_act_deact_retrans_duplicate() runs on GT_CT {
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		f_pdp_ctx_act(ctx);
+		f_pdp_ctx_del(ctx, '1'B);
+		/* leave some time in between to make sure retransmit response queue keeps packets for a while */
+		f_sleep(int2float(mp_t3_response));
+		/* g_c_seq_nr was increased during f_pdp_ctx_del(), we want a
+		   duplicate. If it was not a duplicate, osmo-ggsn would answer
+		   with a failure since that PDP ctx was already deleted. */
+		if (g_c_seq_nr == 0) {
+			g_c_seq_nr := 65535;
+		} else {
+			g_c_seq_nr := g_c_seq_nr - 1;
+		}
+		f_pdp_ctx_del(ctx, '1'B, expect_diameter := false);
+
+		/* Now send a new pdp ctx del (increased seqnum). It should fail with cause "non-existent": */
+		var OCT1 cause_nonexistent := 'C0'O;
+		f_pdp_ctx_del(ctx, '1'B, cause_nonexistent, expect_diameter := false);
+		f_shutdown_helper();
+	}
+
+	/* Activate PDP context + trigger Recovery procedure through EchoResp */
+	testcase TC_pdp_act_restart_ctr_echo() runs on GT_CT {
+		var Gtp1cUnitdata ud;
+		g_use_echo_intval := 5;
+		timer T_echo;
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		f_pdp_ctx_act(ctx);
+
+		/* Wait to receive echo request and send initial Restart counter */
+		T_echo.start(int2float(g_use_echo_intval) + 1.0);
+		alt {
+		[] GTPC.receive(tr_GTPC_PING(?)) -> value ud {
+			var uint16_t seq := oct2int(ud.gtpc.opt_part.sequenceNumber);
+			GTPC.send(ts_GTPC_PONG(ud.peer, seq, g_restart_ctr));
+			}
+		[] T_echo.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"Timeout waiting for ping");
+			}
+		}
+		T_echo.stop;
+
+		/* Wait to receive second echo request and send incremented Restart
+		   counter. This will fake a restarted SGSN, and pdp ctx allocated
+		   should be released by GGSN */
+		g_restart_ctr := int2oct((oct2int(g_restart_ctr) + 1) mod 256, 1);
+		T_echo.start(int2float(g_use_echo_intval) + 1.0);
+		alt {
+		[] GTPC.receive(tr_GTPC_PING(?)) -> value ud {
+			var uint16_t seq := oct2int(ud.gtpc.opt_part.sequenceNumber);
+			GTPC.send(ts_GTPC_PONG(ud.peer, seq, g_restart_ctr));
+			}
+		[] T_echo.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"Timeout waiting for ping");
+			}
+		}
+		T_echo.stop;
+		f_pdp_ctx_exp_del_req(ctx, omit, true);
+		f_shutdown_helper();
+	}
+
+	/* Test creation, user plane and deletion of big amount (1000) of concurrent PDP context */
+	testcase TC_lots_of_concurrent_pdp_ctx() runs on GT_CT  {
+		var Gtp1cUnitdata udc;
+		var Gtp1uUnitdata udu;
+		const integer num_ctx := 1000;
+		var PdpContext ctx[num_ctx];
+		timer T_next := 0.01;
+		var integer next_req_ctx := 0;
+		var integer rx_resp_ctx := 0;
+		var integer rx_pong := 0;
+		var OCT4 dns1_addr;
+		var OCT4 saddr;
+		var integer teic;
+		var integer idx;
+
+		f_init();
+
+		for (var integer i := 0; i < num_ctx; i := i + 1) {
+			ctx[i] := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234" & int2str(f_rnd_int(4294967296)), c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+			ctx[i].teic := int2oct(i+1, 4); /* +1: skip TEIC=0 */
+			ctx[i].teid := int2oct(i+1, 4); /* +1: skip TEID=0 */
+			ctx[i].pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		}
+
+		T_default.start(60.0);
+
+		T_next.start;
+		alt {
+		[Gx_PROC.checkstate("Connected")] as_DIA_Gx_CCR(INITIAL_REQUEST) { repeat; }
+		[Gy_PROC.checkstate("Connected")] as_DIA_Gy_CCR(omit, INITIAL_REQUEST) { repeat; }
+		[] pingpong();
+		[] T_next.timeout {
+			f_send_gtpc(ts_GTPC_CreatePDP(g_peer_c, g_c_seq_nr, ctx[next_req_ctx].imsi, g_restart_ctr,
+							  ctx[next_req_ctx].teid, ctx[next_req_ctx].teic, ctx[next_req_ctx].nsapi,
+							  ctx[next_req_ctx].eua, ctx[next_req_ctx].apn,  g_sgsn_ip_c, g_sgsn_ip_u,
+							  ctx[next_req_ctx].msisdn, ctx[next_req_ctx].pco_req, ctx[next_req_ctx].ratType,
+							  ctx[next_req_ctx].uli, ctx[next_req_ctx].charging_char, ctx[next_req_ctx].imeisv,
+							  ctx[next_req_ctx].ms_tz));
+			next_req_ctx := next_req_ctx + 1;
+			if (next_req_ctx < num_ctx) {
+				T_next.start;
+			}
+			repeat;
+			}
+		[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, createPDPContextResponse, ?)) -> value udc {
+			teic := oct2int(udc.gtpc.teid);
+			if (not match(teic, (1 .. num_ctx))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Rx Unexpected TEIC");
+			}
+			idx := teic - 1;
+			f_handle_create_req(ctx[idx], udc);
+			rx_resp_ctx := rx_resp_ctx + 1;
+
+			dns1_addr := f_PCO_extract_proto(ctx[idx].pco_neg, '000d'O);
+			saddr := ctx[idx].eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+			f_send_gtpu(ctx[idx], f_gen_icmpv4_echo(saddr, dns1_addr));
+			repeat;
+		}
+		[] GTPU.receive(tr_GTPU_GPDU(g_peer_u, ?)) -> value udu {
+			var octetstring gpdu := udu.gtpu.gtpu_IEs.g_PDU_IEs.data;
+			var IPv4_packet ip4 := f_IPv4_dec(gpdu);
+			if (ip4.header.ver != 4) {
+				repeat;
+			}
+			var PDU_ICMP icmp4 := f_dec_PDU_ICMP(ip4.payload);
+			if (not match(icmp4, (tr_ICMPv4_ERP, tr_ICMPv4_DU))) {
+				repeat;
+			}
+			rx_pong := rx_pong + 1;
+			if (rx_pong < num_ctx) {
+				repeat;
+			}
+			setverdict(pass);
+		}
+		[] GTPC.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPC"); }
+		[] GTPU.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPU"); }
+		}
+
+		/* Let's close them now: */
+		next_req_ctx := 0;
+		rx_resp_ctx := 0;
+		T_next.start;
+		alt {
+		[Gx_PROC.checkstate("Connected")] as_DIA_Gx_CCR(TERMINATION_REQUEST) { repeat; }
+		[Gy_PROC.checkstate("Connected")] as_DIA_Gy_CCR(omit, TERMINATION_REQUEST) { repeat; }
+		[] pingpong();
+		[] T_next.timeout {
+			f_send_gtpc(ts_GTPC_DeletePDP(g_peer_c, g_c_seq_nr, ctx[next_req_ctx].teic_remote, ctx[next_req_ctx].nsapi, '1'B));
+			next_req_ctx := next_req_ctx + 1;
+			if (next_req_ctx < num_ctx) {
+				T_next.start;
+			}
+			repeat;
+			}
+		[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextResponse, ?)) -> value udc {
+			teic := oct2int(udc.gtpc.teid);
+			if (not match(teic, (1 .. num_ctx))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Rx Unexpected TEIC");
+			}
+			rx_resp_ctx := rx_resp_ctx + 1;
+			if (rx_resp_ctx < num_ctx) {
+				repeat;
+			}
+			setverdict(pass);
+		}
+		[] GTPC.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPC"); }
+		[] GTPU.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPU"); }
+		}
+		T_next.stop;
+
+		T_default.stop;
+		f_shutdown_helper();
+	}
+
+	/* Test callocation of PDP contexts until reaching addr pool exhaustion */
+	type record of OCT4 TEIClist;
+	testcase TC_addr_pool_exhaustion() runs on GT_CT  {
+		var Gtp1cUnitdata udc;
+		var Gtp1uUnitdata udu;
+		var PdpContext ctx;
+		timer T_next := 0.005;
+		var integer next_req_ctx := 0;
+		var integer rx_resp_ctx := 0;
+		var integer num_ctx;
+		var boolean cont_req := true;
+		var CreatePDPContextResponse cpr;
+		var TEIClist teic_list := {};
+		var integer teic;
+
+		f_init();
+
+		T_default.start(120.0);
+
+		T_next.start;
+		alt {
+		[Gx_PROC.checkstate("Connected")] as_DIA_Gx_CCR(INITIAL_REQUEST) { repeat; }
+		[Gy_PROC.checkstate("Connected")] as_DIA_Gy_CCR(omit, INITIAL_REQUEST) { repeat; }
+		[] pingpong();
+		[] T_next.timeout {
+			if (cont_req) {
+				if (next_req_ctx - rx_resp_ctx < 100) { /* if we have too many in progress, wait a bit to continue */
+					ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234" & int2str(f_rnd_int(4294967296)), c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+					ctx.nsapi := '0001'B;
+					ctx.teic := int2oct(next_req_ctx+1, 4); /* +1: skip TEIC=0 */
+					ctx.teid := int2oct(next_req_ctx+1, 4); /* +1: skip TEID=0 */
+					f_send_gtpc(ts_GTPC_CreatePDP(g_peer_c, g_c_seq_nr, ctx.imsi, g_restart_ctr,
+									  ctx.teid, ctx.teic, ctx.nsapi,
+									  ctx.eua, ctx.apn,  g_sgsn_ip_c, g_sgsn_ip_u,
+									  ctx.msisdn, ctx.pco_req, ctx.ratType,
+									  ctx.uli, ctx.charging_char, ctx.imeisv,
+									  ctx.ms_tz));
+					next_req_ctx := next_req_ctx + 1;
+				}
+				T_next.start;
+			}
+			repeat;
+			}
+		[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, createPDPContextResponse, ?)) -> value udc {
+			cpr := udc.gtpc.gtpc_pdu.createPDPContextResponse;
+
+			if (cpr.cause.causevalue == '80'O) {
+				teic_list := teic_list & {cpr.teidControlPlane.teidControlPlane};
+			} else {
+				if (cont_req == true) {
+					num_ctx := rx_resp_ctx;
+					log("Successfully created ", num_ctx, " PDP contexts before exhausting the pool");
+					setverdict(pass);
+				}
+				cont_req := false;
+			}
+			rx_resp_ctx := rx_resp_ctx + 1;
+			if (not cont_req and next_req_ctx == rx_resp_ctx) {
+				break;
+			} else {
+				repeat;
+			}
+		}
+		[] GTPC.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPC"); }
+		[] GTPU.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPU"); }
+		}
+
+		/* Let's close them now: */
+		next_req_ctx := 0;
+		rx_resp_ctx := 0;
+		T_next.start;
+		alt {
+		[Gx_PROC.checkstate("Connected")] as_DIA_Gx_CCR(TERMINATION_REQUEST) { repeat; }
+		[Gy_PROC.checkstate("Connected")] as_DIA_Gy_CCR(omit, TERMINATION_REQUEST) { repeat; }
+		[] pingpong();
+		[lengthof(teic_list) > 0] T_next.timeout {
+			f_send_gtpc(ts_GTPC_DeletePDP(g_peer_c, g_c_seq_nr, teic_list[next_req_ctx], '0001'B, '1'B));
+			next_req_ctx := next_req_ctx + 1;
+			if (next_req_ctx < num_ctx) {
+				T_next.start;
+			}
+			repeat;
+			}
+		[] GTPC.receive(tr_GTPC_MsgType(g_peer_c, deletePDPContextResponse, ?)) -> value udc {
+			teic := oct2int(udc.gtpc.teid);
+			if (not match(teic, (1 .. num_ctx))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Rx Unexpected TEIC");
+			}
+			rx_resp_ctx := rx_resp_ctx + 1;
+			if (rx_resp_ctx < num_ctx) {
+				repeat;
+			}
+			setverdict(pass);
+		}
+		[] GTPC.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPC"); }
+		[] GTPU.receive { Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Rx Unexpected GTPU"); }
+		}
+		T_next.stop;
+
+		T_default.stop;
+		f_shutdown_helper();
+	}
+
+	/* Test charging over Gy interface. */
+	testcase TC_gy_charging_cc_time() runs on GT_CT {
+		var default d;
+
+		g_gy_validity_time := 3; /* Grant access for 3 seconds, needs to be re-validated afterwards */
+		f_init();
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+
+		/* Send some UL traffic: */
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		T_default.start(10.0);
+		d := activate(pingpong());
+
+		g_gy_validity_time := 2;
+		/* First update reports octests/pkt on both UL/DL (see icmp ping-pong above) */
+		as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		f_validate_gy_cc_report(g_rx_gy, VALIDITY_TIME, (3..4), 28, 28);
+
+		/* Second update: 0 ul/dl pkt/octet should be reported, since nothing was sent */
+		as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		f_validate_gy_cc_report(g_rx_gy, VALIDITY_TIME, (2..3), 0, 0);
+
+		/* Third update: make sure report contains again octets/pkts for both UL/DL: */
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+		as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		f_validate_gy_cc_report(g_rx_gy, VALIDITY_TIME, (2..3), 56, 56);
+
+		/* Let the CCA reach the GGSN */
+		f_sleep(0.5);
+		deactivate(d);
+		T_default.stop;
+
+		/* Send some data and validate it is reported in the TERMINATION_REQUEST
+		 * (triggered by PFCP Session Deletion Response): */
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr));
+		f_wait_icmp4_echo_reply(ctx);
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_validate_gy_cc_report(g_rx_gy, FINAL, (0..2), 28, 28);
+
+
+		f_shutdown_helper();
+	}
+
+	/* Test  Volume-Quota-Thresold AVP triggers request before Validity-Time */
+	testcase TC_gy_charging_volume_quota_threshold() runs on GT_CT {
+		var default d;
+		timer Tout;
+		g_gy_volume_quota := 10000; /* Allow for sending 10000 bytes */
+		g_gy_volume_threshold := 9000; /* Will make a trigger when we send bigger payload below (10000-9000 = 1000 bytes) */
+		g_gy_validity_time := 8; /* Grant access for 8 seconds, needs to be re-validated afterwards */
+		f_init();
+		var float tout_sec := int2float(g_gy_validity_time) / 2.0;
+		var PdpContext ctx := valueof(t_DefinePDP(f_rnd_imsi('26242'H), "1234", c_ApnInternet, valueof(t_EuaIPv4Dyn)));
+		ctx.pco_req := valueof(ts_PCO_IPv4_DNS_CONT);
+		f_pdp_ctx_act(ctx);
+
+		var OCT4 dns1_addr := f_PCO_extract_proto(ctx.pco_neg, '000d'O);
+
+		T_default.start(40.0);
+		d := activate(pingpong());
+
+		/* Send some UL traffic: */
+		var octetstring payload := f_rnd_octstring(1200);
+		var OCT4 saddr := ctx.eua.endUserAddress.endUserAddressIPv4.ipv4_address;
+		f_send_gtpu(ctx, f_gen_icmpv4_echo(saddr, dns1_addr, payload));
+		f_wait_icmp4_echo_reply(ctx);
+
+		/* ICMP Req generates one report: */
+		Tout.start(tout_sec);
+		alt {
+		[] as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		[] Tout.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"TImeout waiting for Gy UPDATE triggered by Volume-Quota-Threshold");
+		}
+		}
+		f_validate_gy_cc_report(g_rx_gy, THRESHOLD, (0..6), (1200..1400), 0);
+
+		/* ICMP Resp (echo back) generates one report: */
+		as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		f_validate_gy_cc_report(g_rx_gy, THRESHOLD, (0..1), 0, (1200..1400));
+
+		/* Second update: 0 ul/dl pkt/octet should be reported, since nothing was sent */
+		as_DIA_Gy_CCR(ctx, UPDATE_REQUEST);
+		f_validate_gy_cc_report(g_rx_gy, VALIDITY_TIME, (8..9), 0, 0);
+
+		/* Let the CCA reach the GGSN */
+		f_sleep(0.5);
+		deactivate(d);
+		T_default.stop;
+
+		f_pdp_ctx_del(ctx, '1'B);
+		f_validate_gy_cc_report(g_rx_gy, FINAL, (0..2), 0, 0);
+
+
+		f_shutdown_helper();
+	}
+
+	control {
+		if (m_ggsn_conf != GGSN_CONF_V6_ONLY) {
+			execute(TC_pdp4_act_deact());
+			execute(TC_pdp4_act_deact_ipcp());
+			execute(TC_pdp4_act_deact_ipcp_pap_broken());
+			execute(TC_pdp4_act_deact_pcodns());
+			execute(TC_pdp4_act_deact_mtu());
+			execute(TC_pdp4_act_deact_gtpu_access());
+			execute(TC_pdp4_act_deact_gtpu_access_wrong_saddr());
+			execute(TC_pdp4_act_deact_gtpu_access_ipv6_apn4());
+			execute(TC_pdp4_clients_interact_with_txseq());
+			execute(TC_pdp4_clients_interact_without_txseq());
+			execute(TC_pdp4_act_deact_with_single_dns());
+			execute(TC_pdp4_act_deact_with_separate_dns());
+			execute(TC_pdp4_act_update_teic());
+			execute(TC_pdp4_act_update_teid());
+		}
+
+		if (m_ggsn_conf != GGSN_CONF_V4_ONLY) {
+			execute(TC_pdp6_act_deact());
+			execute(TC_pdp6_act_deact_pcodns());
+			execute(TC_pdp6_act_deact_icmp6());
+			execute(TC_pdp6_act_deact_mtu());
+			execute(TC_pdp6_act_deact_gtpu_access());
+			execute(TC_pdp6_act_deact_gtpu_access_ll_saddr());
+			execute(TC_pdp6_act_deact_gtpu_access_wrong_ll_saddr());
+			execute(TC_pdp6_act_deact_gtpu_access_wrong_global_saddr());
+			execute(TC_pdp6_act_deact_gtpu_access_ipv4_apn6());
+			execute(TC_pdp6_clients_interact());
+		}
+
+		if (m_ggsn_conf != GGSN_CONF_V4_ONLY and m_ggsn_conf != GGSN_CONF_V6_ONLY) {
+			execute(TC_pdp46_act_deact());
+			execute(TC_pdp46_act_deact_ipcp());
+			execute(TC_pdp46_act_deact_icmp6());
+			execute(TC_pdp46_act_deact_pcodns4());
+			execute(TC_pdp46_act_deact_pcodns6());
+			execute(TC_pdp46_act_deact_mtu());
+			execute(TC_pdp46_act_deact_gtpu_access());
+			execute(TC_pdp46_act_deact_gtpu_access_wrong_saddr_ipv4());
+			execute(TC_pdp46_act_deact_gtpu_access_wrong_ll_saddr_ipv6());
+			execute(TC_pdp46_act_deact_gtpu_access_wrong_global_saddr_ipv6());
+			execute(TC_pdp46_clients_interact());
+		}
+
+		if (m_ggsn_conf == GGSN_CONF_ALL) {
+			execute(TC_pdp46_act_deact_apn4());
+		}
+
+		execute(TC_echo_req_resp());
+		execute(TC_echo_req_resp_gtpu());
+
+		if (m_ggsn_conf == GGSN_CONF_V4_ONLY or m_ggsn_conf == GGSN_CONF_ALL) {
+			execute(TC_pdp_act2_recovery());
+			execute(TC_act_deact_retrans_duplicate());
+		}
+
+		if (m_ggsn_conf != GGSN_CONF_V6_ONLY) {
+			execute(TC_pdp_act_restart_ctr_echo());
+
+			execute(TC_lots_of_concurrent_pdp_ctx());
+			/* Keep at the end, crashes older osmo-ggsn versions (OS#5469): */
+			execute(TC_addr_pool_exhaustion());
+		}
+
+		/* open5gs specific tests: */
+		if (m_ggsn_impl == GGSN_IMPL_OPEN5GS) {
+			execute(TC_gy_charging_cc_time());
+			execute(TC_gy_charging_volume_quota_threshold());
+		}
+	}
+}

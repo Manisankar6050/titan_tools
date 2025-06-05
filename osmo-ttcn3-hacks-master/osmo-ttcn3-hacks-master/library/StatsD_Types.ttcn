@@ -1,0 +1,87 @@
+module StatsD_Types {
+
+/* Definition of abstract types for the StatsD protocol. USes the TITAN "TEXT"
+ * codec to auto-generate encoder/decoder functions
+ *
+ * (C) 2020 by sysmocom s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Author: Daniel Willmann <dwillmann@sysmocom.de>
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+type charstring MetricName with {
+	variant "END(':')";
+};
+
+type integer MetricValue with {
+	variant "END('|', '\|#(1)')";
+};
+
+type charstring MetricType (pattern "(g|c|ms|h|m)");
+
+type charstring MetricSampleRate (pattern "\d.\d+") with {
+	variant "BEGIN('|@')"
+};
+
+type record StatsDMetric {
+	MetricName	name,
+	MetricValue	val,
+	MetricType	mtype,
+	MetricSampleRate srate optional
+};
+type set of StatsDMetric StatsDMetrics;
+
+type record of StatsDMetric StatsDMessage with {
+	variant "SEPARATOR('\n')";
+};
+
+external function enc_StatsDMessage(in StatsDMessage id) return charstring
+with { extension "prototype(convert) encode(TEXT)"};
+
+external function dec_StatsDMessage(in charstring id) return StatsDMessage
+with { extension "prototype(convert) decode(TEXT)"};
+
+template StatsDMessage tr_StatsDMsg1(template StatsDMetric metric) := {
+	[0] := metric
+}
+
+template (present) StatsDMetric tr_StatsDMetric(template (present) MetricName name,
+						template (present) MetricValue val := ?,
+						template (present) MetricType mtype) := {
+	name := name,
+	val := val,
+	mtype := mtype,
+	srate := *
+}
+
+template (present) StatsDMetric tr_StatsDMetricCounter(template (present) MetricName name,
+						       template (present) MetricValue val := ?) :=
+	tr_StatsDMetric(name, val, "c");
+
+template (present) StatsDMetric tr_StatsDMetricGauge(template (present) MetricName name,
+						     template (present) MetricValue val := ?) :=
+	tr_StatsDMetric(name, val, "g");
+
+template (value) StatsDMetric ts_StatsDMetric(template (value) MetricName name,
+					      template (value) MetricValue val := 0,
+					      template (value) MetricType mtype := "c",
+					      template (omit) MetricSampleRate srate := omit) := {
+	name := name,
+	val := val,
+	mtype := mtype,
+	srate := srate
+}
+
+template (value) StatsDMetric ts_StatsDMetricCounter(template (value) MetricName name,
+						     template (value) MetricValue val := 0) :=
+	ts_StatsDMetric(name, val, "c");
+
+template (value) StatsDMetric ts_StatsDMetricGauge(template (value) MetricName name,
+						   template (value) MetricValue val := 0) :=
+	ts_StatsDMetric(name, val, "g");
+
+} with { encode "TEXT" }

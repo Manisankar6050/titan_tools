@@ -1,0 +1,1007 @@
+/* PFCP Templates in TTCN-3
+ * (C) 2022 sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module PFCP_Templates {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from PFCP_Types all;
+
+type enumerated e_PFCP_Cause {
+	RESERVED (0),
+	REQUEST_ACCEPTED (1),
+	MORE_USAGE_REPORT_TO_SEND (2),
+	REQUEST_REJECTED (64),
+	SESSION_CTX_NOT_FOUND (65),
+	MANDATORY_IE_MISSING (66),
+	CONDITIONAL_IE_MISSING (67),
+	INVALID_LENGTH (68),
+	MANDATORY_IE_INCORRECT (69),
+	INVALID_FORW_POLICY (70),
+	INVALID_F_TEID_ALLOC_OPTION (71),
+	NO_ESTABLISHED_PFCP_ASSOC (72),
+	RULE_CREATION_MOD_FAILURE (73),
+	PFCP_ENTITY_IN_CONGESTION (74),
+	NO_RESOURCES_AVAILABLE (75),
+	SERVICE_NOT_SUPPORTED (76),
+	SYSTEM_FAILURE (77),
+	REDIRECTION_REQUESTED (78),
+	ALL_DYNAMIC_ADDRESSES_ARE_OCCUPIED (79)
+};
+
+template (value) Cause ts_PFCP_Cause(e_PFCP_Cause cause) := {
+	elementIdentifier := 19,
+	lengthIndicator := 0,
+	causeValue := int2oct(enum2int(cause), 1)
+};
+
+template (present) Cause tr_PFCP_Cause(e_PFCP_Cause cause) := {
+	elementIdentifier := 19,
+	lengthIndicator := ?,
+	causeValue := int2oct(enum2int(cause), 1)
+};
+
+const INT4b PFCP_Node_ID_IPv4 := 0;
+const INT4b PFCP_Node_ID_IPv6 := 1;
+const INT4b PFCP_Node_ID_FQDN := 2;
+
+template (value) Node_ID
+ts_PFCP_Node_ID(template (value) INT4b id_type,
+		template (value) octetstring id_value) := {
+	elementIdentifier := 60,
+	lengthIndicator := 0,
+	node_id_type := id_type,
+	spare := '0000'B,
+	node_id_value := id_value
+};
+
+template (present) Node_ID
+tr_PFCP_Node_ID(template (present) INT4b id_type := ?,
+		template (present) octetstring id_value := ?) := {
+	elementIdentifier := 60,
+	lengthIndicator := ?,
+	node_id_type := id_type,
+	spare := ?,
+	node_id_value := id_value
+};
+
+/* t_PFCP_Node_ID_IPv4(f_inet_addr("127.0.0.1")) */
+template (value) Node_ID
+ts_PFCP_Node_ID_ipv4(template (value) OCT4 ip_value) := ts_PFCP_Node_ID(PFCP_Node_ID_IPv4, ip_value);
+template (present) Node_ID
+tr_PFCP_Node_ID_ipv4(template (present) OCT4 ip_value) := tr_PFCP_Node_ID(PFCP_Node_ID_IPv4, ip_value);
+
+template (value) Node_ID
+ts_PFCP_Node_ID_fqdn(charstring fqdn) := ts_PFCP_Node_ID(PFCP_Node_ID_FQDN, char2oct(fqdn));
+template (present) Node_ID
+tr_PFCP_Node_ID_fqdn(template (present) octetstring fqdn) := tr_PFCP_Node_ID(PFCP_Node_ID_FQDN, fqdn);
+
+template (value) Recovery_Time_Stamp
+ts_PFCP_Recovery_Timestamp(template (value) LIN4_BO_LAST time_value) := {
+	elementIdentifier := 96,
+	lengthIndicator := 0,
+	time_value := time_value
+};
+template (present) Recovery_Time_Stamp
+tr_PFCP_Recovery_Timestamp(template (present) LIN4_BO_LAST time_value := ?) := {
+	elementIdentifier := 96,
+	lengthIndicator := ?,
+	time_value := time_value
+};
+
+template (value) PDU_PFCP ts_PDU_PFCP_ := {
+	s_flag := '0'B,
+	mp := '0'B,
+	spare := '000'B,
+	version := 1,
+	message_type := 0,
+	lengthIndicator := 0,
+	seid := omit,
+	sequence_number := 0,
+	spare2 := '0000'B,
+	mp_or_spare := '0000'B,
+	message_body := -
+};
+
+template (present) PDU_PFCP tr_PDU_PFCP_ := {
+	s_flag := ?,
+	mp := ?,
+	spare := ?,
+	version := 1,
+	message_type := ?,
+	lengthIndicator := ?,
+	seid := *,
+	sequence_number := ?,
+	spare2 := ?,
+	mp_or_spare := ?,
+	message_body := ?
+};
+
+/* 7.4.2.1 Heartbeat Request */
+template (value) PDU_PFCP
+ts_PFCP_Heartbeat_Req(template (value) LIN4_BO_LAST recovery_time_stamp)
+modifies ts_PDU_PFCP_ := {
+	message_body := {
+		heartbeat_request := {
+			recovery_time_stamp := ts_PFCP_Recovery_Timestamp(recovery_time_stamp)
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Heartbeat_Req(template (present) LIN4_BO_LAST recovery_time_stamp := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		heartbeat_request := {
+			recovery_time_stamp := tr_PFCP_Recovery_Timestamp(recovery_time_stamp)
+		}
+	}
+};
+
+/* 7.4.2.2 Heartbeat Response */
+template (value) PDU_PFCP
+ts_PFCP_Heartbeat_Resp(template (value) LIN4_BO_LAST recovery_time_stamp)
+modifies ts_PDU_PFCP_ := {
+	message_body := {
+		heartbeat_response := {
+			recovery_time_stamp := ts_PFCP_Recovery_Timestamp(recovery_time_stamp)
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Heartbeat_Resp(template (present) LIN4_BO_LAST recovery_time_stamp := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		heartbeat_response := {
+			recovery_time_stamp := tr_PFCP_Recovery_Timestamp(recovery_time_stamp)
+		}
+	}
+};
+
+/* 7.4.4.1 PFCP Association Setup Request */
+template (value) PDU_PFCP
+ts_PFCP_Assoc_Setup_Req(template (value) Node_ID node_id,
+			LIN4_BO_LAST recovery_timestamp)
+modifies ts_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_setup_request := {
+			node_id := node_id,
+			time_stamp := ts_PFCP_Recovery_Timestamp(recovery_timestamp),
+			up_function_features := omit,
+			cp_function_features := omit,
+			UP_IP_resource_list := omit
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Assoc_Setup_Req(template (present) Node_ID node_id := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_setup_request := {
+			node_id := node_id,
+			time_stamp := ?,
+			up_function_features := *,
+			cp_function_features := *,
+			UP_IP_resource_list := *
+		}
+	}
+};
+
+/* 7.4.4.2 PFCP Association Setup Response */
+template (value) PDU_PFCP
+ts_PFCP_Assoc_Setup_Resp(LIN3_BO_LAST sequence_number,
+			 template (value) Node_ID node_id,
+			 template (value) Cause cause,
+			 LIN4_BO_LAST recovery_timestamp)
+modifies ts_PDU_PFCP_ := {
+	sequence_number := sequence_number,
+	message_body := {
+		pfcp_association_setup_response := {
+			node_id := node_id,
+			cause := cause,
+			time_stamp := ts_PFCP_Recovery_Timestamp(recovery_timestamp),
+			up_function_features := omit,
+			cp_function_features := omit,
+			UP_IP_resource_list := omit
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Assoc_Setup_Resp(template (present) Node_ID node_id := ?,
+			 template (present) Cause cause := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_setup_response := {
+			node_id := node_id,
+			cause := cause,
+			time_stamp := ?,
+			up_function_features := *,
+			cp_function_features := *,
+			UP_IP_resource_list := *
+		}
+	}
+};
+
+/* 7.4.4.5 PFCP Association Release Request */
+template (value) PDU_PFCP
+ts_PFCP_Assoc_Release_Req(template (value) Node_ID node_id)
+modifies ts_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_release_request := {
+			node_id := node_id
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Assoc_Release_Req(template (present) Node_ID node_id := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_release_request := {
+			node_id := node_id
+		}
+	}
+};
+
+/* 7.4.4.6 PFCP Association Release Response */
+template (value) PDU_PFCP
+ts_PFCP_Assoc_Release_Resp(LIN3_BO_LAST sequence_number,
+			   template (value) Node_ID node_id,
+			   template (value) Cause cause)
+modifies ts_PDU_PFCP_ := {
+	sequence_number := sequence_number,
+	message_body := {
+		pfcp_association_release_response := {
+			node_id := node_id,
+			cause := cause
+		}
+	}
+};
+template (present) PDU_PFCP
+tr_PFCP_Assoc_Release_Resp(template (present) Node_ID node_id := ?,
+			   template (present) Cause cause := ?)
+modifies tr_PDU_PFCP_ := {
+	message_body := {
+		pfcp_association_release_response := {
+			node_id := node_id,
+			cause := cause
+		}
+	}
+};
+
+template (value) F_SEID
+ts_PFCP_F_SEID_ipv4(template (value) OCT4 addr_v4,
+		    template (value) OCT8 seid) := {
+        elementIdentifier := 57,
+        lengthIndicator := 0,
+        v6 := '0'B,
+        v4 := '1'B,
+        spare := '000000'B,
+        seid := seid,
+        ipv4_address := addr_v4,
+        ipv6_address := omit
+}
+template (present) F_SEID
+tr_PFCP_F_SEID_ipv4(template (present) OCT4 addr_v4 := ?,
+		    template (present) OCT8 seid := ?) := {
+        elementIdentifier := 57,
+        lengthIndicator := ?,
+        v6 := '0'B,
+        v4 := '1'B,
+        spare := ?,
+        seid := seid,
+        ipv4_address := addr_v4,
+        ipv6_address := omit
+}
+
+type enumerated e_PFCP_Src_Iface {
+	ACCESS (0),
+	CORE (1),
+	SGI_LAN_N6_LAN (2),
+	CP_FUNCTION (3),
+	x_5G_VN_INTERNAL (4)
+};
+
+template (value) Source_Interface
+ts_PFCP_Src_Iface(e_PFCP_Src_Iface iface) := {
+        elementIdentifier := 20,
+        lengthIndicator := 0,
+        interfacevalue := enum2int(iface),
+        spare := '0000'B
+}
+template (present) Source_Interface
+tr_PFCP_Src_Iface(e_PFCP_Src_Iface iface) := {
+        elementIdentifier := 20,
+        lengthIndicator := ?,
+        interfacevalue := enum2int(iface),
+        spare := ?
+}
+
+template (value) UE_IP_Address ts_PFCP_UE_IP_Address_v4(OCT4 addr_v4, boolean is_destination := true) := {
+        elementIdentifier := 93,
+        lengthIndicator := 0,
+        v6 := '0'B,
+        v4 := '1'B,
+        sd := bool2bit(is_destination),
+        spare := '00000'B,
+        ipv4_address := addr_v4,
+        ipv6_address := omit
+}
+
+template (value) F_TEID ts_PFCP_F_TEID_ipv4(OCT4 teid, OCT4 addr_v4) := {
+        elementIdentifier := 21,
+        lengthIndicator := 0,
+        v4 := '1'B,
+        v6 := '0'B,
+        ch := '0'B,
+        chid := '0'B,
+        spare := '0000'B,
+        teid := teid,
+        ipv4_address := addr_v4,
+        ipv6_address := omit,
+        choose_id := omit
+}
+
+template (value) F_TEID ts_PFCP_F_TEID_choose_v4(template (omit) OCT1 choose_id := omit) := {
+        elementIdentifier := 21,
+        lengthIndicator := 0,
+        v4 := '1'B,
+        v6 := '0'B,
+        ch := '1'B,
+        chid := '0'B,
+        spare := '0000'B,
+        teid := omit,
+        ipv4_address := omit,
+        ipv6_address := omit,
+        choose_id := choose_id
+}
+
+/* Convert plain Network Instance name to encoded (length-byte + "name") format.
+ * Works only for single-label names, i.e. no dots in the name. */
+private function f_netinst_str_to_qname(charstring name) return octetstring
+{
+	var octetstring qname := int2oct(lengthof(name), 1) & char2oct(name);
+	return qname;
+}
+
+template (value) Network_Instance
+ts_PFCP_Network_Instance(charstring netinst_name) := {
+	elementIdentifier := 22,
+	lengthIndicator := 0,
+	pdn_instance := f_netinst_str_to_qname(netinst_name)
+};
+
+template (value) PDI_IE
+ts_PFCP_PDI(e_PFCP_Src_Iface src_iface,
+	    template (omit) F_TEID local_F_TEID := omit,
+	    template (omit) UE_IP_Address ue_addr_v4 := omit,
+	    template (omit) Network_Instance network_instance := omit) := {
+        elementIdentifier := 2,
+        lengthIndicator := 0,
+	grouped_ie := {
+		source_interface := ts_PFCP_Src_Iface(src_iface),
+		local_F_TEID := local_F_TEID,
+		pdn_instance := network_instance,
+		ue_ip_address := ue_addr_v4,
+		traffic_endpoint_id := omit,
+		sdf_filter_list := omit,
+		application_id := omit,
+		ethernet_packet_filter_list := omit,
+		qfi_list := omit
+	}
+}
+template (present) PDI_IE
+tr_PFCP_PDI(e_PFCP_Src_Iface src_iface,
+	    template F_TEID local_F_TEID := *,
+	    template UE_IP_Address ue_addr_v4 := *,
+	    template Network_Instance network_instance := *) := {
+        elementIdentifier := 2,
+        lengthIndicator := ?,
+	grouped_ie := {
+		source_interface := tr_PFCP_Src_Iface(src_iface),
+		local_F_TEID := local_F_TEID,
+		pdn_instance := network_instance,
+		ue_ip_address := ue_addr_v4,
+		traffic_endpoint_id := *,
+		sdf_filter_list := *,
+		application_id := *,
+		ethernet_packet_filter_list := *,
+		qfi_list := *
+	}
+}
+
+template (value) Apply_Action
+ts_PFCP_Apply_Action(BIT1 forw := '0'B,
+		     BIT1 drop := '0'B,
+		     BIT1 buff := '0'B) := {
+        elementIdentifier := 44,
+        lengthIndicator := 0,
+        drop := drop,
+        forw := forw,
+        buff := buff,
+        nocp := '0'B,
+        dupl := '0'B,
+        spare := '000'B
+}
+template (present) Apply_Action
+tr_PFCP_Apply_Action(template (present) BIT1 forw := '0'B,
+		     template (present) BIT1 drop := '0'B,
+		     template (present) BIT1 buff := '0'B) := {
+        elementIdentifier := 44,
+        lengthIndicator := ?,
+        drop := drop,
+        forw := forw,
+        buff := buff,
+        nocp := ?,
+        dupl := ?,
+        spare := ?
+}
+
+template (value) Apply_Action ts_PFCP_Apply_Action_FORW := ts_PFCP_Apply_Action(forw := '1'B);
+template (present) Apply_Action tr_PFCP_Apply_Action_FORW := tr_PFCP_Apply_Action(forw := '1'B);
+
+template (value) Apply_Action ts_PFCP_Apply_Action_DROP := ts_PFCP_Apply_Action(drop := '1'B);
+template (present) Apply_Action tr_PFCP_Apply_Action_DROP := tr_PFCP_Apply_Action(drop := '1'B);
+
+template (value) Apply_Action ts_PFCP_Apply_Action_BUFF := ts_PFCP_Apply_Action(buff := '1'B);
+template (present) Apply_Action tr_PFCP_Apply_Action_BUFF := tr_PFCP_Apply_Action(buff := '1'B);
+
+type enumerated e_PFCP_Dest_Iface {
+	ACCESS (0),
+	CORE (1),
+	SGI_LAN_N6_LAN (2),
+	CP_FUNCTION (3),
+	LI_FUNCTION (4),
+	x_5G_VN_INTERNAL (5)
+};
+
+template (value) Destination_Interface
+ts_PFCP_Destination_Interface(e_PFCP_Dest_Iface di) := {
+        elementIdentifier := 42,
+        lengthIndicator := 0,
+        interface_value := enum2int(di),
+        spare := '0000'B
+}
+template (present) Destination_Interface
+tr_PFCP_Destination_Interface(e_PFCP_Dest_Iface di) := {
+        elementIdentifier := 42,
+        lengthIndicator := ?,
+        interface_value := enum2int(di),
+        spare := ?
+}
+
+template (value) Outer_Header_Creation
+ts_PFCP_Outer_Header_Creation_GTP_ipv4(template (value) OCT4 remote_teid,
+				       template (value) OCT4 remote_addr_v4) := {
+        elementIdentifier := 84,
+        lengthIndicator := 0,
+        ohc_description_oct5 := '00000001'B,
+        ohc_description_oct6 := '00000000'B,
+        teid := remote_teid,
+        ipv4 := remote_addr_v4,
+        ipv6 := omit,
+        udp_port := omit
+}
+template (present) Outer_Header_Creation
+tr_PFCP_Outer_Header_Creation_GTP_ipv4(template (present) OCT4 remote_teid := ?,
+				       template (present) OCT4 remote_addr_v4 := ?) := {
+        elementIdentifier := 84,
+        lengthIndicator := ?,
+        ohc_description_oct5 := '00000001'B,
+        ohc_description_oct6 := '00000000'B,
+        teid := remote_teid,
+        ipv4 := remote_addr_v4,
+        ipv6 := omit,
+        udp_port := *
+}
+
+type enumerated e_PFCP_Outer_Header_Removal {
+	GTP_U_UDP_IPV4 (0),
+	GTP_U_UDP_IPV6 (1),
+	UDP_IPV4 (2),
+	UDP_IPV6 (3),
+	IPV4 (4),
+	IPV6 (5),
+	GTP_U_UDP_IP (6),
+	VLAN_S_TAG (7),
+	S_TAG_AND_C_TAG (8)
+};
+
+template (value) Outer_Header_Removal
+ts_PFCP_Outer_Header_Removal(e_PFCP_Outer_Header_Removal ohr) := {
+        elementIdentifier := 95,
+        lengthIndicator := 0,
+        ohc_description := enum2int(ohr)
+}
+template (present) Outer_Header_Removal
+tr_PFCP_Outer_Header_Removal(e_PFCP_Outer_Header_Removal ohr) := {
+        elementIdentifier := 95,
+        lengthIndicator := ?,
+        ohc_description := enum2int(ohr)
+}
+
+template (value) Forwarding_Parameters
+ts_PFCP_Forwarding_Parameters(e_PFCP_Dest_Iface dest_iface,
+			      template (omit) Outer_Header_Creation ohc := omit,
+			      template (omit) Network_Instance network_instance := omit) := {
+        elementIdentifier := 4,
+        lengthIndicator := 0,
+        grouped_ie := {
+		destination_interface := ts_PFCP_Destination_Interface(dest_iface),
+		pdn_Instance := network_instance,
+		redirect_information := omit,
+		outer_header_creation := ohc,
+		transport_level_marking := omit,
+		forwarding_policy := omit,
+		header_enrichment := omit,
+		traffic_endpoint_ID := omit
+	}
+}
+template (present) Forwarding_Parameters
+tr_PFCP_Forwarding_Parameters(e_PFCP_Dest_Iface dest_iface,
+			      template Outer_Header_Creation ohc := *,
+			      template Network_Instance network_instance := *) := {
+        elementIdentifier := 4,
+        lengthIndicator := ?,
+        grouped_ie := {
+		destination_interface := tr_PFCP_Destination_Interface(dest_iface),
+		pdn_Instance := network_instance,
+		redirect_information := *,
+		outer_header_creation := ohc,
+		transport_level_marking := *,
+		forwarding_policy := *,
+		header_enrichment := *,
+		traffic_endpoint_ID := *
+	}
+}
+
+template (value) Update_Forwarding_Parameters
+ts_PFCP_Update_Forwarding_Parameters(template (omit) Destination_Interface dest_iface := omit,
+				     template (omit) Outer_Header_Creation ohc := omit,
+				     template (omit) Network_Instance network_instance := omit) := {
+        elementIdentifier := 11,
+        lengthIndicator := 0,
+        grouped_ie := {
+		destination_interface := dest_iface,
+		pdn_Instance := network_instance,
+		redirect_information := omit,
+		outer_header_creation := ohc,
+		transport_level_marking := omit,
+		forwarding_policy := omit,
+		header_enrichment := omit,
+		pfcpSMReq_flags := omit,
+		traffic_endpoint_id := omit
+	}
+}
+template (present) Update_Forwarding_Parameters
+tr_PFCP_Update_Forwarding_Parameters(template Destination_Interface dest_iface := *,
+				     template Outer_Header_Creation ohc := *,
+				     template Network_Instance network_instance := *) := {
+        elementIdentifier := 11,
+        lengthIndicator := ?,
+        grouped_ie := {
+		destination_interface := dest_iface,
+		pdn_Instance := network_instance,
+		redirect_information := *,
+		outer_header_creation := ohc,
+		transport_level_marking := *,
+		forwarding_policy := *,
+		header_enrichment := *,
+		pfcpSMReq_flags := *,
+		traffic_endpoint_id := *
+	}
+}
+
+template (value) FAR_ID
+ts_PFCP_FAR_ID(template (value) LIN4_BO_LAST far_id) := {
+        elementIdentifier := 108,
+        lengthIndicator := 0,
+        id_value := far_id
+}
+template (present) FAR_ID
+tr_PFCP_FAR_ID(template (present) LIN4_BO_LAST far_id := ?) := {
+        elementIdentifier := 108,
+        lengthIndicator := ?,
+        id_value := far_id
+}
+
+template (value) Create_FAR
+ts_PFCP_Create_FAR(template (value) LIN4_BO_LAST far_id,
+		   template (value) Apply_Action aa,
+		   template (omit) Forwarding_Parameters fp) := {
+        elementIdentifier := 3,
+        lengthIndicator := 0,
+	grouped_ie := {
+		far_id := ts_PFCP_FAR_ID(far_id),
+		apply_action := aa,
+		forwarding_parameters := fp,
+		duplicating_parameters := omit,
+		bar_id := omit
+        }
+}
+template (present) Create_FAR
+tr_PFCP_Create_FAR(template (present) LIN4_BO_LAST far_id := ?,
+		   template (present) Apply_Action aa := ?,
+		   template Forwarding_Parameters fp := *) := {
+        elementIdentifier := 3,
+        lengthIndicator := ?,
+	grouped_ie := {
+		far_id := tr_PFCP_FAR_ID(far_id),
+		apply_action := aa,
+		forwarding_parameters := fp,
+		duplicating_parameters := *,
+		bar_id := *
+        }
+}
+
+template (value) Update_FAR
+ts_PFCP_Update_FAR(template (value) LIN4_BO_LAST far_id,
+		   template (value) Apply_Action aa,
+		   template (omit) Update_Forwarding_Parameters fp) := {
+        elementIdentifier := 10,
+        lengthIndicator := 0,
+	grouped_ie := {
+		far_id := ts_PFCP_FAR_ID(far_id),
+		apply_action := aa,
+		forwarding_parameters := fp,
+		duplicating_parameters := omit,
+		bar_id := omit
+        }
+}
+template (present) Update_FAR
+tr_PFCP_Update_FAR(template (present) LIN4_BO_LAST far_id := ?,
+		   template (present) Apply_Action aa := ?,
+		   template Update_Forwarding_Parameters fp := *) := {
+        elementIdentifier := 10,
+        lengthIndicator := ?,
+	grouped_ie := {
+		far_id := tr_PFCP_FAR_ID(far_id),
+		apply_action := aa,
+		forwarding_parameters := fp,
+		duplicating_parameters := *,
+		bar_id := *
+        }
+}
+
+template (value) PDR_ID
+ts_PFCP_PDR_ID(template (value) OCT2 pdr_id) := {
+        elementIdentifier := 56,
+        lengthIndicator := 0,
+        rule_id := pdr_id
+}
+template (present) PDR_ID
+tr_PFCP_PDR_ID(template (present) OCT2 pdr_id) := {
+        elementIdentifier := 56,
+        lengthIndicator := ?,
+        rule_id := pdr_id
+}
+
+template (value) Precedence
+ts_PFCP_Precedence(template (value) LIN4_BO_LAST val) := {
+        elementIdentifier := 29,
+        lengthIndicator := 0,
+        precedence_value := val
+}
+template (present) Precedence
+tr_PFCP_Precedence(template (present) LIN4_BO_LAST val) := {
+        elementIdentifier := 29,
+        lengthIndicator := ?,
+        precedence_value := val
+}
+
+template (value) Create_PDR
+ts_PFCP_Create_PDR(integer pdr_id,
+		   template (value) PDI_IE pdi,
+		   template (omit) Outer_Header_Removal ohr := omit,
+		   template (value) LIN4_BO_LAST far_id) := {
+        elementIdentifier := 1,
+        lengthIndicator := 0,
+	grouped_ie := {
+		pdr_id := ts_PFCP_PDR_ID(int2oct(pdr_id, 2)),
+		precedence := ts_PFCP_Precedence(0),
+		pdi := pdi,
+		outer_header_removal := ohr,
+		FAR_ID_list := { ts_PFCP_FAR_ID(far_id) },
+		uRR_ID_list := omit,
+		qER_ID_list := omit,
+		activate_predefined_rules := omit
+	}
+}
+template (present) Create_PDR
+tr_PFCP_Create_PDR(integer pdr_id,
+		   template (present) PDI_IE pdi := ?,
+		   template Outer_Header_Removal ohr := *,
+		   template (present) LIN4_BO_LAST far_id := ?) := {
+        elementIdentifier := 1,
+        lengthIndicator := ?,
+	grouped_ie := {
+		pdr_id := tr_PFCP_PDR_ID(int2oct(pdr_id, 2)),
+		precedence := tr_PFCP_Precedence(?),
+		pdi := pdi,
+		outer_header_removal := ohr,
+		FAR_ID_list := { tr_PFCP_FAR_ID(far_id) },
+		uRR_ID_list := *,
+		qER_ID_list := *,
+		activate_predefined_rules := *
+	}
+}
+
+/* 7.5.2 PFCP Session Establishment Request */
+template (value) PDU_PFCP
+ts_PFCP_Session_Est_Req(template (value) Node_ID node_id,
+			template (value) F_SEID cp_f_seid,
+			template (value) Create_PDR_list create_pdr,
+			template (value) Create_FAR_list create_far)
+modifies ts_PDU_PFCP_ := {
+	seid := '0000000000000000'O, /* shall be set to 0 as per 7.2.2.4.2 */
+	message_body := {
+		pfcp_session_establishment_request := {
+			node_id := node_id,
+			CP_F_SEID := cp_f_seid,
+			create_PDR_list := create_pdr,
+			create_FAR_list := create_far,
+			create_URR_list := omit,
+			create_QER_list := omit,
+			create_BAR := omit,
+			create_traffic_endpoint_list := omit,
+			pdn_type := omit,
+			node_list := omit,
+			up_inactivity_timer := omit
+		}
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Est_Req(template (present) Node_ID node_id := ?,
+			template (present) F_SEID cp_f_seid := ?,
+			template (present) Create_PDR_list create_pdr := ?,
+			template (present) Create_FAR_list create_far := ?)
+modifies tr_PDU_PFCP_ := {
+	seid := '0000000000000000'O, /* shall be set to 0 as per 7.2.2.4.2 */
+	message_body := {
+		pfcp_session_establishment_request := {
+			node_id := node_id,
+			CP_F_SEID := cp_f_seid,
+			create_PDR_list := create_pdr,
+			create_FAR_list := create_far,
+			create_URR_list := *,
+			create_QER_list := *,
+			create_BAR := *,
+			create_traffic_endpoint_list := *,
+			pdn_type := *,
+			node_list := *,
+			up_inactivity_timer := *
+		}
+	}
+}
+
+template (value) Created_PDR ts_PFCP_Created_PDR(PDR_ID pdr_id, template (value) F_TEID local_F_TEID) := {
+	elementIdentifier := 8,
+	lengthIndicator := 0,
+	grouped_ie := {
+		pdr_id := pdr_id,
+		local_F_TEID := local_F_TEID
+	}
+}
+
+/* 7.5.3 PFCP Session Establishment Response */
+template (value) PDU_PFCP
+ts_PFCP_Session_Est_Resp(template (value) LIN3_BO_LAST seq_nr,
+			 template (value) Node_ID node_id,
+			 template (value) OCT8 seid,
+			 template (value) F_SEID f_seid,
+			 template (value) PFCP_Session_Establishment_Response.created_PDR_list created_pdr,
+			 template (value) Cause cause := ts_PFCP_Cause(REQUEST_ACCEPTED))
+modifies ts_PDU_PFCP_ := {
+	seid := seid,
+	sequence_number := seq_nr,
+	message_body := {
+		pfcp_session_establishment_response := {
+			node_id := node_id,
+			cause := cause,
+			offending_ie := omit,
+			UP_F_SEID := f_seid,
+			created_PDR_list := created_pdr,
+			load_control_information := omit,
+			overload_control_information := omit,
+			node_list := omit,
+			failed_rule_id := omit,
+			created_traffic_endpoint_list := omit
+		}
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Est_Resp(template (present) LIN3_BO_LAST seq_nr := ?,
+			 template (present) Node_ID node_id := ?,
+			 template (present) OCT8 seid := ?,
+			 template (present) F_SEID f_seid := ?,
+			 template (present) PFCP_Session_Establishment_Response.created_PDR_list created_pdr := ?,
+			 template (present) Cause cause := tr_PFCP_Cause(REQUEST_ACCEPTED))
+modifies tr_PDU_PFCP_ := {
+	seid := seid,
+	sequence_number := ?,
+	message_body := {
+		pfcp_session_establishment_response := {
+			node_id := node_id,
+			cause := cause,
+			offending_ie := *,
+			UP_F_SEID := ?,
+			created_PDR_list := created_pdr,
+			load_control_information := *,
+			overload_control_information := *,
+			node_list := *,
+			failed_rule_id := *,
+			created_traffic_endpoint_list := *
+		}
+	}
+}
+
+/* 7.5.4 PFCP Session Modification Request */
+template (value) PDU_PFCP
+ts_PFCP_Session_Mod_Req(template (value) OCT8 seid,
+			template (value) Update_FAR update_far)
+modifies ts_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_modification_request := {
+			f_seid := omit,
+			remove_PDR_list := omit,
+			remove_FAR_list := omit,
+			remove_URR_list := omit,
+			remove_QER_list := omit,
+			remove_BAR := omit,
+			remove_traffic_endpoint := omit,
+			create_PDR_list := omit,
+			create_FAR_list := omit,
+			create_URR_list := omit,
+			create_QER_list := omit,
+			create_BAR  := omit,
+			create_traffic_endpoint := omit,
+			update_PDR_list := omit,
+			update_FAR_list := { update_far },
+			update_URR_list := omit,
+			update_QER_list := omit,
+			update_BAR := omit,
+			update_traffic_endpoint := omit,
+			pfcpSMReq_flags := omit,
+			query_URR_list := omit,
+			node_list := omit,
+			up_inactivity_timer := omit,
+			querry_urr_reference := omit
+		}
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Mod_Req(template (present) OCT8 seid := ?,
+			template (present) Update_FAR update_far := ?)
+modifies tr_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_modification_request := {
+			f_seid := *,
+			remove_PDR_list := *,
+			remove_FAR_list := *,
+			remove_URR_list := *,
+			remove_QER_list := *,
+			remove_BAR := *,
+			remove_traffic_endpoint := *,
+			create_PDR_list := *,
+			create_FAR_list := *,
+			create_URR_list := *,
+			create_QER_list := *,
+			create_BAR  := *,
+			create_traffic_endpoint := *,
+			update_PDR_list := *,
+			update_FAR_list := { update_far },
+			update_URR_list := *,
+			update_QER_list := *,
+			update_BAR := *,
+			update_traffic_endpoint := *,
+			pfcpSMReq_flags := *,
+			query_URR_list := *,
+			node_list := *,
+			up_inactivity_timer := *,
+			querry_urr_reference := *
+		}
+	}
+}
+
+/* 7.5.5 PFCP Session Modification Response */
+template (value) PDU_PFCP
+ts_PFCP_Session_Mod_Resp(template (value) LIN3_BO_LAST seq_nr,
+			 template (value) OCT8 seid,
+			 template (value) Cause cause := ts_PFCP_Cause(REQUEST_ACCEPTED))
+modifies ts_PDU_PFCP_ := {
+	seid := seid,
+	sequence_number := seq_nr,
+	message_body := {
+		pfcp_session_modification_response := {
+			cause := cause,
+			offending_IE := omit,
+			created_PDR := omit,
+			load_control_information := omit,
+			overload_control_information := omit,
+			usage_report := omit,
+			failed_rule_id := omit,
+			additional_usage_reports_information := omit,
+			created_updated_traffic_endpoint := omit
+		}
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Mod_Resp(template (present) OCT8 seid := ?,
+			 template (present) Cause cause := tr_PFCP_Cause(REQUEST_ACCEPTED))
+modifies tr_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_modification_response := {
+			cause := cause,
+			offending_IE := *,
+			created_PDR := *,
+			load_control_information := *,
+			overload_control_information := *,
+			usage_report := *,
+			failed_rule_id := *,
+			additional_usage_reports_information := *,
+			created_updated_traffic_endpoint := *
+		}
+	}
+}
+
+/* 7.5.6 PFCP Session Deletion Request */
+template (value) PDU_PFCP
+ts_PFCP_Session_Del_Req(template (value) OCT8 seid)
+modifies ts_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_deletion_request := { }
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Del_Req(template (present) OCT8 seid := ?)
+modifies tr_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_deletion_request := ?
+	}
+}
+
+/* 7.5.7 PFCP Session Deletion Response */
+template (value) PDU_PFCP
+ts_PFCP_Session_Del_Resp(template (value) LIN3_BO_LAST seq_nr,
+			 template (value) OCT8 seid,
+			 template (value) Cause cause := ts_PFCP_Cause(REQUEST_ACCEPTED))
+modifies ts_PDU_PFCP_ := {
+	seid := seid,
+	sequence_number := seq_nr,
+	message_body := {
+		pfcp_session_deletion_response := {
+			cause := cause,
+			offending_IE := omit,
+			load_control_information := omit,
+			overload_control_information := omit,
+			usage_report := omit
+		}
+	}
+}
+template (present) PDU_PFCP
+tr_PFCP_Session_Del_Resp(template (present) OCT8 seid,
+			 template (present) Cause cause := tr_PFCP_Cause(REQUEST_ACCEPTED))
+modifies tr_PDU_PFCP_ := {
+	seid := seid,
+	message_body := {
+		pfcp_session_deletion_response := {
+			cause := cause,
+			offending_IE := *,
+			load_control_information := *,
+			overload_control_information := *,
+			usage_report := *
+		}
+	}
+}
+
+}

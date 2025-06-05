@@ -1,0 +1,1418 @@
+/* OsmoS1GW (S1AP Gateway) ConnHdlr
+ *
+ * (C) 2024-2025 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * Author: Vadim Yanitskiy <vyanitskiy@sysmocom.de>
+ *
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module S1GW_ConnHdlr {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+import from IPL4asp_Types all;
+import from Misc_Helpers all;
+import from Mutex all;
+
+import from PFCP_Types all;
+import from PFCP_Emulation all;
+import from PFCP_Templates all;
+import from PFCP_CodecPort all;
+
+import from S1AP_CodecPort all;
+import from S1AP_CodecPort_CtrlFunct all;
+import from S1AP_Types all;
+import from S1AP_Templates all;
+import from S1AP_PDU_Descriptions all;
+import from S1AP_IEs all;
+import from S1AP_PDU_Contents all;
+import from S1AP_Constants all;
+
+import from SCTP_Templates all;
+
+import from StatsD_Types all;
+import from StatsD_Checker all;
+
+import from S1AP_Server all;
+
+type component ConnHdlr extends MutexCT, S1APSRV_ConnHdlr, PFCP_ConnHdlr, StatsD_ConnHdlr {
+	var ConnHdlrPars g_pars;
+	port S1AP_CODEC_PT S1AP_ENB;
+	var ConnectionId g_s1ap_conn_id := -1;
+};
+type record of ConnHdlr ConnHdlrList;
+
+type record ConnHdlrPars {
+	integer idx,
+	Global_ENB_ID genb_id,
+	charstring statsd_prefix,
+	charstring pfcp_loc_addr,
+	charstring pfcp_rem_addr,
+	MME_UE_S1AP_ID mme_ue_id,
+	ERabList erabs
+};
+
+template Global_ENB_ID
+ts_Global_ENB_ID(integer enb_id := 0,
+		 OCT3 plmn_id := '00f110'O) := {
+	pLMNidentity := plmn_id,
+	eNB_ID := {
+		macroENB_ID := int2bit(enb_id, 20)
+	},
+	iE_Extensions := omit
+}
+
+type function void_fn(charstring id) runs on ConnHdlr;
+
+function f_ConnHdlr_init(void_fn fn, charstring id, ConnHdlrPars pars)
+runs on ConnHdlr {
+	g_pars := pars;
+	fn.apply(id);
+}
+
+
+function f_ConnHdlr_s1ap_connect(charstring local_addr, charstring remote_addr) runs on ConnHdlr {
+	var Result res;
+	timer T;
+
+	map(self:S1AP_ENB, system:S1AP_CODEC_PT);
+
+	/* initiate SCTP connection establishment */
+	res := S1AP_CodecPort_CtrlFunct.f_IPL4_connect(S1AP_ENB,
+						       remote_addr, 36412,
+						       local_addr, 0, -1,
+						       { sctp := c_SctpTuple_S1AP });
+	if (not ispresent(res.connId)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					"Could not create an S1AP socket, check your configuration");
+	}
+	g_s1ap_conn_id := res.connId;
+
+	/* wait for the establishment confirmation */
+	T.start(2.0);
+	alt {
+	[] S1AP_ENB.receive(tr_SctpAssocChange(SCTP_COMM_UP, g_s1ap_conn_id)) {
+		log("eNB connection established");
+		}
+	[] S1AP_ENB.receive(PortEvent:{sctpEvent := ?}) { repeat; }
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					"eNB connection establishment timeout");
+		}
+	}
+}
+
+function f_ConnHdlr_s1ap_disconnect() runs on ConnHdlr {
+	var Result res;
+
+	S1AP_CodecPort_CtrlFunct.f_IPL4_close(S1AP_ENB, g_s1ap_conn_id,
+					      { sctp := c_SctpTuple_S1AP });
+	g_s1ap_conn_id := -1;
+	unmap(self:S1AP_ENB, system:S1AP_CODEC_PT);
+
+	S1AP_CONN.receive(S1APSRV_Event:S1APSRV_EVENT_CONN_DOWN);
+
+	log("eNB connection closed");
+}
+
+function f_ConnHdlr_s1ap_expect_shutdown() runs on ConnHdlr {
+	S1AP_ENB.receive(tr_SctpShutDownEvent(g_s1ap_conn_id));
+	S1AP_ENB.receive(tr_SctpAssocChange(SCTP_SHUTDOWN_COMP, g_s1ap_conn_id));
+	S1AP_ENB.receive(PortEvent:{connClosed := ?});
+}
+
+function f_ConnHdlr_tx_s1ap_from_enb(template (value) S1AP_PDU pdu)
+runs on ConnHdlr {
+	S1AP_ENB.send(t_S1AP_Send(g_s1ap_conn_id, pdu));
+}
+
+function f_ConnHdlr_tx_s1ap_from_mme(template (value) S1AP_PDU pdu)
+runs on ConnHdlr {
+	S1AP_CONN.send(pdu);
+}
+
+altstep as_ConnHdlr_s1ap_from_enb(out S1AP_PDU pdu,
+				  template (present) S1AP_PDU tr_pdu := ?)
+runs on ConnHdlr {
+	[] S1AP_CONN.receive(tr_pdu) -> value pdu;
+}
+
+function f_ConnHdlr_rx_s1ap_from_enb(out S1AP_PDU pdu,
+				     template (present) S1AP_PDU tr_pdu := ?,
+				     float Tval := 3.0)
+runs on ConnHdlr {
+	timer T := Tval;
+
+	T.start;
+	alt {
+	[] as_ConnHdlr_s1ap_from_enb(pdu, tr_pdu) {
+		setverdict(pass);
+		T.stop;
+		}
+	[] as_ConnHdlr_s1ap_from_enb(pdu) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Rx unexpected S1AP PDU from eNB: ", pdu));
+		}
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Timeout waiting for S1AP PDU from eNB: ", tr_pdu));
+		}
+	}
+}
+
+altstep as_ConnHdlr_s1ap_from_mme(out S1AP_PDU pdu,
+				  template (present) S1AP_PDU tr_pdu := ?)
+runs on ConnHdlr {
+	var S1AP_RecvFrom recv;
+
+	[] S1AP_ENB.receive(t_S1AP_RecvFrom(tr_pdu)) -> value recv {
+		pdu := recv.msg;
+	}
+}
+
+function f_ConnHdlr_rx_s1ap_from_mme(out S1AP_PDU pdu,
+				     template (present) S1AP_PDU tr_pdu := ?,
+				     float Tval := 3.0)
+runs on ConnHdlr {
+	timer T := Tval;
+
+	T.start;
+	alt {
+	[] as_ConnHdlr_s1ap_from_mme(pdu, tr_pdu) {
+		setverdict(pass);
+		T.stop;
+		}
+	[] as_ConnHdlr_s1ap_from_mme(pdu) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Rx unexpected S1AP PDU from MME: ", pdu));
+		}
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Timeout waiting for S1AP PDU from MME: ", tr_pdu));
+		}
+	}
+}
+
+function f_ConnHdlr_s1ap_setup(Global_ENB_ID genb_id, float Tval := 5.0) runs on ConnHdlr {
+	var S1AP_PDU pdu;
+	timer T;
+
+	var SupportedTAs supported_tas_dummy := {
+		{
+			tAC := '0000'O,
+			broadcastPLMNs := { '00f000'O },
+			iE_Extensions := omit
+		}
+	};
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_SetupReq(genb_id,
+						     supported_tas_dummy,
+						     v32));
+	T.start(Tval);
+	alt {
+	[] S1AP_CONN.receive(S1APSRV_Event:S1APSRV_EVENT_CONN_UP) { repeat; }
+	[] as_ConnHdlr_s1ap_from_enb(pdu, tr_S1AP_SetupReq) {
+		var template (value) PLMNidentity plmn_id := '00f110'O;
+		var template (value) MME_Group_ID mme_group_id := '0011'O;
+		var template (value) MME_Code mme_code := '55'O;
+		var template (value) ServedGUMMEIsItem gummei := ts_S1AP_ServedGUMMEIsItem(
+			{ plmn_id },
+			{ mme_group_id },
+			{ mme_code }
+		);
+		f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_SetupResp({ gummei }, 1));
+		f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_SetupResp({ gummei }, 1));
+		T.stop;
+		}
+	[] as_ConnHdlr_s1ap_from_enb(pdu) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Rx unexpected S1AP PDU: ", pdu));
+		}
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Timeout waiting for S1AP SetupReq, idx = ", g_pars.idx));
+		}
+	}
+}
+
+private function f_ConnHdlr_pfcp_assoc_setup()
+runs on ConnHdlr
+{
+	var PDU_PFCP rx;
+
+	f_PFCPEM_subscribe_bcast(); /* ask PFCPEM to route all PDUs to us */
+	rx := f_ConnHdlr_pfcp_expect(tr_PFCP_Assoc_Setup_Req, Tval := 10.0);
+	f_PFCPEM_unsubscribe_bcast(); /* ask PFCPEM to *not* route all PDUs to us */
+	PFCP.send(ts_PFCP_Assoc_Setup_Resp(rx.sequence_number,
+					   ts_PFCP_Node_ID_fqdn("\07osmocom\03org"),
+					   ts_PFCP_Cause(REQUEST_ACCEPTED),
+					   f_PFCPEM_get_recovery_timestamp()));
+}
+
+function f_ConnHdlr_pfcp_expect(template (present) PDU_PFCP exp_rx := ?,
+				float Tval := 2.0)
+runs on ConnHdlr return PDU_PFCP
+{
+	var PDU_PFCP pdu;
+	timer T;
+
+	T.start(Tval);
+	alt {
+	[] PFCP.receive(exp_rx) -> value pdu { T.stop; }
+	[] PFCP.receive(PDU_PFCP:?) -> value pdu {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Got an unexpected PFCP PDU: ", pdu));
+		}
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Timeout waiting for PFCP ", exp_rx));
+		}
+	}
+
+	return pdu;
+}
+
+function f_ConnHdlr_pfcp_assoc_handler(charstring id)
+runs on ConnHdlr {
+	var charstring key_name := g_pars.statsd_prefix & "gauge.pfcp.associated.value";
+	var StatsDMetricKeys statsd_keys := { valueof(ts_StatsDMetricKey(key_name, "g")) };
+	var StatsDMetrics statsd_snapshot := f_statsd_snapshot(statsd_keys, since_last_snapshot := false);
+	var boolean pfcp_associated := statsd_snapshot[0].val == 1;
+
+	if (not pfcp_associated) {
+		log("Waiting for IUT to associate over PFCP");
+		f_ConnHdlr_pfcp_assoc_setup();
+	}
+
+	setverdict(pass);
+}
+
+type integer ERabIdx (0..255);
+type record of ERabIdx ERabIdxList;
+
+/* 256 is maxnoofE-RABs (see S1AP_Constants.asn) */
+type record length(1..256) of ERab ERabList;
+type record ERab {
+	E_RAB_ID erab_id,	/* ::= INTEGER (0..15, ...) */
+	ERabParams u2c,		/* UPF -> Core params */
+	ERabParams c2u,		/* Core -> UPF params */
+	ERabParams a2u,		/* Access -> UPF params */
+	ERabParams u2a,		/* UPF -> Access params */
+	ERabParams u2cm,	/* UPF -> Core params (modified) */
+	ERabParams u2am,	/* UPF -> Access params (modified) */
+	OCT8 pfcp_loc_seid,
+	OCT8 pfcp_rem_seid optional
+};
+
+type record ERabParams {
+	GTP_TEID teid,		/* ::= OCTET STRING (SIZE (4)) */
+	charstring tla		/* Transport Layer Address */
+};
+
+private const S1AP_IEs.Cause c_REL_CMD_CAUSE := { nas := normal_release };
+
+private const LIN4_BO_LAST c_PFCP_FAR_ID_C2A := 1; /* Core -> Access */
+private const LIN4_BO_LAST c_PFCP_FAR_ID_A2C := 2; /* Access -> Core */
+
+/* look-up an E-RAB in the given list by SEID of the received PFCP PDU */
+private function f_ERabList_find_by_pdu(in ERabList erabs, in PDU_PFCP rsp)
+return integer {
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		if (erabs[i].pfcp_loc_seid == rsp.seid) {
+			return i;
+		}
+	}
+
+	setverdict(fail, __SCOPE__, "(): no matching E-RAB found");
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+	return -1; /* make compiler happy */
+}
+
+function f_ConnHdlr_tx_erab_setup_req(in ERabList erabs,
+				      MME_UE_S1AP_ID mme_ue_id,
+				      ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var template (value) E_RABToBeSetupListBearerSUReq items;
+	var template (value) E_RABLevelQoSParameters qos_params;
+
+	qos_params := valueof(ts_E_RABLevelQoSParameters);
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABToBeSetupItemBearerSUReq item;
+		var template (value) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].u2c;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := ts_S1AP_RABToBeSetupItemBearerSUReq(rab_id := erabs[i].erab_id,
+							    qos_params := qos_params,
+							    tla := tla,
+							    gtp_teid := epars.teid,
+							    nas_pdu := ''O);
+		items[i] := ts_S1AP_RABToBeSetupListBearerSUReq(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_RABSetupReq(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_erab_setup_req(in ERabList erabs,
+				      MME_UE_S1AP_ID mme_ue_id,
+				      ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABToBeSetupListBearerSUReq items;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABToBeSetupItemBearerSUReq item;
+		var template (present) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].a2u;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := tr_S1AP_RABToBeSetupItemBearerSUReq(rab_id := erabs[i].erab_id,
+							    qos_params := ?,
+							    tla := tla,
+							    gtp_teid := epars.teid,
+							    nas_pdu := ''O);
+		items[i] := tr_S1AP_RABToBeSetupListBearerSUReq(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_RABSetupReq(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_setup_rsp(in ERabList erabs,
+				      MME_UE_S1AP_ID mme_ue_id,
+				      ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var template (value) E_RABSetupListBearerSURes items;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABSetupItemBearerSURes item;
+		var template (value) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].u2a;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := ts_S1AP_RABSetupItemBearerSURes(rab_id := erabs[i].erab_id,
+							tla := tla,
+							gtp_teid := epars.teid);
+		items[i] := ts_S1AP_RABSetupListBearerSURes(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_RABSetupRsp(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_erab_setup_rsp(in ERabList erabs,
+				      MME_UE_S1AP_ID mme_ue_id,
+				      ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABSetupListBearerSURes items;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABSetupItemBearerSURes item;
+		var template (present) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].c2u;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := tr_S1AP_RABSetupItemBearerSURes(rab_id := erabs[i].erab_id,
+							tla := tla,
+							gtp_teid := epars.teid);
+		items[i] := tr_S1AP_RABSetupListBearerSURes(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_RABSetupRsp(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_modify_req(in ERabList erabs,
+				       boolean transport_info := true)
+runs on ConnHdlr {
+	var template (value) E_RABToBeModifiedListBearerModReq items;
+	var template (value) E_RABLevelQoSParameters qos_params;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+
+	qos_params := valueof(ts_E_RABLevelQoSParameters);
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABToBeModifiedItemBearerModReq item;
+
+		if (transport_info) {
+			var template (value) TransportLayerAddress tla;
+			var ERabParams epars := erabs[i].u2cm;
+
+			tla := oct2bit(f_inet_addr(epars.tla));
+			item := ts_E_RABToBeModifiedItemBearerModReqExt(rab_id := erabs[i].erab_id,
+									qos_params := qos_params,
+									nas_pdu := ''O,
+									tla := tla,
+									gtp_teid := epars.teid);
+		} else {
+			item := ts_E_RABToBeModifiedItemBearerModReq(rab_id := erabs[i].erab_id,
+								     qos_params := qos_params,
+								     nas_pdu := ''O);
+		}
+
+		items[i] := ts_E_RABToBeModifiedListBearerModReq(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_RABModifyReq(g_pars.mme_ue_id, enb_ue_id,
+							 rab_modify_items := items));
+}
+
+function f_ConnHdlr_rx_erab_modify_req(in ERabList erabs,
+				       boolean transport_info := true)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABToBeModifiedListBearerModReq items;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABToBeModifiedItemBearerModReq item;
+
+		if (transport_info) {
+			var template (present) TransportLayerAddress tla;
+			var ERabParams epars := erabs[i].a2u;
+
+			tla := oct2bit(f_inet_addr(epars.tla));
+			item := tr_E_RABToBeModifiedItemBearerModReqExt(rab_id := erabs[i].erab_id,
+									qos_params := ?,
+									nas_pdu := ''O,
+									tla := tla,
+									gtp_teid := epars.teid);
+		} else {
+			item := tr_E_RABToBeModifiedItemBearerModReq(rab_id := erabs[i].erab_id,
+								     qos_params := ?,
+								     nas_pdu := ''O);
+		}
+
+		items[i] := tr_E_RABToBeModifiedListBearerModReq(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_RABModifyReq(g_pars.mme_ue_id, enb_ue_id,
+							      rab_modify_items := items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_modify_rsp(in ERabIdxList erabs_modified,
+				       in ERabIdxList erabs_failed := {})
+runs on ConnHdlr {
+	var template (value) E_RABModifyListBearerModRes items_modified;
+	var template (omit) E_RABList items_failed := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (value) E_RABModifyItemBearerModRes item;
+		var ERabIdx idx := erabs_modified[i];
+
+		item := ts_E_RABModifyItemBearerModRes(g_pars.erabs[idx].erab_id);
+		items_modified[i] := ts_E_RABModifyListBearerModRes(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_failed); i := i + 1) {
+		var template (value) E_RABItem item;
+		var ERabIdx idx := erabs_failed[i];
+
+		item := ts_E_RABItem(g_pars.erabs[idx].erab_id);
+		items_failed[i] := ts_E_RABList(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_RABModifyRsp(g_pars.mme_ue_id, enb_ue_id,
+							 rab_modified_items := items_modified,
+							 rab_failed_items := items_failed));
+}
+
+function f_ConnHdlr_rx_erab_modify_rsp(in ERabIdxList erabs_modified,
+				       in ERabIdxList erabs_failed := {})
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABModifyListBearerModRes items_modified;
+	var template E_RABList items_failed := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (present) E_RABModifyItemBearerModRes item;
+		var ERabIdx idx := erabs_modified[i];
+
+		item := tr_E_RABModifyItemBearerModRes(g_pars.erabs[idx].erab_id);
+		items_modified[i] := tr_E_RABModifyListBearerModRes(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_failed); i := i + 1) {
+		var template (present) E_RABItem item;
+		var ERabIdx idx := erabs_failed[i];
+
+		item := tr_E_RABItem(g_pars.erabs[idx].erab_id);
+		items_failed[i] := tr_E_RABList(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_RABModifyRsp(g_pars.mme_ue_id, enb_ue_id,
+							      rab_modified_items := items_modified,
+							      rab_failed_items := items_failed));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_modify_ind(in ERabIdxList erabs_modified,
+				       in ERabIdxList erabs_not_modified := {})
+runs on ConnHdlr {
+	var template (value) E_RABToBeModifiedListBearerModInd items_modified;
+	var template (omit) E_RABNotToBeModifiedListBearerModInd items_not_modified := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (value) E_RABToBeModifiedItemBearerModInd item;
+		var ERabIdx idx := erabs_modified[i];
+		var ERabParams epars := g_pars.erabs[idx].u2am;
+
+		item := ts_E_RABToBeModifiedItemBearerModInd(rab_id := g_pars.erabs[idx].erab_id,
+							     tla := oct2bit(f_inet_addr(epars.tla)),
+							     gtp_teid := epars.teid);
+
+		items_modified[i] := ts_E_RABToBeModifiedListBearerModInd(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_not_modified); i := i + 1) {
+		var template (value) E_RABNotToBeModifiedItemBearerModInd item;
+		var ERabIdx idx := erabs_not_modified[i];
+		var ERabParams epars := g_pars.erabs[idx].u2a;
+
+		item := ts_E_RABNotToBeModifiedItemBearerModInd(rab_id := g_pars.erabs[idx].erab_id,
+								tla := oct2bit(f_inet_addr(epars.tla)),
+								gtp_teid := epars.teid);
+
+		items_not_modified[i] := ts_E_RABNotToBeModifiedListBearerModInd(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_RABModifyInd(g_pars.mme_ue_id, enb_ue_id,
+							 rab_do_modify_items := items_modified,
+							 rab_no_modify_items := items_not_modified));
+}
+
+function f_ConnHdlr_rx_erab_modify_ind(in ERabIdxList erabs_modified,
+				       in ERabIdxList erabs_not_modified := {})
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABToBeModifiedListBearerModInd items_modified;
+	var template E_RABNotToBeModifiedListBearerModInd items_not_modified := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (present) E_RABToBeModifiedItemBearerModInd item;
+		var ERabIdx idx := erabs_modified[i];
+		var ERabParams epars := g_pars.erabs[idx].c2u;
+
+		item := tr_E_RABToBeModifiedItemBearerModInd(rab_id := g_pars.erabs[idx].erab_id,
+							     tla := oct2bit(f_inet_addr(epars.tla)),
+							     gtp_teid := epars.teid);
+
+		items_modified[i] := tr_E_RABToBeModifiedListBearerModInd(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_not_modified); i := i + 1) {
+		var template (present) E_RABNotToBeModifiedItemBearerModInd item;
+		var ERabIdx idx := erabs_not_modified[i];
+		var ERabParams epars := g_pars.erabs[idx].c2u;
+
+		item := tr_E_RABNotToBeModifiedItemBearerModInd(rab_id := g_pars.erabs[idx].erab_id,
+								tla := oct2bit(f_inet_addr(epars.tla)),
+								gtp_teid := epars.teid);
+
+		items_not_modified[i] := tr_E_RABNotToBeModifiedListBearerModInd(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_RABModifyInd(g_pars.mme_ue_id, enb_ue_id,
+							      rab_do_modify_items := items_modified,
+							      rab_no_modify_items := items_not_modified));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_modify_cnf(in ERabIdxList erabs_modified := {},
+				       in ERabIdxList erabs_not_modified := {},
+				       in ERabIdxList erabs_release := {})
+runs on ConnHdlr {
+	var template (omit) E_RABModifyListBearerModConf items_modified := omit;
+	var template (omit) E_RABList items_not_modified := omit;
+	var template (omit) E_RABList items_release := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (value) E_RABModifyItemBearerModConf item;
+		var ERabIdx idx := erabs_modified[i];
+
+		item := ts_E_RABModifyItemBearerModConf(rab_id := g_pars.erabs[idx].erab_id);
+		items_modified[i] := ts_E_RABModifyListBearerModConf(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_not_modified); i := i + 1) {
+		var template (value) E_RABItem item;
+		var ERabIdx idx := erabs_not_modified[i];
+
+		item := ts_E_RABItem(rab_id := g_pars.erabs[idx].erab_id,
+				     cause := { transport := transport_resource_unavailable });
+		items_not_modified[i] := ts_E_RABList(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_release); i := i + 1) {
+		var template (value) E_RABItem item;
+		var ERabIdx idx := erabs_release[i];
+
+		item := ts_E_RABItem(rab_id := g_pars.erabs[idx].erab_id,
+				     cause := { transport := transport_resource_unavailable });
+		items_release[i] := ts_E_RABList(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_RABModifyCnf(g_pars.mme_ue_id, enb_ue_id,
+							 rab_modified_items := items_modified,
+							 rab_failed_items := items_not_modified,
+							 rab_release_items := items_release));
+}
+
+function f_ConnHdlr_rx_erab_modify_cnf(in ERabIdxList erabs_modified := {},
+				       in ERabIdxList erabs_not_modified := {},
+				       in ERabIdxList erabs_release := {})
+runs on ConnHdlr return S1AP_PDU {
+	var template E_RABModifyListBearerModConf items_modified := omit;
+	var template E_RABList items_not_modified := omit;
+	var template E_RABList items_release := omit;
+	var ENB_UE_S1AP_ID enb_ue_id := g_pars.idx;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var template (present) E_RABModifyItemBearerModConf item;
+		var ERabIdx idx := erabs_modified[i];
+
+		item := tr_E_RABModifyItemBearerModConf(rab_id := g_pars.erabs[idx].erab_id);
+		items_modified[i] := tr_E_RABModifyListBearerModConf(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_not_modified); i := i + 1) {
+		var template (present) E_RABItem item;
+		var ERabIdx idx := erabs_not_modified[i];
+
+		item := tr_E_RABItem(rab_id := g_pars.erabs[idx].erab_id,
+				     cause := { transport := transport_resource_unavailable });
+		items_not_modified[i] := tr_E_RABList(item)[0];
+	}
+
+	for (var integer i := 0; i < lengthof(erabs_release); i := i + 1) {
+		var template (present) E_RABItem item;
+		var ERabIdx idx := erabs_release[i];
+
+		item := tr_E_RABItem(rab_id := g_pars.erabs[idx].erab_id,
+				     cause := { transport := transport_resource_unavailable });
+		items_release[i] := tr_E_RABList(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_RABModifyCnf(g_pars.mme_ue_id, enb_ue_id,
+							      rab_modified_items := items_modified,
+							      rab_failed_items := items_not_modified,
+							      rab_release_items := items_release));
+	return pdu;
+}
+
+private function f_ts_E_RABList(in ERabList erabs,
+				S1AP_IEs.Cause cause)
+return template (value) E_RABList {
+	var template (value) E_RABList items;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABItem item;
+
+		item := ts_E_RABItem(erabs[i].erab_id, cause);
+		items[i] := ts_E_RABList(item)[0];
+	}
+
+	return items;
+}
+private function f_tr_E_RABList(in ERabList erabs,
+				S1AP_IEs.Cause cause)
+return template (present) E_RABList {
+	var template (present) E_RABList items;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABItem item;
+
+		item := tr_E_RABItem(erabs[i].erab_id, cause);
+		items[i] := tr_E_RABList(item)[0];
+	}
+
+	return items;
+}
+
+function f_ConnHdlr_tx_erab_release_cmd(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id,
+					S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	var template (value) E_RABList items := f_ts_E_RABList(erabs, cause);
+
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_RABReleaseCmd(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_erab_release_cmd(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id,
+					S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABList items := f_tr_E_RABList(erabs, cause);
+	var S1AP_PDU pdu;
+
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_RABReleaseCmd(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_release_rsp(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var template (value) E_RABReleaseListBearerRelComp items;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABReleaseItemBearerRelComp item;
+
+		item := ts_E_RABReleaseItemBearerRelComp(erabs[i].erab_id);
+		items[i] := ts_E_RABReleaseListBearerRelComp(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_RABReleaseRsp(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_erab_release_rsp(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABReleaseListBearerRelComp items;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABReleaseItemBearerRelComp item;
+
+		item := tr_E_RABReleaseItemBearerRelComp(erabs[i].erab_id);
+		items[i] := tr_E_RABReleaseListBearerRelComp(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_RABReleaseRsp(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_erab_release_ind(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id,
+					S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	var template (value) E_RABList items := f_ts_E_RABList(erabs, cause);
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_RABReleaseInd(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_erab_release_ind(in ERabList erabs,
+					MME_UE_S1AP_ID mme_ue_id,
+					ENB_UE_S1AP_ID enb_ue_id,
+					S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABList items := f_tr_E_RABList(erabs, cause);
+	var S1AP_PDU pdu;
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_RABReleaseInd(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_initial_ctx_setup_req(in ERabList erabs,
+					     MME_UE_S1AP_ID mme_ue_id,
+					     ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var template (value) E_RABToBeSetupListCtxtSUReq items;
+	var template (value) E_RABLevelQoSParameters qos_params;
+
+	qos_params := valueof(ts_E_RABLevelQoSParameters);
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABToBeSetupItemCtxtSUReq item;
+		var template (value) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].u2c;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := ts_E_RABToBeSetupItemCtxtSUReq(rab_id := erabs[i].erab_id,
+						       qos_params := qos_params,
+						       tla := tla,
+						       gtp_teid := epars.teid,
+						       nas_pdu := omit);
+		items[i] := ts_E_RABToBeSetupListCtxtSUReq(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_IntialCtxSetupReq(mme_id := mme_ue_id,
+							      enb_id := enb_ue_id,
+							      max_br := ts_UEAggregateMaximumBitrate,
+							      rab_setup_items := items,
+							      ue_sec_par := ts_UESecurityCapabilities,
+							      sec_key := f_rnd_bitstring(256)));
+}
+
+function f_ConnHdlr_rx_initial_ctx_setup_req(in ERabList erabs,
+					     MME_UE_S1AP_ID mme_ue_id,
+					     ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABToBeSetupListCtxtSUReq items;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABToBeSetupItemCtxtSUReq item;
+		var template (present) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].a2u;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := tr_E_RABToBeSetupItemCtxtSUReq(rab_id := erabs[i].erab_id,
+						       qos_params := ?,
+						       tla := tla,
+						       gtp_teid := epars.teid,
+						       nas_pdu := omit);
+		items[i] := tr_E_RABToBeSetupListCtxtSUReq(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_IntialCtxSetupReq(mme_id := mme_ue_id,
+								   enb_id := enb_ue_id,
+								   max_br := tr_UEAggregateMaximumBitrate,
+								   rab_setup_items := items,
+								   ue_sec_par := tr_UESecurityCapabilities));
+	return pdu;
+}
+
+function f_ConnHdlr_tx_initial_ctx_setup_rsp(in ERabList erabs,
+					     MME_UE_S1AP_ID mme_ue_id,
+					     ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var template (value) E_RABSetupListCtxtSURes items;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (value) E_RABSetupItemCtxtSURes item;
+		var template (value) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].u2a;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := ts_S1AP_RABSetupItemCtxtSURes(rab_id := erabs[i].erab_id,
+						      tla := tla,
+						      gtp_teid := epars.teid);
+		items[i] := ts_S1AP_RABSetupListCtxtSURes(item)[0];
+	}
+
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_InitialCtxSetupResp(mme_ue_id, enb_ue_id, items));
+}
+
+function f_ConnHdlr_rx_initial_ctx_setup_rsp(in ERabList erabs,
+					     MME_UE_S1AP_ID mme_ue_id,
+					     ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr return S1AP_PDU {
+	var template (present) E_RABSetupListCtxtSURes items;
+	var S1AP_PDU pdu;
+
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		var template (present) E_RABSetupItemCtxtSURes item;
+		var template (present) TransportLayerAddress tla;
+		var ERabParams epars := erabs[i].c2u;
+
+		tla := oct2bit(f_inet_addr(epars.tla));
+		item := tr_S1AP_RABSetupItemCtxtSURes(rab_id := erabs[i].erab_id,
+						      tla := tla,
+						      gtp_teid := epars.teid);
+		items[i] := tr_S1AP_RABSetupListCtxtSURes(item)[0];
+	}
+
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_InitialCtxSetupResp(mme_ue_id, enb_ue_id, items));
+	return pdu;
+}
+
+function f_ConnHdlr_rx_session_establish_req(in ERab erab)
+runs on ConnHdlr return PDU_PFCP {
+	var OCT4 addr := f_inet_addr(g_pars.pfcp_rem_addr);
+
+	/* Packet Detection Rules */
+	var template (present) Outer_Header_Removal ohr;
+	var template (present) Create_PDR pdr1;
+	var template (present) Create_PDR pdr2;
+
+	ohr := tr_PFCP_Outer_Header_Removal(GTP_U_UDP_IPV4);
+	pdr1 := tr_PFCP_Create_PDR(pdr_id := 1, /* -- for Core -> Access */
+				   pdi := tr_PFCP_PDI(CORE),
+				   ohr := ohr,
+				   far_id := c_PFCP_FAR_ID_C2A);
+	pdr2 := tr_PFCP_Create_PDR(pdr_id := 2, /* -- for Access -> Core */
+				   pdi := tr_PFCP_PDI(ACCESS),
+				   ohr := ohr,
+				   far_id := c_PFCP_FAR_ID_A2C);
+
+	/* Forwarding Action Rules */
+	var template (present) Outer_Header_Creation ohc2;
+	var template (present) Forwarding_Parameters fpars2;
+	var template (present) Create_FAR far1;
+	var template (present) Create_FAR far2;
+
+	ohc2 := tr_PFCP_Outer_Header_Creation_GTP_ipv4(erab.u2c.teid,
+						       f_inet_addr(erab.u2c.tla));
+	fpars2 := tr_PFCP_Forwarding_Parameters(CORE, ohc2);
+
+	far1 := tr_PFCP_Create_FAR(far_id := c_PFCP_FAR_ID_C2A, /* -- for Core -> Access */
+				   aa := tr_PFCP_Apply_Action_DROP,
+				   fp := omit);
+	far2 := tr_PFCP_Create_FAR(far_id := c_PFCP_FAR_ID_A2C, /* -- for Access -> Core */
+				   aa := tr_PFCP_Apply_Action_FORW,
+				   fp := fpars2);
+
+	/* The final Session Establishment Request PDU */
+	var template (present) PDU_PFCP tr_pdu;
+	tr_pdu := tr_PFCP_Session_Est_Req(node_id := tr_PFCP_Node_ID_ipv4(addr),
+					  cp_f_seid := tr_PFCP_F_SEID_ipv4(addr),
+					  create_pdr := {pdr1, pdr2},
+					  create_far := {far1, far2});
+	return f_ConnHdlr_pfcp_expect(tr_pdu);
+}
+
+function f_ConnHdlr_tx_session_establish_resp(in ERab erab,
+					      in PDU_PFCP req)
+runs on ConnHdlr {
+	var OCT4 addr := f_inet_addr(g_pars.pfcp_loc_addr);
+	var PFCP_Session_Establishment_Request serq;
+
+	serq := req.message_body.pfcp_session_establishment_request;
+
+	/* Created Packet Detection Rules */
+	var template (value) Created_PDR pdr1;
+	var template (value) Created_PDR pdr2;
+	pdr1 := ts_PFCP_Created_PDR(pdr_id := serq.create_PDR_list[0].grouped_ie.pdr_id,
+				    local_F_TEID := ts_PFCP_F_TEID_ipv4(erab.c2u.teid,
+									f_inet_addr(erab.c2u.tla)));
+	pdr2 := ts_PFCP_Created_PDR(pdr_id := serq.create_PDR_list[1].grouped_ie.pdr_id,
+				    local_F_TEID := ts_PFCP_F_TEID_ipv4(erab.a2u.teid,
+									f_inet_addr(erab.a2u.tla)));
+
+	/* The final Session Establishment Response PDU */
+	var template (value) PDU_PFCP resp;
+	resp := ts_PFCP_Session_Est_Resp(seq_nr := req.sequence_number,
+					 node_id := ts_PFCP_Node_ID_ipv4(addr),
+					 seid := erab.pfcp_rem_seid,
+					 f_seid := ts_PFCP_F_SEID_ipv4(addr, erab.pfcp_loc_seid),
+					 created_pdr := {pdr1, pdr2});
+	PFCP.send(resp);
+}
+
+function f_ConnHdlr_rx_session_modify_req(in ERabParams epars,
+					  template (present) OCT8 seid := ?,
+					  template (present) LIN4_BO_LAST far_id := ?)
+runs on ConnHdlr return PDU_PFCP {
+	/* Forwarding Action Rules */
+	var template (present) Outer_Header_Creation ohc;
+	var template (present) Update_Forwarding_Parameters fpars;
+	var template (present) Update_FAR far;
+
+	ohc := tr_PFCP_Outer_Header_Creation_GTP_ipv4(epars.teid,
+						      f_inet_addr(epars.tla));
+	fpars := tr_PFCP_Update_Forwarding_Parameters(ohc := ohc);
+
+	far := tr_PFCP_Update_FAR(far_id := far_id,
+				  aa := tr_PFCP_Apply_Action_FORW,
+				  fp := fpars);
+
+	/* The final Session Modification Request PDU */
+	var template (present) PDU_PFCP tr_pdu;
+	tr_pdu := tr_PFCP_Session_Mod_Req(seid := seid,
+					  update_far := far);
+	return f_ConnHdlr_pfcp_expect(tr_pdu);
+}
+
+function f_ConnHdlr_tx_session_modify_resp(in ERab erab,
+					   in PDU_PFCP req)
+runs on ConnHdlr {
+	/* The final Session Modification Response PDU */
+	var template (value) PDU_PFCP resp;
+	resp := ts_PFCP_Session_Mod_Resp(seq_nr := req.sequence_number,
+					 seid := erab.pfcp_rem_seid);
+	PFCP.send(resp);
+}
+
+function f_ConnHdlr_rx_session_delete_req(in ERab erab)
+runs on ConnHdlr return PDU_PFCP {
+	/* The final Session Deletion Request PDU */
+	var template (present) PDU_PFCP tr_pdu;
+	tr_pdu := tr_PFCP_Session_Del_Req(erab.pfcp_loc_seid);
+	return f_ConnHdlr_pfcp_expect(tr_pdu);
+}
+
+function f_ConnHdlr_tx_session_delete_resp(in ERab erab,
+					   in PDU_PFCP req)
+runs on ConnHdlr {
+	/* The final Session Deletion Response PDU */
+	var template (value) PDU_PFCP resp;
+	resp := ts_PFCP_Session_Del_Resp(seq_nr := req.sequence_number,
+					 seid := erab.pfcp_rem_seid);
+	PFCP.send(resp);
+}
+
+function f_ConnHdlr_session_establish(inout ERabList erabs)
+runs on ConnHdlr {
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		log("UPF <- S1GW: PFCP Session Establishment Request for E-RAB ID ", erabs[i].erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_establish_req(erabs[i]);
+		/* store peer's SEID, so that it can be used in outgoing PDUs later */
+		erabs[i].pfcp_rem_seid := pdu.message_body.pfcp_session_establishment_request.CP_F_SEID.seid;
+		/* ask PFCPEM to route PDUs with the local SEID to us */
+		f_PFCPEM_subscribe_seid(erabs[i].pfcp_loc_seid);
+		log("UPF -> S1GW: PFCP Session Establishment Response for E-RAB ID ", erabs[i].erab_id);
+		f_ConnHdlr_tx_session_establish_resp(erabs[i], pdu);
+	}
+}
+
+function f_ConnHdlr_session_modify(in ERabList erabs)
+runs on ConnHdlr {
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		log("UPF <- S1GW: PFCP Session Modification Request for E-RAB ID ", erabs[i].erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_modify_req(epars := erabs[i].u2a,
+								     seid := erabs[i].pfcp_loc_seid,
+								     far_id := c_PFCP_FAR_ID_C2A);
+		log("UPF -> S1GW: PFCP Session Modification Response for E-RAB ID ", erabs[i].erab_id);
+		f_ConnHdlr_tx_session_modify_resp(erabs[i], pdu);
+	}
+}
+
+function f_ConnHdlr_session_delete(inout ERabList erabs)
+runs on ConnHdlr {
+	var integer pending_erabs := lengthof(erabs);
+
+	while (pending_erabs > 0) {
+		var PDU_PFCP pdu := f_ConnHdlr_pfcp_expect(tr_PFCP_Session_Del_Req);
+		var integer idx := f_ERabList_find_by_pdu(erabs, pdu);
+
+		log("UPF <- S1GW: PFCP Session Deletion Request for E-RAB ID ", erabs[idx].erab_id);
+		/* make sure that an E-RAB is never released twice */
+		if (not ispresent(erabs[idx].pfcp_rem_seid)) {
+			setverdict(fail, __SCOPE__, "(): PFCP Session Deletion Request ",
+				   "was not expected for E-RAB ID ", erabs[idx].erab_id);
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+		}
+		log("UPF -> S1GW: PFCP Session Deletion Response for E-RAB ID ", erabs[idx].erab_id);
+		f_ConnHdlr_tx_session_delete_resp(erabs[idx], pdu);
+		/* ask PFCPEM to *not* route PDUs with the local SEID to us */
+		f_PFCPEM_unsubscribe_seid(erabs[idx].pfcp_loc_seid);
+		/* peer's SEID is no longer valid, invalidate it */
+		erabs[idx].pfcp_rem_seid := omit;
+
+		pending_erabs := pending_erabs - 1;
+	}
+}
+
+function f_ConnHdlr_erab_setup_req_()
+runs on ConnHdlr {
+	f_ConnHdlr_erab_setup_req(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_erab_setup_req(inout ERabList erabs,
+				   MME_UE_S1AP_ID mme_ue_id,
+				   ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	const OCT8 c_SEID0 := '0000000000000000'O;
+
+	/* This code block cannot be executed by more than one component at a time because
+	 * the S1AP E-RAB SETUP REQUEST triggers the IUT to send PFCP Session Establishment
+	 * Request PDU(s), with need to be routed to the respective ConnHdlr component (us).
+	 * As per 3GPP TS 29.244, section 7.2.2.4.2, these PFCP PDUs shall all have SEID=0,
+	 * so that the PFCPEM component cannot route them unambiguously.   This is why we
+	 * need to ensure that only one ConnHdlr is triggering PFCP session establishment
+	 * at the given moment of time. */
+	f_Mutex_lock(__BFILE__, __LINE__);
+	f_PFCPEM_subscribe_seid(c_SEID0);
+
+	log("eNB <- [S1GW <- MME]: E-RAB SETUP REQUEST");
+	f_ConnHdlr_tx_erab_setup_req(erabs, mme_ue_id, enb_ue_id);
+	f_ConnHdlr_session_establish(erabs);
+
+	/* We're done establishing PFCP sessions, so at this point we no longer expect to
+	 * receive Session Establishment Request PDUs with SEID=0.  Unregister and unlock
+	 * the mutex, enabling other components to establish PFCP sessions after us. */
+	f_PFCPEM_unsubscribe_seid(c_SEID0);
+	f_Mutex_unlock(__BFILE__, __LINE__);
+
+	log("[eNB <- S1GW] <- MME: E-RAB SETUP REQUEST");
+	f_ConnHdlr_rx_erab_setup_req(erabs, mme_ue_id, enb_ue_id);
+}
+
+function f_ConnHdlr_erab_setup_rsp_()
+runs on ConnHdlr {
+	f_ConnHdlr_erab_setup_rsp(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_erab_setup_rsp(in ERabList erabs,
+				   MME_UE_S1AP_ID mme_ue_id,
+				   ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: E-RAB SETUP RESPONSE");
+	f_ConnHdlr_tx_erab_setup_rsp(erabs, mme_ue_id, enb_ue_id);
+	f_ConnHdlr_session_modify(erabs);
+	log("eNB -> [S1GW -> MME]: E-RAB SETUP RESPONSE");
+	f_ConnHdlr_rx_erab_setup_rsp(erabs, mme_ue_id, enb_ue_id);
+}
+
+function f_ConnHdlr_erab_modify_req(in ERabList erabs)
+runs on ConnHdlr {
+	log("eNB <- [S1GW <- MME]: E-RAB MODIFY REQUEST");
+	f_ConnHdlr_tx_erab_modify_req(erabs);
+	/* Expect the S1GW to modify FARs (id=2) of the respective PFCP sessions */
+	for (var integer i := 0; i < lengthof(erabs); i := i + 1) {
+		log("UPF <- S1GW: PFCP Session Modification Request for E-RAB ID ", erabs[i].erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_modify_req(epars := erabs[i].u2cm,
+								     seid := erabs[i].pfcp_loc_seid,
+								     far_id := c_PFCP_FAR_ID_A2C);
+		log("UPF -> S1GW: PFCP Session Modification Response for E-RAB ID ", erabs[i].erab_id);
+		f_ConnHdlr_tx_session_modify_resp(erabs[i], pdu);
+	}
+	log("[eNB <- S1GW] <- MME: E-RAB MODIFY REQUEST");
+	f_ConnHdlr_rx_erab_modify_req(erabs);
+}
+
+function f_ConnHdlr_erab_modify_rsp(in ERabIdxList erabs_modified,
+				    in ERabIdxList erabs_failed)
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: E-RAB MODIFY RESPONSE");
+	f_ConnHdlr_tx_erab_modify_rsp(erabs_modified, erabs_failed);
+	/* For successfully modified E-RABs, U2CM becomes U2C */
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var ERabIdx idx := erabs_modified[i];
+		g_pars.erabs[idx].u2c := g_pars.erabs[idx].u2cm;
+	}
+	/* Expect the S1GW to modify (revert) FARs (id=2) for failed E-RABs */
+	for (var integer i := 0; i < lengthof(erabs_failed); i := i + 1) {
+		var ERabIdx idx := erabs_failed[i];
+		var ERab erab := g_pars.erabs[idx];
+
+		log("UPF <- S1GW: PFCP Session Modification Request for E-RAB ID ", erab.erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_modify_req(epars := erab.u2c,
+								     seid := erab.pfcp_loc_seid,
+								     far_id := c_PFCP_FAR_ID_A2C);
+		log("UPF -> S1GW: PFCP Session Modification Response for E-RAB ID ", erab.erab_id);
+		f_ConnHdlr_tx_session_modify_resp(erab, pdu);
+	}
+	log("eNB -> [S1GW -> MME]: E-RAB MODIFY RESPONSE");
+	f_ConnHdlr_rx_erab_modify_rsp(erabs_modified, erabs_failed);
+}
+
+function f_ConnHdlr_erab_modify_ind(in ERabIdxList erabs_modified,
+				    in ERabIdxList erabs_not_modified := {})
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: E-RAB MODIFICATION INDICATION");
+	f_ConnHdlr_tx_erab_modify_ind(erabs_modified, erabs_not_modified);
+	/* Expect the S1GW to modify FARs (id=1) of the respective PFCP sessions */
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var ERabIdx idx := erabs_modified[i];
+		var ERab erab := g_pars.erabs[idx];
+
+		log("UPF <- S1GW: PFCP Session Modification Request for E-RAB ID ", erab.erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_modify_req(epars := erab.u2am,
+								     seid := erab.pfcp_loc_seid,
+								     far_id := c_PFCP_FAR_ID_C2A);
+		log("UPF -> S1GW: PFCP Session Modification Response for E-RAB ID ", erab.erab_id);
+		f_ConnHdlr_tx_session_modify_resp(erab, pdu);
+	}
+	log("eNB -> [S1GW -> MME]: E-RAB MODIFICATION INDICATION");
+	f_ConnHdlr_rx_erab_modify_ind(erabs_modified, erabs_not_modified);
+}
+
+function f_ConnHdlr_erab_modify_cnf(in ERabIdxList erabs_modified := {},
+				    in ERabIdxList erabs_not_modified := {},
+				    in ERabIdxList erabs_release := {})
+runs on ConnHdlr {
+	log("eNB <- [S1GW <- MME]: E-RAB MODIFICATION CONFIRMATION");
+	f_ConnHdlr_tx_erab_modify_cnf(erabs_modified, erabs_not_modified, erabs_release);
+	/* For successfully modified E-RABs, U2AM becomes U2A */
+	for (var integer i := 0; i < lengthof(erabs_modified); i := i + 1) {
+		var ERabIdx idx := erabs_modified[i];
+		g_pars.erabs[idx].u2a := g_pars.erabs[idx].u2am;
+	}
+	/* Expect the S1GW to modify (revert) FARs (id=1) for failed E-RABs (if any) */
+	for (var integer i := 0; i < lengthof(erabs_not_modified); i := i + 1) {
+		var ERabIdx idx := erabs_not_modified[i];
+		var ERab erab := g_pars.erabs[idx];
+
+		log("UPF <- S1GW: PFCP Session Modification Request for E-RAB ID ", erab.erab_id);
+		var PDU_PFCP pdu := f_ConnHdlr_rx_session_modify_req(epars := erab.u2a,
+								     seid := erab.pfcp_loc_seid,
+								     far_id := c_PFCP_FAR_ID_C2A);
+		log("UPF -> S1GW: PFCP Session Modification Response for E-RAB ID ", erab.erab_id);
+		f_ConnHdlr_tx_session_modify_resp(erab, pdu);
+	}
+	/* Expect the S1GW to delete sessions for released E-RABs (if any) */
+	if (lengthof(erabs_release) > 0) {
+		var ERabList erabs;
+
+		for (var integer i := 0; i < lengthof(erabs_release); i := i + 1) {
+			var ERabIdx idx := erabs_release[i];
+			erabs[i] := g_pars.erabs[idx];
+		}
+		f_ConnHdlr_session_delete(erabs);
+	}
+	log("[eNB <- S1GW] <- MME: E-RAB MODIFICATION CONFIRMATION");
+	f_ConnHdlr_rx_erab_modify_cnf(erabs_modified, erabs_not_modified, erabs_release);
+}
+
+function f_ConnHdlr_erab_release_cmd_(S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	f_ConnHdlr_erab_release_cmd(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_erab_release_cmd(inout ERabList erabs,
+				     MME_UE_S1AP_ID mme_ue_id,
+				     ENB_UE_S1AP_ID enb_ue_id,
+				     S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	log("eNB <- [S1GW <- MME]: E-RAB RELEASE COMMAND");
+	f_ConnHdlr_tx_erab_release_cmd(erabs, mme_ue_id, enb_ue_id, cause);
+	f_ConnHdlr_session_delete(erabs);
+	log("[eNB <- S1GW] <- MME: E-RAB RELEASE COMMAND");
+	f_ConnHdlr_rx_erab_release_cmd(erabs, mme_ue_id, enb_ue_id, cause);
+}
+
+function f_ConnHdlr_erab_release_rsp_()
+runs on ConnHdlr {
+	f_ConnHdlr_erab_release_rsp(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_erab_release_rsp(inout ERabList erabs,
+				     MME_UE_S1AP_ID mme_ue_id,
+				     ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: E-RAB RELEASE RESPONSE");
+	f_ConnHdlr_tx_erab_release_rsp(erabs, mme_ue_id, enb_ue_id);
+	log("eNB -> [S1GW -> MME]: E-RAB RELEASE RESPONSE");
+	f_ConnHdlr_rx_erab_release_rsp(erabs, mme_ue_id, enb_ue_id);
+}
+
+function f_ConnHdlr_erab_release_ind_(S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	f_ConnHdlr_erab_release_ind(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx, cause);
+}
+
+function f_ConnHdlr_erab_release_ind(inout ERabList erabs,
+				     MME_UE_S1AP_ID mme_ue_id,
+				     ENB_UE_S1AP_ID enb_ue_id,
+				     S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: E-RAB RELEASE INDICATION");
+	f_ConnHdlr_tx_erab_release_ind(erabs, mme_ue_id, enb_ue_id, cause);
+	f_ConnHdlr_session_delete(erabs);
+	log("eNB -> [S1GW -> MME]: E-RAB RELEASE INDICATION");
+	f_ConnHdlr_rx_erab_release_ind(erabs, mme_ue_id, enb_ue_id, cause);
+}
+
+function f_ConnHdlr_initial_ctx_setup_req_()
+runs on ConnHdlr {
+	f_ConnHdlr_initial_ctx_setup_req(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_initial_ctx_setup_req(inout ERabList erabs,
+					  MME_UE_S1AP_ID mme_ue_id,
+					  ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	const OCT8 c_SEID0 := '0000000000000000'O;
+
+	/* This code block cannot be executed by more than one component at a time because
+	 * the S1AP E-RAB SETUP REQUEST triggers the IUT to send PFCP Session Establishment
+	 * Request PDU(s), with need to be routed to the respective ConnHdlr component (us).
+	 * As per 3GPP TS 29.244, section 7.2.2.4.2, these PFCP PDUs shall all have SEID=0,
+	 * so that the PFCPEM component cannot route them unambiguously.   This is why we
+	 * need to ensure that only one ConnHdlr is triggering PFCP session establishment
+	 * at the given moment of time. */
+	f_Mutex_lock(__BFILE__, __LINE__);
+	f_PFCPEM_subscribe_seid(c_SEID0);
+
+	log("eNB <- [S1GW <- MME]: INITIAL CONTEXT SETUP REQUEST");
+	f_ConnHdlr_tx_initial_ctx_setup_req(erabs, mme_ue_id, enb_ue_id);
+	f_ConnHdlr_session_establish(erabs);
+
+	/* We're done establishing PFCP sessions, so at this point we no longer expect to
+	 * receive Session Establishment Request PDUs with SEID=0.  Unregister and unlock
+	 * the mutex, enabling other components to establish PFCP sessions after us. */
+	f_PFCPEM_unsubscribe_seid(c_SEID0);
+	f_Mutex_unlock(__BFILE__, __LINE__);
+
+	log("[eNB <- S1GW] <- MME: INITIAL CONTEXT SETUP REQUEST");
+	f_ConnHdlr_rx_initial_ctx_setup_req(erabs, mme_ue_id, enb_ue_id);
+}
+
+function f_ConnHdlr_initial_ctx_setup_rsp_()
+runs on ConnHdlr {
+	f_ConnHdlr_initial_ctx_setup_rsp(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_initial_ctx_setup_rsp(inout ERabList erabs,
+					  MME_UE_S1AP_ID mme_ue_id,
+					  ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	log("[eNB -> S1GW] -> MME: INITIAL CONTEXT SETUP RESPONSE");
+	f_ConnHdlr_tx_initial_ctx_setup_rsp(erabs, mme_ue_id, enb_ue_id);
+	f_ConnHdlr_session_modify(erabs);
+	log("eNB -> [S1GW -> MME]: INITIAL CONTEXT SETUP RESPONSE");
+	f_ConnHdlr_rx_initial_ctx_setup_rsp(erabs, mme_ue_id, enb_ue_id);
+}
+
+function f_ConnHdlr_ue_ctx_release_req_(S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	f_ConnHdlr_ue_ctx_release_req(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx, cause);
+}
+
+function f_ConnHdlr_ue_ctx_release_req(inout ERabList erabs,
+				       MME_UE_S1AP_ID mme_ue_id,
+				       ENB_UE_S1AP_ID enb_ue_id,
+				       S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	var S1AP_PDU pdu;
+
+	log("[eNB -> S1GW] -> MME: UE CONTEXT RELEASE REQUEST");
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_UeContextReleaseReq(mme_ue_id, enb_ue_id, cause));
+	f_ConnHdlr_session_delete(erabs);
+	log("eNB -> [S1GW -> MME]: UE CONTEXT RELEASE REQUEST");
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_UeContextReleaseReq(mme_ue_id, enb_ue_id, cause));
+}
+
+function f_ConnHdlr_ue_ctx_release_cmd_(S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	f_ConnHdlr_ue_ctx_release_cmd(g_pars.erabs, g_pars.mme_ue_id, g_pars.idx, cause);
+}
+
+function f_ConnHdlr_ue_ctx_release_cmd(inout ERabList erabs,
+				       MME_UE_S1AP_ID mme_ue_id,
+				       ENB_UE_S1AP_ID enb_ue_id,
+				       S1AP_IEs.Cause cause := c_REL_CMD_CAUSE)
+runs on ConnHdlr {
+	var template (value) UE_S1AP_IDs ue_ids := {
+		uE_S1AP_ID_pair := {
+			mME_UE_S1AP_ID := mme_ue_id,
+			eNB_UE_S1AP_ID := enb_ue_id,
+			iE_Extensions := omit
+		}
+	};
+	var S1AP_PDU pdu;
+
+	log("eNB <- [S1GW <- MME]: UE CONTEXT RELEASE COMMAND");
+	f_ConnHdlr_tx_s1ap_from_mme(ts_S1AP_UeContextReleaseCmd(ue_ids, cause));
+	f_ConnHdlr_session_delete(erabs);
+	log("[eNB <- S1GW] <- MME: UE CONTEXT RELEASE COMMAND");
+	f_ConnHdlr_rx_s1ap_from_mme(pdu, tr_S1AP_UeContextReleaseCmd(ue_ids, cause));
+}
+
+function f_ConnHdlr_ue_ctx_release_compl_()
+runs on ConnHdlr {
+	f_ConnHdlr_ue_ctx_release_compl(g_pars.mme_ue_id, g_pars.idx);
+}
+
+function f_ConnHdlr_ue_ctx_release_compl(MME_UE_S1AP_ID mme_ue_id,
+					 ENB_UE_S1AP_ID enb_ue_id)
+runs on ConnHdlr {
+	var S1AP_PDU pdu;
+
+	log("[eNB -> S1GW] -> MME: UE CONTEXT RELEASE COMPLETE");
+	f_ConnHdlr_tx_s1ap_from_enb(ts_S1AP_UeContextReleaseCompl(mme_ue_id, enb_ue_id));
+	log("eNB -> [S1GW -> MME]: UE CONTEXT RELEASE COMPLETE");
+	f_ConnHdlr_rx_s1ap_from_enb(pdu, tr_S1AP_UeContextReleaseCompl(mme_ue_id, enb_ue_id));
+}
+
+}

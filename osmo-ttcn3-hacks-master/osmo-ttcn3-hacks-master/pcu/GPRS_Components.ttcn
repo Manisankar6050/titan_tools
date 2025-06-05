@@ -1,0 +1,1548 @@
+module GPRS_Components {
+/*
+ * Osmocom PCU test suite in TTCN-3, components for GPRS handlng
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * (C) 2019 Vadim Yanitskiy <axilirator@gmail.com>
+ * (C) 2020 by sysmocom s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from GSM_Types all;
+import from GSM_RR_Types all;
+import from GSM_RestOctets all;
+
+import from RLCMAC_CSN1_Types all;
+import from RLCMAC_CSN1_Templates all;
+import from RLCMAC_Types all;
+import from RLCMAC_Templates all;
+
+import from MobileL3_CommonIE_Types all;
+import from L3_Templates all;
+
+import from PCUIF_Types all;
+import from PCUIF_Components all;
+import from Native_Functions all;
+
+modulepar {
+	/* ARFCN of 1st TRX. Subsequent TRX are allocated incrementing ARFCNs. Nth TRX => base_arfcn + N-1 */
+	GsmArfcn mp_base_arfcn := 871;
+};
+
+type record TsTrxBtsNum {
+	uint3_t		ts_nr,
+	uint3_t		trx_nr,
+	uint8_t		bts_nr,
+	uint8_t		blk_nr
+};
+
+/* Useful to store poll FN + BTS+TRX+TS requested by network */
+type record PollFnCtx {
+	TsTrxBtsNum tstrxbts,
+	uint32_t fn
+};
+
+template (value) TsTrxBtsNum ts_TsTrxBtsNum(uint3_t ts_nr := 7,
+					    uint3_t trx_nr := 0,
+					    uint8_t bts_nr := 0,
+					    uint8_t blk_nr := 0) := {
+	ts_nr := ts_nr,
+	trx_nr := trx_nr,
+	bts_nr := bts_nr,
+	blk_nr := blk_nr
+};
+template TsTrxBtsNum tr_TsTrxBtsNum(template uint3_t ts_nr := ?,
+				    template uint3_t trx_nr := ?,
+				    template uint8_t bts_nr := ?,
+				    template uint8_t blk_nr := ?) := {
+	ts_nr := ts_nr,
+	trx_nr := trx_nr,
+	bts_nr := bts_nr,
+	blk_nr := blk_nr
+};
+
+type union PacketDlAssignChan {
+	PacketDlAssign		ccch,
+	PacketDlAssignment	pacch
+};
+
+type record DlTbf {
+	GsmRrMessage		rr_imm_ass optional,
+	PacketDlAssignChan	ass optional,
+	uint5_t			tfi,
+	GsmArfcn		arfcn optional,
+	BIT8                    ts_mask,
+	AckNackDescription	acknack_desc,
+	EgprsAckNackDescription	egprs_acknack_desc
+};
+
+type union PacketUlAssignChan {
+	PacketUlAssign		ccch,
+	EgprsUlAss		ccch_egprs,
+	PacketUlAssignment	pacch
+};
+
+type record UlTbf {
+	GsmRrMessage		rr_imm_ass optional,
+	PacketUlAssignChan	ass optional,
+	uint5_t			tfi,
+	GsmArfcn		arfcn optional,
+	BIT8                    ts_mask,
+	uint3_t			usf[8],
+	boolean			is_egprs,
+	uint14_t		bsn,
+	CodingScheme		tx_cs_mcs,
+	GsmFrameNumber		start_time_fn
+};
+
+type record GprsMS {
+	hexstring	imsi,
+	GprsTlli	tlli,
+	uint16_t	ra,
+	uint8_t		ra_is_11bit,
+	PCUIF_BurstType	burst_type,
+	TimingAdvance	ta,
+	int16_t		lqual_cb,
+	UlTbf		ul_tbf optional, /* TODO: Only 1 UL tbf supported for now */
+	DlTbf		dl_tbf optional /* TODO: Only 1 DL tbf supported for now */
+};
+type record of GprsMS GprsMSList;
+
+template AckNackDescription t_AckNackDescription_init := {
+	final_ack := '0'B,
+	starting_seq_nr := 0,
+	receive_block_bitmap := '0000000000000000000000000000000000000000000000000000000000000000'B
+}
+
+template EgprsAckNackDescription t_EgprsAckNackDescription_init := {
+	final_ack := '0'B,
+	begin_window := '1'B,
+	end_window := '1'B,
+	starting_seq_nr := 1,
+	compressed := '0'B,
+	urbb := '0000000000000000000000000000000000000000000000000000000000000000'B
+}
+
+const uint3_t USF_UNUSED := 7; /* used to indicate PRACH */
+
+template (value) GprsMS t_GprsMS_def := {
+        imsi := f_gen_imsi(42),
+        tlli := f_gen_tlli(),
+        ra := bit2int(chan_req_def),
+        ra_is_11bit := 0,
+        burst_type := BURST_TYPE_0,
+        ta := 0,
+        lqual_cb := 0,
+        ul_tbf := omit,
+        dl_tbf := omit
+};
+
+template (value) DlTbf t_DlTbf_def := {
+	rr_imm_ass := omit,
+	ass := omit,
+	tfi := 0,
+	arfcn := omit,
+	ts_mask := '00000000'B,
+	acknack_desc := t_AckNackDescription_init,
+	egprs_acknack_desc := t_EgprsAckNackDescription_init
+};
+
+template (value) UlTbf t_UlTbf_def := {
+	rr_imm_ass := omit,
+	ass := omit,
+	tfi := 0,
+	arfcn := omit,
+	ts_mask := '00000000'B,
+	usf := { USF_UNUSED, USF_UNUSED, USF_UNUSED, USF_UNUSED, USF_UNUSED, USF_UNUSED, USF_UNUSED, USF_UNUSED },
+	is_egprs := false,
+	bsn := 0,
+	tx_cs_mcs := CS_1,
+	start_time_fn := 0
+};
+
+type component MS_BTS_IFACE_CT {
+	/* Virtual BTS component */
+	var RAW_PCU_BTS_CT vc_BTS;
+	/* Connection to the BTS component (one for now) */
+	port RAW_PCU_MSG_PT BTS;
+
+	/* Mobile station(s) involved in a testing scenario */
+	var GprsMSList g_ms := { };
+
+	/* Value at which Countdown Procedure starts. Announced by network (GPRS Cell Options as per TS 04.60 Chapter 12.24) */
+	var uint4_t g_bs_cv_max := 4;
+}
+
+/* Generate a list of GprsMS (unique IMSI/TLLI, cyclic RA) of the given size */
+function f_init_gprs_ms(integer num_ms := 1, template (value) GprsMS t_ms := t_GprsMS_def)
+runs on MS_BTS_IFACE_CT {
+	for (var integer i := 0; i < num_ms; i := i + 1 ) {
+		var GprsMS ms := valueof(t_ms);
+
+		/* We assume that num_ms is not a large number */
+		ms.imsi := f_gen_imsi(i + 1);
+		ms.tlli := int2oct(i + 1, 4);
+
+		/* Ensure different RA for siblings */
+		if (ms.ra == bit2int(chan_req_def)) {
+			/* 01111 { 0xx | x0x | xx0 } */
+			f_ms_use_ra(ms, ms.ra + (i mod 7));
+		} else if (ms.ra == bit2int(chan_req_sb)) {
+			/* 01110xxx */
+			f_ms_use_ra(ms, ms.ra + (i mod 8));
+		}
+
+		/* Append to the global list */
+		g_ms := g_ms & { ms };
+	}
+}
+
+
+function f_shutdown(charstring file, integer line,
+		    boolean final := false)
+runs on MS_BTS_IFACE_CT {
+	/* Determine if the test case was aborted in the middle */
+	if (not final) {
+		log("Test case ", testcasename(), " aborted at ", file, ":", line);
+	} else {
+		/* Guard verdict to avoid 'none' */
+		setverdict(pass);
+	}
+
+	/* Properly shutdown virtual BTS and its clock generator */
+	BTS.send(ts_RAW_PCU_CMD(GENERAL_CMD_SHUTDOWN));
+	vc_BTS.done; /* wait untill it's done */
+
+	/* Shutdown the others and MTC */
+	all component.stop;
+	mtc.stop;
+}
+
+function f_arfcn2trxnr(GsmArfcn arfcn) runs on MS_BTS_IFACE_CT return uint3_t {
+	if (arfcn < mp_base_arfcn) {
+		setverdict(fail, "Unable to find TRX NR for arfcn ", arfcn);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+	return arfcn - mp_base_arfcn;
+}
+
+function f_trxnr2arfcn(uint3_t trx_nr) return GsmArfcn {
+	return mp_base_arfcn + trx_nr;
+}
+
+/* 3GPP TS 44.018  10.5.2.38 Starting Time */
+function f_tbf_starting_time_2_fn_mod_42432(TbfStartingTime st)
+runs on MS_BTS_IFACE_CT return GsmFrameNumber {
+	return 51 * ((st.t3 - st.t2) mod 26) + st.t3 + 51 * 26 * st.t1;
+}
+
+function fn2bn(GsmFrameNumber fn) return uint32_t {
+	return (fn mod 52) / 4;
+}
+function f_next_pdch_block(GsmFrameNumber fn) return GsmFrameNumber
+{
+	var uint32_t bn := fn2bn(fn) + 1;
+	fn := fn - (fn mod 52);
+	fn := fn + bn * 4 + bn / 3;
+	return fn mod GsmMaxFrameNumber;
+}
+
+function f_ultbf_new_from_rr_imm_ass(in GsmRrMessage rr_imm_ass)
+runs on MS_BTS_IFACE_CT return UlTbf {
+	var UlTbf ul_tbf := valueof(t_UlTbf_def);
+	var uint3_t tn_allocated := rr_imm_ass.payload.imm_ass.pkt_chan_desc.tn;
+
+	ul_tbf.rr_imm_ass := rr_imm_ass;
+	if (rr_imm_ass.payload.imm_ass.pkt_chan_desc.presence == '0'B and
+	    rr_imm_ass.payload.imm_ass.pkt_chan_desc.zero.hopping == '0'B) {
+		ul_tbf.arfcn := rr_imm_ass.payload.imm_ass.pkt_chan_desc.zero.arfcn;
+	}
+	ul_tbf.ts_mask[tn_allocated] := '1'B;
+
+	/* Make sure we received an UL TBF Assignment */
+	if (match(rr_imm_ass, tr_IMM_TBF_ASS(dl := false, rest := tr_IaRestOctets_ULAss(?)))) {
+		ul_tbf.ass.ccch := rr_imm_ass.payload.imm_ass.rest_octets.hh.pa.uldl.ass.ul;
+		log("Rx Uplink TBF GPRS assignment: ", ul_tbf.ass.ccch);
+		ul_tbf.is_egprs := false;
+		if (match(ul_tbf.ass.ccch, tr_PacketUlDynAssign)) {
+			ul_tbf.tfi := ul_tbf.ass.ccch.dynamic.tfi_assignment;
+			ul_tbf.tx_cs_mcs := f_rlcmac_block_ChCodingCommand2cs_mcs(ul_tbf.ass.ccch.dynamic.ch_coding_cmd);
+			ul_tbf.usf[tn_allocated] := ul_tbf.ass.ccch.dynamic.usf;
+			if (ul_tbf.ass.ccch.dynamic.tbf_starting_time_present == '1'B) {
+				ul_tbf.start_time_fn := f_tbf_starting_time_2_fn_mod_42432(ul_tbf.ass.ccch.dynamic.tbf_starting_time);
+			}
+		} else if (match(ul_tbf.ass.ccch, tr_PacketUlSglAssign)) {
+			ul_tbf.start_time_fn := f_tbf_starting_time_2_fn_mod_42432(ul_tbf.ass.ccch.single.tbf_starting_time);
+		}
+	} else if (match(rr_imm_ass, tr_IMM_TBF_ASS(dl := false, rest := tr_IaRestOctets_EGPRSULAss(?)))) {
+		ul_tbf.ass.ccch_egprs := rr_imm_ass.payload.imm_ass.rest_octets.lh.egprs_ul;
+		log("Rx Uplink TBF EGPRS assignment: ", ul_tbf.ass.ccch_egprs);
+		ul_tbf.is_egprs := true;
+		if (match(ul_tbf.ass.ccch_egprs, tr_EgprsUlAssDynamic)) {
+			ul_tbf.tfi := ul_tbf.ass.ccch_egprs.dynamic.tfi_assignment;
+			ul_tbf.tx_cs_mcs := f_rlcmac_block_EgprsChCodingCommand2cs_mcs(ul_tbf.ass.ccch_egprs.dynamic.egprs_ch_coding_cmd);
+			ul_tbf.usf[tn_allocated] := ul_tbf.ass.ccch_egprs.dynamic.usf;
+			if (ul_tbf.ass.ccch_egprs.dynamic.tbf_starting_time_present == '1'B) {
+				ul_tbf.start_time_fn := f_tbf_starting_time_2_fn_mod_42432(ul_tbf.ass.ccch_egprs.dynamic.tbf_starting_time);
+			}
+		} else if (match(ul_tbf.ass.ccch_egprs, tr_EgprsUlAssMultiblock)) {
+			ul_tbf.start_time_fn := f_tbf_starting_time_2_fn_mod_42432(ul_tbf.ass.ccch_egprs.multiblock.tbf_starting_time);
+			/* Nothing to do here yet */
+		}
+	} else {
+		setverdict(fail, "Failed to match UL TBF Assignment: ", rr_imm_ass);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	setverdict(pass);
+	return ul_tbf;
+}
+
+function f_ultbf_new_from_ass_pacch(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return UlTbf {
+	var UlTbf ul_tbf := valueof(t_UlTbf_def);
+	var boolean freq_par_present := false;
+	var FrequencyParameters freq_par;
+
+	ul_tbf.ass.pacch := dl_block.ctrl.payload.u.ul_assignment;
+	ul_tbf.tx_cs_mcs := f_rlcmac_dl_block_get_assigned_ul_cs_mcs(dl_block);
+	ul_tbf.tfi := f_rlcmac_dl_block_get_tfi(dl_block);
+	/* TODO: handle GlobalTfiOrTlli	 tfi_or_tlli from pkt_ul_ass */
+
+	/* TODO: support single block allocation */
+	if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_GPRS(?, tr_PktUlAssGprsDynamic(tr_DynamicAllocation(?))))) {
+		ul_tbf.tfi := dl_block.ctrl.payload.u.ul_assignment.gprs.dyn_block_alloc.ul_tfi_assignment;
+		freq_par_present := dl_block.ctrl.payload.u.ul_assignment.gprs.freq_par_present == '1'B;
+		if (freq_par_present) {
+			freq_par := dl_block.ctrl.payload.u.ul_assignment.gprs.freq_par;
+		}
+		ul_tbf.is_egprs := false;
+		for (var integer i := 0; i < 8; i := i + 1) {
+			if (dl_block.ctrl.payload.u.ul_assignment.gprs.dyn_block_alloc.ts_allocation.ts[i].presence == '1'B) {
+				ul_tbf.ts_mask[i] := '1'B;
+				ul_tbf.usf[i] := dl_block.ctrl.payload.u.ul_assignment.gprs.dyn_block_alloc.ts_allocation.ts[i].usf_tn;
+			}
+		}
+	} else if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_EGPRS(?, tr_PktUlAssEgprsDynamic(tr_DynamicAllocation(?))))) {
+		ul_tbf.tfi := dl_block.ctrl.payload.u.ul_assignment.egprs.dyn_block_alloc.ul_tfi_assignment;
+		freq_par_present := dl_block.ctrl.payload.u.ul_assignment.egprs.freq_par_present == '1'B;
+		if (freq_par_present) {
+			freq_par := dl_block.ctrl.payload.u.ul_assignment.egprs.freq_par;
+		}
+		ul_tbf.is_egprs := true;
+		for (var integer i := 0; i < 8; i := i + 1) {
+			if (dl_block.ctrl.payload.u.ul_assignment.egprs.dyn_block_alloc.ts_allocation.ts[i].presence == '1'B) {
+				ul_tbf.ts_mask[i] := '1'B;
+				ul_tbf.usf[i] := dl_block.ctrl.payload.u.ul_assignment.egprs.dyn_block_alloc.ts_allocation.ts[i].usf_tn;
+			}
+		}
+	}
+
+	/* FIXME: freq_par and arfcn are optional. in that case we need to
+	 * infer/reuse from current dl_tbf or ul_tbf */
+	if (freq_par_present and freq_par.presence == '00'B) {
+		ul_tbf.arfcn := freq_par.arfcn;
+	}
+
+	return ul_tbf;
+}
+
+function f_dltbf_new_from_rr_imm_ass(in GsmRrMessage rr_imm_ass, template PacketDlAssign dl_ass := tr_PacketDlAssign(?))
+runs on MS_BTS_IFACE_CT return DlTbf {
+	var DlTbf dl_tbf := valueof(t_DlTbf_def);
+
+	dl_tbf.rr_imm_ass := rr_imm_ass;
+	if (rr_imm_ass.payload.imm_ass.pkt_chan_desc.presence == '0'B and
+	    rr_imm_ass.payload.imm_ass.pkt_chan_desc.zero.hopping == '0'B) {
+		dl_tbf.arfcn := rr_imm_ass.payload.imm_ass.pkt_chan_desc.zero.arfcn;
+	}
+	dl_tbf.ts_mask[rr_imm_ass.payload.imm_ass.pkt_chan_desc.tn] := '1'B;
+
+	/* Make sure we received a DL TBF Assignment */
+	if (match(rr_imm_ass, tr_IMM_TBF_ASS(dl := true, rest := tr_IaRestOctets_DLAss(dl_ass)))) {
+		dl_tbf.ass.ccch := rr_imm_ass.payload.imm_ass.rest_octets.hh.pa.uldl.ass.dl;
+		log("Rx Downlink TBF assignment: ", dl_tbf.ass);
+	} else {
+		setverdict(fail, "Failed to match DL TBF Assignment: ", rr_imm_ass);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	/* TODO: match TLLI */
+	if (dl_tbf.ass.ccch.group1_present == '1'B) {
+		dl_tbf.tfi := dl_tbf.ass.ccch.group1.tfi_assignment;
+	} else {
+		setverdict(fail, "Immediate Assignment contains no DL TFI");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	setverdict(pass);
+	return dl_tbf;
+}
+
+function f_dltbf_new_from_ass_pacch(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return DlTbf {
+	var DlTbf dl_tbf := valueof(t_DlTbf_def);
+	var boolean freq_par_present := false;
+	var FrequencyParameters freq_par;
+
+	dl_tbf.ass.pacch := dl_block.ctrl.payload.u.dl_assignment;
+	dl_tbf.tfi := f_rlcmac_dl_block_get_tfi(dl_block);
+	/* TODO: handle GlobalTfiOrTlli	 tfi_or_tlli from pkt_dl_ass */
+
+	if (match(dl_block, tr_RLCMAC_DL_PACKET_ASS(?))) {
+		dl_tbf.tfi := dl_block.ctrl.payload.u.dl_assignment.dl_tfi_assignment;
+		freq_par_present := dl_block.ctrl.payload.u.dl_assignment.freq_par_present == '1'B;
+		if (freq_par_present) {
+			freq_par := dl_block.ctrl.payload.u.dl_assignment.freq_par;
+		}
+		dl_tbf.ts_mask := dl_block.ctrl.payload.u.dl_assignment.timeslot_alloc; /* TODO: is this the correct order ? */
+		/* TODO: check egprs in dl_assignment.rel_additions (PktDlAssR99Additions) */
+	}
+
+	/* FIXME: freq_par and arfcn are optional. in that case we need to
+	 * infer/reuse from current dl_tbf or ul_tbf */
+	if (freq_par_present and freq_par.presence == '00'B) {
+		dl_tbf.arfcn := freq_par.arfcn;
+	}
+	return dl_tbf;
+}
+
+function f_ms_tx_TsTrxBtsNum(inout GprsMS ms)
+runs on MS_BTS_IFACE_CT return TsTrxBtsNum {
+	var uint3_t ts_nr := f_ultbf_next_ts(ms.ul_tbf);
+
+	var uint3_t trx_nr;
+	if (ispresent(ms.ul_tbf.arfcn)) {
+		trx_nr := f_arfcn2trxnr(ms.ul_tbf.arfcn);
+	} else {
+		/* FIXME: implement search by hsn+maio+ma when freq hopping is enabled */
+		setverdict(fail, "Asked for trx_nr but arfcn not available in ms.ul_tbf!");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+	return valueof(ts_TsTrxBtsNum(ts_nr, trx_nr));
+}
+
+function f_dltbf_num_slots(DlTbf dl_tbf)
+runs on MS_BTS_IFACE_CT return integer  {
+	var integer n := 0;
+	for (var integer i := 0; i < lengthof(dl_tbf.ts_mask); i := i + 1) {
+		if (dl_tbf.ts_mask[i] == '1'B) {
+			n := n + 1;
+		}
+	}
+	return n;
+}
+
+function f_dltbf_bsn_is_retrans(inout DlTbf dl_tbf, RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return boolean {
+	var boolean is_egprs := ischosen(dl_block.data_egprs);
+	var uint11_t bsn := f_rlcmac_dl_block_get_bsn(dl_block);
+	if (is_egprs) {
+		return f_egprs_acknackdesc_bsn_is_retrans(dl_tbf.egprs_acknack_desc, bsn);
+	} else {
+		return f_acknackdesc_bsn_is_retrans(dl_tbf.acknack_desc, bsn);
+	}
+}
+
+function f_dltbf_ack_block(inout DlTbf dl_tbf, RlcmacDlBlock dl_block, BIT1 final_ack := '0'B)
+runs on MS_BTS_IFACE_CT {
+	var boolean is_egprs := ischosen(dl_block.data_egprs);
+	if (is_egprs) {
+		f_egprs_acknackdesc_ack_block(dl_tbf.egprs_acknack_desc, dl_block, final_ack);
+	} else {
+		f_acknackdesc_ack_block(dl_tbf.acknack_desc, dl_block, final_ack);
+	}
+}
+
+function f_dltbf_ts_RLCMAC_DL_ACK_NACK(DlTbf dl_tbf, boolean use_egprs := false,
+				       template (omit) ChannelReqDescription chreq_desc := omit)
+runs on MS_BTS_IFACE_CT return template (value) RlcmacUlBlock  {
+	if (use_egprs) {
+		return ts_RLCMAC_DL_ACK_NACK_EGPRS(dl_tbf.tfi, dl_tbf.egprs_acknack_desc, false, chreq_desc);
+	} else {
+		return ts_RLCMAC_DL_ACK_NACK(dl_tbf.tfi, dl_tbf.acknack_desc, false, chreq_desc);
+	}
+}
+
+function f_ultbf_inc_bsn(inout UlTbf ul_tbf)
+runs on MS_BTS_IFACE_CT {
+	ul_tbf.bsn := ul_tbf.bsn + 1;
+	if (ul_tbf.is_egprs) {
+		ul_tbf.bsn := ul_tbf.bsn mod 2048;
+	} else {
+		ul_tbf.bsn := ul_tbf.bsn mod 128;
+	}
+}
+
+function f_ultbf_next_ts(UlTbf ul_tbf)
+runs on MS_BTS_IFACE_CT return uint3_t {
+	/* FIXME: in the future we probably want to store last used internally
+	/* and continue from there */
+	for (var integer i := 0; i < lengthof(ul_tbf.ts_mask); i := i + 1) {
+		if (ul_tbf.ts_mask[i] == '1'B) {
+			return i;
+		}
+	}
+	setverdict(fail, "No TS available for tx!");
+	f_shutdown(__BFILE__, __LINE__);
+	return 0;
+}
+
+function f_ultbf_num_slots(UlTbf ul_tbf)
+runs on MS_BTS_IFACE_CT return integer  {
+	var integer n := 0;
+	for (var integer i := 0; i < lengthof(ul_tbf.ts_mask); i := i + 1) {
+		if (ul_tbf.ts_mask[i] == '1'B) {
+			n := n + 1;
+		}
+	}
+	return n;
+}
+
+function f_ultbf_payload_fill_length(UlTbf ul_tbf, boolean tlli := false, integer li_bytes := 0)
+runs on MS_BTS_IFACE_CT return uint32_t {
+	var uint32_t blk_len := f_rlcmac_cs_mcs2block_len_no_spare_bits(ul_tbf.tx_cs_mcs);
+	var uint32_t payload_fill_len;
+
+	if (f_rlcmac_cs_mcs_is_mcs(ul_tbf.tx_cs_mcs)) {
+		payload_fill_len := blk_len - 5 - li_bytes;
+	} else {
+		/* GPRS: blk_len = 3 Header bytes + payload length. No LI byte in this case. */
+		payload_fill_len := blk_len - 3 - li_bytes;
+	}
+
+	if (tlli) {
+		payload_fill_len := payload_fill_len - 4;
+	}
+	return payload_fill_len;
+}
+
+function f_ms_use_ra(inout GprsMS ms, uint16_t ra, uint8_t ra_is_11bit := 0)
+runs on MS_BTS_IFACE_CT {
+	ms.ra_is_11bit := ra_is_11bit;
+	ms.ra := ra;
+	if (ra_is_11bit == 0) {
+		ms.burst_type := BURST_TYPE_0;
+	} else {
+		ms.burst_type := BURST_TYPE_1;
+	}
+}
+
+function f_ms_rx_pkt_ass_pacch(inout GprsMS ms, out uint32_t poll_fn,
+			       template RlcmacDlBlock t_pkt_ass := ?,
+			       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum,
+			       boolean ignore_dummy := true)
+runs on MS_BTS_IFACE_CT return RlcmacDlBlock {
+	var RlcmacDlBlock dl_block;
+	BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+				  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+				  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				  block_nr := nr.blk_nr));
+	alt {
+	[] as_ms_rx_pkt_ass_pacch(ms, poll_fn, t_pkt_ass, nr, dl_block);
+	[ignore_dummy] as_ms_rx_ignore_dummy(ms, nr);
+	/* TODO: fail */
+	[] BTS.receive {
+		setverdict(fail, "Unexpected BTS message");
+		f_shutdown(__BFILE__, __LINE__);
+		}
+	}
+	return dl_block;
+}
+
+altstep as_ms_rx_ignore_dummy(inout GprsMS ms, template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+					   tr_RLCMAC_DL_DUMMY_CTRL())) -> value data_msg {
+
+		BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+					  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+					  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+					  block_nr := nr.blk_nr));
+		repeat;
+	}
+}
+
+altstep as_pcuif_rx_ignore_empty(template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+					   omit)) -> value data_msg {
+
+		BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+					  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+					  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+					  block_nr := nr.blk_nr));
+		repeat;
+	}
+}
+
+altstep as_rx_fail_dummy(template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+					   tr_RLCMAC_DL_DUMMY_CTRL())) -> value data_msg {
+		setverdict(fail, "Unexpected Dummy Ctrl block ", data_msg);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+altstep as_ms_rx_pkt_ass_pacch(inout GprsMS ms, out uint32_t poll_fn,
+			       template RlcmacDlBlock t_pkt_ass := ?,
+			       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum,
+			       out RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr,
+							 sapi := PCU_IF_SAPI_PDTCH),
+					     t_pkt_ass)) -> value data_msg {
+		var uint32_t dl_fn := data_msg.raw.fn;
+		dl_block := data_msg.dl_block;
+		poll_fn := f_rrbp_ack_fn(dl_fn, dl_block.ctrl.mac_hdr.rrbp);
+
+		if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS)) {
+		       ms.ul_tbf := f_ultbf_new_from_ass_pacch(dl_block);
+		       if (ms.ul_tbf.ass.pacch.identity.tlli.tlli != ms.tlli) {
+			       setverdict(fail, "Wrong TLLI ", ms.ul_tbf.ass.pacch.identity.tlli, " received vs exp ", ms.tlli);
+			       f_shutdown(__BFILE__, __LINE__);
+		       }
+		} else if (match(dl_block, tr_RLCMAC_DL_PACKET_ASS)) {
+			ms.dl_tbf := f_dltbf_new_from_ass_pacch(dl_block);
+			if (ischosen(ms.dl_tbf.ass.pacch.tfi_or_tlli.tlli) and
+			    ms.dl_tbf.ass.pacch.tfi_or_tlli.tlli.tlli != ms.tlli) {
+				setverdict(fail, "Wrong TLLI ", ms.dl_tbf.ass.pacch.tfi_or_tlli.tlli.tlli, " received vs exp ", ms.tlli);
+				f_shutdown(__BFILE__, __LINE__);
+			}
+		} else {
+			setverdict(fail, "Should not happen:", dl_block);
+			f_shutdown(__BFILE__, __LINE__);
+		}
+	}
+}
+
+function f_ms_establish_ul_tbf(inout GprsMS ms, template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var GsmRrMessage rr_imm_ass;
+
+	rr_imm_ass := f_pcuif_tx_rach_rx_imm_ass(ms.ra, ms.ra_is_11bit, ms.burst_type, ms.ta, nr := nr);
+	ms.ul_tbf := f_ultbf_new_from_rr_imm_ass(rr_imm_ass);
+}
+
+function f_ms_exp_dl_tbf_ass_ccch(inout GprsMS ms, template PCUIF_Sapi sapi := PCU_IF_SAPI_PCH_2,
+				  template GsmRrMessage t_imm_ass := tr_IMM_TBF_ASS(true, ?, ?),
+				  template (present) TsTrxBtsNum nr := tr_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var GsmRrMessage rr_imm_ass;
+
+	rr_imm_ass := f_pcuif_rx_imm_ass(sapi, t_imm_ass, nr := nr);
+	ms.dl_tbf := f_dltbf_new_from_rr_imm_ass(rr_imm_ass, tr_PacketDlAssign(ms.tlli));
+}
+
+/* Enqueue DATA.ind (both TDMA frame and block numbers to be patched) */
+function f_ms_tx_data_ind(inout GprsMS ms, octetstring data, uint32_t fn := 0,
+			  template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	f_pcuif_tx_data_ind(data, fn, ms.ta, ms.lqual_cb, nr := nr);
+}
+
+function f_ms_tx_ul_block(inout GprsMS ms, template (value) RlcmacUlBlock ul_data,
+			  uint32_t fn := 0, template (omit) CodingScheme force_cs_mcs := omit,
+			  template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var octetstring data;
+	var CodingScheme cs_mcs;
+	var uint32_t cs_mcs_len;
+
+	/* Encode the payload of DATA.ind */
+	data := enc_RlcmacUlBlock(valueof(ul_data));
+
+	if (ischosen(ul_data.ctrl)) {
+		/* Ctrl blocks are right now encoded by RAW encoder, which was
+		 * found to have some issue with final padding, so we add it
+		 * here manually. This is actually still incorrect because the
+		 * remaining bits of last octet with data are not filled with
+		 * the padding sequence, but it's good enough since anyway PCU
+		 * don't check these. */
+		data := f_pad_oct(data, f_rlcmac_cs_mcs2block_len(CS_1), '2b'O);
+	}
+	/* Enqueue DATA.ind (both TDMA frame and block numbers to be patched) */
+	f_ms_tx_data_ind(ms, data, fn, nr := nr);
+}
+
+function f_ms_tx_ul_data_blocks_gprs(inout GprsMS ms, template (value) LlcBlocks blocks,
+			       uint4_t cv := 15, boolean with_tlli := false, uint32_t fn := 0,
+			       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var template (value) RlcmacUlBlock ul_data;
+
+	ul_data := t_RLCMAC_UL_DATA(cs := ms.ul_tbf.tx_cs_mcs,
+				    tfi := ms.ul_tbf.tfi,
+				    cv := cv,
+				    bsn := ms.ul_tbf.bsn,
+				    blocks := blocks);
+	if (with_tlli) {
+		ul_data.data.mac_hdr.tlli_ind := true;
+		ul_data.data.tlli := ms.tlli;
+	}
+	f_ultbf_inc_bsn(ms.ul_tbf);
+	f_ms_tx_ul_block(ms, ul_data, fn, nr := nr);
+}
+
+function f_ms_tx_ul_data_blocks_egprs(inout GprsMS ms, template (value) EgprsLlcBlocks blocks,
+			       uint4_t cv := 15, boolean with_tlli := false, uint32_t fn := 0,
+			       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var template (value) RlcmacUlBlock ul_data;
+
+	ul_data := t_RLCMAC_UL_EGPRS_DATA(mcs := ms.ul_tbf.tx_cs_mcs,
+					  tfi := ms.ul_tbf.tfi,
+					  cv := cv,
+					  bsn1 := ms.ul_tbf.bsn,
+					  bsn2_offset := 0,
+					  blocks := blocks);
+	if (with_tlli) {
+		ul_data.data_egprs.tlli_ind := true;
+		ul_data.data_egprs.tlli := ms.tlli;
+	}
+	f_ultbf_inc_bsn(ms.ul_tbf);
+	f_ms_tx_ul_block(ms, ul_data, fn, nr := nr);
+}
+
+function f_ms_tx_ul_data_block(inout GprsMS ms, octetstring payload,
+			       uint4_t cv := 15, boolean with_tlli := false, uint32_t fn := 0,
+			       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var template (value) RlcmacUlBlock ul_data;
+
+	if (f_rlcmac_cs_mcs_is_mcs(ms.ul_tbf.tx_cs_mcs)) {
+		f_ms_tx_ul_data_blocks_egprs(ms,  {t_RLCMAC_LLCBLOCK_EGPRS(payload)}, cv, with_tlli, fn, nr)
+	} else {
+		f_ms_tx_ul_data_blocks_gprs(ms, {t_RLCMAC_LLCBLOCK(payload)}, cv, with_tlli, fn, nr);
+	}
+}
+
+/* Send random payload for last "num_blocks" blocks in Ul TBF (ending with CV=0). */
+function f_ms_tx_ul_data_block_multi(inout GprsMS ms, integer num_blocks := 1, boolean with_tlli := false,
+				     uint32_t fn := 0, template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return octetstring {
+	var octetstring total_payload := ''O;
+	var uint32_t payload_fill_len := f_ultbf_payload_fill_length(ms.ul_tbf, with_tlli, 0);
+
+	for (var integer i := 0; i < num_blocks; i := i + 1) {
+		var octetstring payload := f_rnd_octstring(payload_fill_len);
+		/* Prepare a new UL block (CV, random payload) */
+		var integer cv := num_blocks - i - 1;
+		if (cv > g_bs_cv_max) {
+			cv := 15;
+		}
+		if (i == 1) {
+			/* We use FN on i=0 to jump to wanted FN time, then simply submit on next
+			 * available frame (fn=0) */
+			fn := 0;
+		}
+		f_ms_tx_ul_data_block(ms, payload, cv := cv, with_tlli := with_tlli, fn := fn, nr := nr);
+		total_payload := total_payload & payload;
+	}
+	return total_payload;
+}
+
+function f_rlcmac_dl_block_get_tfi(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return uint5_t {
+	if (ischosen(dl_block.data)) {
+		return dl_block.data.mac_hdr.hdr_ext.tfi;
+	} else if (ischosen(dl_block.data_egprs)) {
+		return dl_block.data_egprs.mac_hdr.tfi;
+	} else { /* Ctrl block */
+		if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_GPRS(?, tr_PktUlAssGprsDynamic(tr_DynamicAllocation(?))))) {
+			return dl_block.ctrl.payload.u.ul_assignment.gprs.dyn_block_alloc.ul_tfi_assignment;
+		}
+		if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_EGPRS(?, tr_PktUlAssEgprsDynamic(tr_DynamicAllocation(?))))) {
+			return dl_block.ctrl.payload.u.ul_assignment.egprs.dyn_block_alloc.ul_tfi_assignment;
+		}
+		if (match(dl_block, tr_RLCMAC_DL_PACKET_ASS(?))) {
+			return dl_block.ctrl.payload.u.dl_assignment.dl_tfi_assignment;
+		}
+	}
+	setverdict(fail, "DlBlock doesn't contain a TFI:", dl_block);
+	f_shutdown(__BFILE__, __LINE__);
+	return 0; /* make compiler happy */
+}
+
+function f_rlcmac_dl_block_get_usf(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return uint3_t {
+	if (ischosen(dl_block.data)) {
+		return dl_block.data.mac_hdr.mac_hdr.usf;
+	} else if (ischosen(dl_block.data_egprs)) {
+		return dl_block.data_egprs.mac_hdr.usf;
+	} else { /* Ctrl block */
+		return dl_block.ctrl.mac_hdr.usf;
+	}
+	setverdict(fail, "DlBlock doesn't contain a USF:", dl_block);
+	f_shutdown(__BFILE__, __LINE__);
+	return 0; /* make compiler happy */
+}
+
+/* Get the Chan coding command from a dl block containing PACCH UL Assignment */
+function f_rlcmac_dl_block_get_assigned_ul_cs_mcs(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return CodingScheme {
+	if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_GPRS(?, tr_PktUlAssGprsDynamic(?)))) {
+		return f_rlcmac_block_ChCodingCommand2cs_mcs(dl_block.ctrl.payload.u.ul_assignment.gprs.ch_coding_cmd);
+	}
+	if (match(dl_block, tr_RLCMAC_UL_PACKET_ASS_EGPRS(?, tr_PktUlAssEgprsDynamic(?)))) {
+		return f_rlcmac_block_EgprsChCodingCommand2cs_mcs(dl_block.ctrl.payload.u.ul_assignment.egprs.chan_coding_cmd);
+	}
+	setverdict(fail, "DlBlock doesn't contain CS_MCS information:", dl_block);
+	f_shutdown(__BFILE__, __LINE__);
+	return CS_1; /* make compiler happy */
+}
+
+function f_rlcmac_dl_block_get_bsn(RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return uint11_t {
+	if (ischosen(dl_block.data_egprs)) {
+		return dl_block.data_egprs.mac_hdr.bsn1;
+	}
+	if (ischosen(dl_block.data)) {
+		return dl_block.data.mac_hdr.hdr_ext.bsn;
+	}
+	setverdict(fail, "DlBlock doesn't contain BSN information:", dl_block);
+	f_shutdown(__BFILE__, __LINE__);
+	return 0; /* make compiler happy */
+}
+
+/* Check whether a given BSN is a retransmission in the not yet ACKed Tx window. */
+function f_acknackdesc_bsn_is_retrans(inout AckNackDescription desc, uint7_t bsn) return boolean
+{
+	var BIT1 received;
+	/* Filling hole? */
+	if (bsn < desc.starting_seq_nr) {
+		received := desc.receive_block_bitmap[lengthof(desc.receive_block_bitmap) - (desc.starting_seq_nr - bsn)];
+		return received == '1'B;
+	}
+	/* Filling hole, wraparound: */
+	if (bsn - desc.starting_seq_nr > lengthof(desc.receive_block_bitmap)) {
+		received := desc.receive_block_bitmap[lengthof(desc.receive_block_bitmap) - (desc.starting_seq_nr + (218 - bsn))];
+		return received == '1'B;
+	}
+	return false; /* make compiler happy */
+}
+
+/* TS 44.060 sec 12.3 Ack/Nack Description */
+function f_acknackdesc_ack_block(inout AckNackDescription desc, RlcmacDlBlock dl_block, BIT1 final_ack := '0'B)
+{
+	var uint7_t bsn;
+	var integer i;
+	var integer inc;
+	bsn := dl_block.data.mac_hdr.hdr_ext.bsn;
+
+	/* Filling hole? */
+	if (bsn < desc.starting_seq_nr) {
+		desc.receive_block_bitmap[lengthof(desc.receive_block_bitmap) - (desc.starting_seq_nr - bsn)] := int2bit(1, 1);
+		return;
+	}
+	/* Filling hole, wraparound: */
+	if (bsn - desc.starting_seq_nr > lengthof(desc.receive_block_bitmap)) {
+		desc.receive_block_bitmap[lengthof(desc.receive_block_bitmap) - (desc.starting_seq_nr + (218 - bsn))] := int2bit(1, 1);
+		return;
+	}
+
+	inc := bsn - desc.starting_seq_nr + 1;
+
+	/* SSN is increased, and so RBB values need to be moved */
+	for (i := 0; i < lengthof(desc.receive_block_bitmap) - inc; i := i+1) {
+		desc.receive_block_bitmap[i] := desc.receive_block_bitmap[i + inc];
+	}
+	for (i := lengthof(desc.receive_block_bitmap) - inc; i < lengthof(desc.receive_block_bitmap) - 1; i := i+1) {
+		desc.receive_block_bitmap[i] := int2bit(0, 1);
+	}
+	/* Now we can set current bit and update SSN */
+	desc.starting_seq_nr := (bsn + 1) mod 128;
+	desc.receive_block_bitmap[lengthof(desc.receive_block_bitmap) - 1] := int2bit(1, 1);
+
+	/* Finally update the final_ack bit as requested: */
+	desc.final_ack := final_ack;
+}
+
+/* Check whether a given BSN is a retransmission in the not yet ACKed Tx window. */
+function f_egprs_acknackdesc_bsn_is_retrans(inout EgprsAckNackDescription desc, uint11_t bsn) return boolean
+{
+	var BIT1 received;
+	var integer inc;
+	var integer v_q := (desc.starting_seq_nr + 2047) mod 2048; /* SSN = V(Q) + 1 */
+
+
+	/* Repetition? */
+	if (bsn < v_q) {
+		/* Filling hole, wraparound: */
+		if (bsn - v_q > lengthof(desc.urbb)) {
+			received := desc.urbb[lengthof(desc.urbb) - (v_q + (2048 - bsn))];
+			return received == '1'B;
+		}
+		return true;
+	}
+
+	inc := bsn - v_q + 1;
+	received := desc.urbb[lengthof(desc.urbb) - inc];
+	return received == '1'B;
+}
+
+/* TS 44.060 sec 12.3 Ack/Nack Description */
+function f_egprs_acknackdesc_ack_block(inout EgprsAckNackDescription desc, RlcmacDlBlock dl_block, BIT1 final_ack := '0'B)
+{
+	var uint11_t bsn;
+	var integer i;
+	var integer inc;
+	var integer n := 0;
+	var integer v_q := (desc.starting_seq_nr + 2047) mod 2048; /* SSN = V(Q) + 1 */
+
+	bsn := dl_block.data_egprs.mac_hdr.bsn1;
+
+	/* Repetition? */
+	if (bsn < v_q) {
+		/* Filling hole, wraparound: */
+		if (bsn - v_q > lengthof(desc.urbb)) {
+			desc.urbb[lengthof(desc.urbb) - (v_q + (2048 - bsn))] := int2bit(1, 1);
+			return;
+		}
+		return;
+	}
+
+	inc := bsn - v_q + 1;
+	desc.urbb[lengthof(desc.urbb) - inc] := int2bit(1, 1);
+
+	for (i :=  lengthof(desc.urbb) - 1; i >= lengthof(desc.urbb) - inc; i := i - 1) {
+		if (desc.urbb[i] == '0'B) {
+			break;
+		}
+		n := n + 1;
+	}
+
+	if (n > 0) {
+		/* SSN is increased, and so RBB values need to be moved */
+		for (i :=  lengthof(desc.urbb) - 1; i >= n; i := i - 1) {
+			desc.urbb[i] := desc.urbb[i - n];
+		}
+		for (i := n - 1; i >= 0; i := i - 1) {
+			desc.urbb[i] := int2bit(0, 1);
+		}
+
+		desc.starting_seq_nr := (desc.starting_seq_nr + n) mod 2048;
+	}
+
+	/* Finally update the final_ack bit as requested: */
+	desc.final_ack := final_ack;
+}
+
+/* This function can be used to send DATA.cnf in response to the IUT originated DATA.req. */
+function f_pcuif_tx_data_cnf(in BTS_CCCH_Block data_msg)
+runs on MS_BTS_IFACE_CT {
+        var PCUIF_data_cnf cnf := {
+	    sapi := data_msg.raw.sapi,
+	    msg_id := data_msg.msg_id
+	};
+
+	var PCUIF_Message pcu_msg_cnf := {
+		msg_type := PCU_IF_MSG_DATA_CNF_2,
+		bts_nr := data_msg.bts_nr,
+		spare := '0000'O,
+		u := { data_cnf2 := cnf}
+	};
+
+	BTS.send(pcu_msg_cnf);
+}
+
+private function f_ms_gtfi_tmpl(inout GprsMS ms)
+runs on MS_BTS_IFACE_CT return template (present) GlobalTfi {
+	var template (present) GlobalTfi gtfi;
+	if (ispresent(ms.ul_tbf) and ispresent(ms.dl_tbf)) {
+		gtfi := ({ is_dl_tfi := false, tfi := ms.ul_tbf.tfi },
+			 { is_dl_tfi := true, tfi := ms.dl_tbf.tfi });
+	} else if (ispresent(ms.ul_tbf)) {
+		gtfi := { is_dl_tfi := false, tfi := ms.ul_tbf.tfi };
+	} else if (ispresent(ms.dl_tbf)) {
+		gtfi := { is_dl_tfi := true, tfi := ms.dl_tbf.tfi };
+	} else {
+		gtfi := ?;
+	}
+	return gtfi;
+}
+
+altstep as_ms_rx_pkt_neighbor_cell_data(inout GprsMS ms, octetstring exp_si,
+					inout uint5_t exp_container_idx /* := 0 */,
+					inout integer si_offset /* := 0 */,
+					template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum,
+					boolean single_step := false)
+runs on MS_BTS_IFACE_CT {
+	var integer len;
+	var octetstring exp_si_chunk;
+	var template (present) GlobalTfi gtfi := f_ms_gtfi_tmpl(ms);
+	var BTS_PDTCH_Block data_msg;
+	var boolean do_repeat := true;
+
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr, tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+							tr_RLCMAC_DL_CTRL(?, tr_RlcMacDlCtrl_PKT_NEIGH_CELL_DATA(gtfi, exp_container_idx))
+			)) -> value data_msg {
+
+		var PacketNeighbourCellData neigh_data := data_msg.dl_block.ctrl.payload.u.neighbour_cell_data;
+		var PacketNeighbourCellDataContainer cont := neigh_data.container_list[0];
+
+		if (cont.cd_length == 31) { /* continues on next message */
+			len := lengthof(cont.container_data);
+			exp_si_chunk := substr(exp_si, si_offset, len);
+			if (cont.container_data != exp_si_chunk) {
+				setverdict(fail, "Rx unexpected SI chunk at offset ", si_offset, ": ",
+					   cont.container_data, " vs exp ", exp_si_chunk);
+				f_shutdown(__BFILE__, __LINE__);
+			}
+			si_offset := si_offset + len;
+		} else if (cont.cd_length == 0) {
+			/* we are done */
+			if (si_offset != lengthof(exp_si)) {
+				setverdict(fail, "Rx unexpectd SI length ", si_offset,
+					   " vs exp ", lengthof(exp_si));
+				f_shutdown(__BFILE__, __LINE__);
+			}
+			do_repeat := false;
+		} else { /* data length, last message */
+			len := cont.cd_length;
+			exp_si_chunk := substr(exp_si, si_offset, len);
+			if (cont.container_data != exp_si_chunk) {
+				setverdict(fail, "Rx unexpected SI chunk at offset ", si_offset, ": ",
+					   cont.container_data, " vs exp ", exp_si_chunk);
+				f_shutdown(__BFILE__, __LINE__);
+			}
+			si_offset := si_offset + len;
+			/* we are done */
+			if (si_offset != lengthof(exp_si)) {
+				setverdict(fail, "Rx unexpectd SI length ", si_offset,
+					   " vs exp ", lengthof(exp_si));
+				f_shutdown(__BFILE__, __LINE__);
+			}
+			do_repeat := false;
+		}
+
+		exp_container_idx := exp_container_idx + 1;
+
+		if (not single_step and do_repeat) {
+			BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+						  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+						  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+						  block_nr := nr.blk_nr));
+			repeat;
+		}
+	}
+}
+
+/* Handle groups of PKT NEIGHBOUR CELL DATA packets */
+function f_ms_handle_pkt_neighbor_cell_data(inout GprsMS ms, octetstring exp_si,
+					    template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum,
+					    uint5_t exp_container_idx := 0,
+					    integer si_offset := 0,
+					    boolean single_step := false)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+
+	BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+				  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+				  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				  block_nr := nr.blk_nr));
+	alt {
+	[exp_container_idx == 0] as_ms_rx_ignore_dummy(ms, nr);
+	[exp_container_idx > 0] as_rx_fail_dummy(nr);
+	[] as_ms_rx_pkt_neighbor_cell_data(ms, exp_si, exp_container_idx, si_offset, nr, single_step);
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+					   tr_RLCMAC_DL_CTRL(?, ?))) -> value data_msg {
+		var GlobalTfi gtfi := { is_dl_tfi := false, tfi := ms.ul_tbf.tfi };
+		setverdict(fail, "Rx unexpected DL block: ", data_msg.dl_block, " vs exp ",
+			   tr_RLCMAC_DL_CTRL(?, tr_RlcMacDlCtrl_PKT_NEIGH_CELL_DATA(gtfi, exp_container_idx)));
+		f_shutdown(__BFILE__, __LINE__);
+		}
+	};
+
+	return;
+}
+
+/* Keep receiving & discarding DL blocks until the PCU requests USF for this MS */
+function f_ms_wait_usf(inout GprsMS ms, template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return uint32_t {
+	var BTS_PDTCH_Block data_msg;
+
+	BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+				  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+				  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				  block_nr := nr.blk_nr));
+	alt {
+	[] as_pcuif_rx_ignore_empty(nr);
+	[] BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH),
+					   ?)) -> value data_msg {
+		var uint3_t rx_usf := f_rlcmac_dl_block_get_usf(data_msg.dl_block);
+		var uint3_t exp_usf := ms.ul_tbf.usf[valueof(nr.ts_nr)];
+		log("Rx DL block USF ", rx_usf, " vs exp USF ", exp_usf);
+		if (rx_usf != exp_usf) {
+			BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+				  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+				  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				  block_nr := nr.blk_nr));
+			repeat;
+		}
+		}
+	};
+
+	return data_msg.raw.fn;
+}
+
+////////////////////////
+// Low level APIs
+////////////////////////
+
+altstep as_rx_ptcch(out BTS_PTCCH_Block ret_msg, template (present) PTCCHDownlinkMsg msg := ?,
+		    template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum, boolean do_repeat := false)
+runs on MS_BTS_IFACE_CT {
+	[] BTS.receive(tr_PCUIF_DATA_PTCCH(nr.bts_nr,
+					   tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PTCCH),
+					   msg)) -> value ret_msg {
+		if (do_repeat) {
+			BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+						  sapi := PCU_IF_SAPI_PTCCH, fn := 0,
+						  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+						  block_nr := nr.blk_nr))
+			repeat;
+		}
+	}
+}
+
+altstep as_ms_rx_imm_ass(template PCUIF_Sapi sapi := PCU_IF_SAPI_AGCH_2,
+			 template GsmRrMessage t_imm_ass := ?,
+			 template (present) TsTrxBtsNum nr := ts_TsTrxBtsNum,
+			 out GsmRrMessage rr_imm_ass)
+runs on MS_BTS_IFACE_CT {
+	var BTS_CCCH_Block data_msg;
+	[] BTS.receive(tr_PCUIF_DATA_RR(nr.bts_nr,
+					tr_PCUIF_DATA(nr.trx_nr, 0, sapi := sapi),
+					t_imm_ass)) -> value data_msg {
+		rr_imm_ass := data_msg.rr_msg;
+		log("Rx Immediate Assignment: ", rr_imm_ass);
+		/* Send DATA.cnf back to the IUT */
+		if (ispresent(data_msg.confirm) and data_msg.confirm) {
+			f_pcuif_tx_data_cnf(data_msg);
+		}
+		setverdict(pass);
+	}
+}
+
+function f_pcuif_rx_imm_ass(template PCUIF_Sapi sapi := PCU_IF_SAPI_AGCH_2,
+			    template GsmRrMessage t_imm_ass := ?,
+			    template (present) TsTrxBtsNum nr := tr_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return GsmRrMessage {
+	var GsmRrMessage rr_imm_ass;
+	timer T;
+
+	T.start(2.0);
+	alt {
+	[] as_ms_rx_imm_ass(sapi, t_imm_ass, nr, rr_imm_ass);
+	[] BTS.receive { repeat; } /* TODO: use as_ms_rx_ignore_dummy instead? */
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for Immediate Assignment");
+		f_shutdown(__BFILE__, __LINE__);
+		}
+	}
+
+	return rr_imm_ass;
+}
+
+/* One phase packet access (see 3GPP TS 44.018, table 9.1.8.1) */
+const BIT8 chan_req_def := '01111000'B; /* 01111 { 0xx | x0x | xx0 } */
+/* Single block (two phase or RR signalling) packet access */
+const BIT8 chan_req_sb  := '01110000'B; /* 01110xxx */
+
+/* Establish an Uplink TBF by sending RACH.ind towards the PCU */
+function f_pcuif_tx_rach_rx_imm_ass(uint16_t ra := bit2int(chan_req_def),
+				    uint8_t is_11bit := 0,
+				    PCUIF_BurstType burst_type := BURST_TYPE_0,
+				    TimingAdvance ta := 0,
+				    template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return GsmRrMessage {
+	var uint32_t fn;
+
+	/* FIXME: ask the BTS component to give us the current TDMA fn */
+	fn := 1337 + ta;
+
+	/* Send RACH.ind */
+	log("Sending RACH.ind on fn=", fn, " with RA=", ra, ", TA=", ta);
+	BTS.send(ts_PCUIF_RACH_IND(nr.bts_nr, nr.trx_nr, ts_nr := 0,
+				   ra := ra, is_11bit := is_11bit,
+				   burst_type := burst_type,
+				   fn := fn, arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				   qta := ta * 4));
+
+	/* 3GPP TS 44.018, table 9.1.8.1, note 2b: Request Reference shall be set to 127
+	 * when Immediate Assignment is triggered by EGPRS Packet Channel Request. Here
+	 * we assume that 11 bit RA always contains EGPRS Packet Channel Request. */
+	if (is_11bit != 0) { ra := 127; }
+
+	/* Expect Immediate (TBF) Assignment on the same TS/TRX/BTS */
+	return f_pcuif_rx_imm_ass(PCU_IF_SAPI_AGCH_2, tr_IMM_TBF_ASS(false, ra, fn), nr);
+}
+
+/* Enqueue DATA.ind (both TDMA frame and block numbers to be patched) */
+function f_pcuif_tx_data_ind(octetstring data, uint32_t fn := 0,
+			     TimingAdvance ta := 0, int16_t lqual_cb := 0,
+			     template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var template RAW_PCU_EventParam ev_param := {tdma_fn := ? };
+	BTS.send(ts_PCUIF_DATA_IND(nr.bts_nr, nr.trx_nr, nr.ts_nr, nr.blk_nr,
+				   sapi := PCU_IF_SAPI_PDTCH, data := data,
+				   fn := fn, arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)),
+				   ta_offs_qbits := ta * 4, lqual_cb := lqual_cb));
+	if (fn != 0) {
+		ev_param := {tdma_fn := fn };
+	}
+	BTS.receive(tr_RAW_PCU_EV(TDMA_EV_PDTCH_BLOCK_SENT, ev_param));
+}
+
+/* Enqueue RTS.req, expect DATA.req with UL ACK from the PCU */
+function f_pcuif_rx_data_req_pdtch(out BTS_PDTCH_Block data_msg,
+			     template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	BTS.send(ts_PCUIF_RTS_REQ(nr.bts_nr, nr.trx_nr, nr.ts_nr,
+				  sapi := PCU_IF_SAPI_PDTCH, fn := 0,
+				  arfcn := f_trxnr2arfcn(valueof(nr.trx_nr)), block_nr := nr.blk_nr));
+
+	BTS.receive(tr_PCUIF_DATA_PDTCH(nr.bts_nr,
+					tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PDTCH), *)
+		   ) -> value data_msg;
+}
+
+/* Expect a Paging Request Type 1 from PCU on PCUIF on specified sapi.  */
+function f_pcuif_rx_pch_pag_req1(template MobileIdentityV mi1 := ?,
+				 template integer pag_group := ?,
+				 template (present) TsTrxBtsNum nr := tr_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return GsmRrMessage {
+	var GsmRrMessage rr_pag_req1;
+	var octetstring imsi_suff_octstr;
+	var integer pag_group_rx;
+
+	var BTS_CCCH_Block data_msg;
+	BTS.receive(tr_PCUIF_DATA_RR(nr.bts_nr,
+				     tr_PCUIF_DATA(nr.trx_nr, nr.ts_nr, sapi := PCU_IF_SAPI_PCH_2),
+				     tr_PAG_REQ1(tr_MI_LV(mi1)))) -> value data_msg;
+	rr_pag_req1 := data_msg.rr_msg;
+	log("Rx Paging Request Type1: ", rr_pag_req1);
+
+	/* The last 3 digits of the IMSI are used to calculate paging group: */
+	imsi_suff_octstr := substr(char2oct(data_msg.imsi), lengthof(data_msg.imsi) - 3, 3);
+	pag_group_rx := str2int(oct2char(imsi_suff_octstr[0])) * 100 +
+			str2int(oct2char(imsi_suff_octstr[1])) * 10 +
+			str2int(oct2char(imsi_suff_octstr[2]));
+
+	/* Make sure that received paging froup matches the expected one */
+	if (not match(pag_group_rx, pag_group)) {
+		setverdict(fail, "Paging group", pag_group_rx, " does not match expected ", pag_group);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	/* Send DATA.cnf back to the IUT */
+	if (ispresent(data_msg.confirm) and data_msg.confirm) {
+		f_pcuif_tx_data_cnf(data_msg);
+	}
+	return rr_pag_req1;
+}
+
+function f_rx_rlcmac_dl_block(out RlcmacDlBlock dl_block, out uint32_t dl_fn,
+			      template (present) CodingScheme exp_cs_mcs := ?,
+			      template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var BTS_PDTCH_Block data_msg;
+	f_pcuif_rx_data_req_pdtch(data_msg, nr := nr);
+
+	if (data_msg.dl_block == omit) {
+		setverdict(fail, "Expected RLCMAC block but received idle block (", data_msg.raw.len, ")");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	dl_block := data_msg.dl_block;
+	dl_fn := data_msg.raw.fn;
+
+	var integer len := lengthof(data_msg.raw.data);
+	var CodingScheme cs_mcs := f_rlcmac_block_len2cs_mcs(len)
+	if (not match(f_rlcmac_block_len2cs_mcs(len), exp_cs_mcs)) {
+		setverdict(fail, "Failed to match Coding Scheme exp ", exp_cs_mcs, " vs ", cs_mcs, " (", len, ")");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+function f_rx_rlcmac_dl_block_exp_ack_nack(out RlcmacDlBlock dl_block, out uint32_t poll_fn,
+					   template RlcmacDlBlock acknack_tmpl := (tr_RLCMAC_UL_ACK_NACK_GPRS(ul_tfi := ?),
+										   tr_RLCMAC_UL_ACK_NACK_EGPRS(ul_tfi := ?)),
+					   template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var uint32_t dl_fn;
+
+	f_rx_rlcmac_dl_block(dl_block, dl_fn, nr := nr);
+	if (match(dl_block, acknack_tmpl)) {
+		poll_fn := f_rrbp_ack_fn(dl_fn, dl_block.ctrl.mac_hdr.rrbp);
+		return;
+	}
+	setverdict(fail, "Failed to match Packet Uplink ACK / NACK:", dl_block);
+	f_shutdown(__BFILE__, __LINE__);
+}
+
+function f_rx_rlcmac_dl_block_exp_dummy(out RlcmacDlBlock dl_block,
+					template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return uint32_t {
+	var uint32_t dl_fn;
+
+	f_rx_rlcmac_dl_block(dl_block, dl_fn, nr := nr);
+	if (not match(dl_block, tr_RLCMAC_DL_DUMMY_CTRL())) {
+		setverdict(fail, "Failed to match Packet DUMMY DL");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+	return dl_fn;
+}
+
+/* Keep getting dl_block until first non RLCMAC Dummy is received, then return it */
+function f_rx_rlcmac_dl_block_skip_dummy(out RlcmacDlBlock dl_block,
+					 integer max_dummy := -1,
+					 template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT return uint32_t {
+	var integer i := 0;
+	var uint32_t dl_fn;
+
+	while (true) {
+		f_rx_rlcmac_dl_block(dl_block, dl_fn, nr := nr);
+		if (not match(dl_block, tr_RLCMAC_DL_DUMMY_CTRL)) {
+			/* Received first data, starting processing: */
+			break;
+		}
+		i := i + 1;
+		if (max_dummy >= 0 and i > max_dummy) {
+			setverdict(fail, "Didn't receive DL data after receiving ", i, " dummy blocks");
+			f_shutdown(__BFILE__, __LINE__);
+			break;
+		}
+	}
+	return dl_fn;
+}
+
+function f_rx_rlcmac_dl_block_exp_pkt_pag_req(out RlcmacDlBlock dl_block,
+					      template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	var uint32_t dl_fn;
+
+	f_rx_rlcmac_dl_block(dl_block, dl_fn, nr := nr);
+	if (not match(dl_block, tr_RLCMAC_PACKET_PAG_REQ())) {
+		setverdict(fail, "Failed to match Packet Paging Request: ", dl_block, " vs ", tr_RLCMAC_PACKET_PAG_REQ());
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+/* This function does what could probably be done with templates */
+function f_rlcmac_dl_block_verify_data_gprs(in RlcmacDlDataBlock data_block,
+					    template (present) octetstring data := ?,
+					    template (present) uint7_t exp_bsn := ?,
+					    template (present) CodingScheme exp_cs := ?)
+runs on MS_BTS_IFACE_CT {
+	if (not match(data_block.mac_hdr.hdr_ext.bsn, exp_bsn)) {
+		setverdict(fail, "DL block BSN doesn't match: ",
+			   data_block.mac_hdr.hdr_ext.bsn, " vs exp ", exp_bsn);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (lengthof(data_block.blocks) < 1) {
+		setverdict(fail, "DL block has no LLC payload: ", data_block);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (not match(data_block.blocks[0].payload, data)) {
+		setverdict(fail, "Failed to match content of LLC payload in DL Block: ",
+			   data_block.blocks[0].payload, " vs ", data);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (not match(data_block.cs, exp_cs)) {
+		setverdict(fail, "Failed to match ", data_block.cs, " vs exp ", exp_cs);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+/* This function does what could probably be done with templates */
+function f_rlcmac_dl_block_verify_data_egprs(in RlcmacDlEgprsDataBlock data_block,
+					     template (present) octetstring data := ?,
+					     template (present) uint11_t exp_bsn := ?,
+					     template (present) CodingScheme exp_cs := ?)
+runs on MS_BTS_IFACE_CT {
+	if (not match(data_block.mac_hdr.bsn1, exp_bsn)) {
+		setverdict(fail, "DL block BSN doesn't match: ",
+			   data_block.mac_hdr.bsn1, " vs exp ", exp_bsn);
+	}
+
+	if (lengthof(data_block.blocks) < 1) {
+		setverdict(fail, "DL block has no LLC payload: ", data_block);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (not match(data_block.blocks[0].payload, data)) {
+		setverdict(fail, "Failed to match content of LLC payload in DL Block: ",
+			   data_block.blocks[0].payload, " vs ", data);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (not match(data_block.mcs, exp_cs)) {
+		setverdict(fail, "Failed to match ", data_block.mcs, " vs exp ", exp_cs);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+/* High level (task specific) helper for  matching GPRS/EGPRS data blocks */
+function f_rlcmac_dl_block_exp_data(in RlcmacDlBlock dl_block,
+				    template (present) octetstring data := ?,
+				    template (present) uint11_t exp_bsn := ?,
+				    template (present) CodingScheme exp_cs := ?)
+runs on MS_BTS_IFACE_CT {
+	/* Make sure it's either GPRS or EGPRS data block */
+	if (not match(dl_block, tr_RLCMAC_DATA)) {
+		setverdict(fail, "Failed to match DL DATA: ", dl_block, " vs ", tr_RLCMAC_DATA);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	if (ischosen(dl_block.data_egprs)) {
+		f_rlcmac_dl_block_verify_data_egprs(dl_block.data_egprs, data, exp_bsn, exp_cs);
+	} else if (ischosen(dl_block.data)) {
+		f_rlcmac_dl_block_verify_data_gprs(dl_block.data, data, exp_bsn, exp_cs);
+	} else {
+		/* Should not happen, but the caller may theoretically give us a template for CTRL */
+		setverdict(fail, "DL block is neither GPRS nor EGPRS data block: ", dl_block);
+		f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+/* High level (task specific) helper for receiving and matching GPRS/EGPRS data blocks */
+function f_rx_rlcmac_dl_block_exp_data(out RlcmacDlBlock dl_block, out uint32_t dl_fn,
+				       template (present) octetstring data := ?,
+				       template (present) uint11_t exp_bsn := ?,
+				       template (present) CodingScheme exp_cs := ?,
+				       template (value) TsTrxBtsNum nr := ts_TsTrxBtsNum)
+runs on MS_BTS_IFACE_CT {
+	/* FIXME: ideally we should use an alt statement with timeout here, rather than
+	 * having +100500 layers of abstraction. This would facilitate developing the
+	 * multi-TBF/-TRX/-BTS tests, where you cannot expect that the first received
+	 * block is exactly what you need. */
+	f_rx_rlcmac_dl_block(dl_block, dl_fn, nr := nr);
+
+	f_rlcmac_dl_block_exp_data(dl_block, data, exp_bsn, exp_cs);
+}
+
+function f_dl_block_ack_fn(in RlcmacDlBlock dl_block, uint32_t dl_fn)
+runs on MS_BTS_IFACE_CT return uint32_t {
+	var boolean rrbp_valid;
+	var MacRrbp rrbp;
+
+	/* The argument must be either a GPRS or EGPRS data block */
+	if (ischosen(dl_block.data_egprs)) {
+		rrbp_valid := dl_block.data_egprs.mac_hdr.esp != '00'B;
+		rrbp := dl_block.data_egprs.mac_hdr.rrbp;
+	} else if (ischosen(dl_block.data)) {
+		rrbp_valid := dl_block.data.mac_hdr.mac_hdr.rrbp_valid;
+		rrbp := dl_block.data.mac_hdr.mac_hdr.rrbp;
+	} else {
+		rrbp_valid := dl_block.ctrl.mac_hdr.rrbp_valid;
+		rrbp := dl_block.ctrl.mac_hdr.rrbp;
+	}
+
+	/* Make sure that the given block really needs to be ACKnowledged */
+	if (not rrbp_valid) {
+		setverdict(fail, "DL block shall not be ACKnowledged, field RRBP is not valid");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	return f_rrbp_ack_fn(dl_fn, rrbp);
+}
+
+function f_dl_block_rrbp_valid(in RlcmacDlBlock dl_block)
+runs on MS_BTS_IFACE_CT return boolean {
+	if (ischosen(dl_block.data_egprs)) {
+		return dl_block.data_egprs.mac_hdr.esp != '00'B;
+	} else if (ischosen(dl_block.data)) {
+		return dl_block.data.mac_hdr.mac_hdr.rrbp_valid;
+	} else {
+		return dl_block.ctrl.mac_hdr.rrbp_valid;
+	}
+}
+
+/* Return true if a given Packet Paging Request contains the given IMSI, false otherwise */
+function f_pkt_paging_match_imsi(in PacketPagingReq req, template (present) hexstring imsi,
+				 boolean cs_domain := true, boolean ps_domain := true)
+runs on MS_BTS_IFACE_CT return boolean {
+	if (not ispresent(req.repeated_pageinfo)) {
+		setverdict(fail, "Packet Paging Request without MIs?!?");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	for (var integer i := 0; i < lengthof(req.repeated_pageinfo); i := i + 1) {
+		var PageInfo info := req.repeated_pageinfo[i].item;
+		var MobileIdentityLV_Paging mi_lv;
+
+		if (ischosen(info.cs)) { /* CS domain */
+			if (not ispresent(info.cs.mobile_identity))
+				{ continue; }
+			if (not cs_domain)
+				{ continue; }
+			mi_lv := info.cs.mobile_identity;
+		} else { /* PS domain */
+			if (not ispresent(info.ps.mobile_identity))
+				{ continue; }
+			if (not ps_domain)
+				{ continue; }
+			mi_lv := info.ps.mobile_identity;
+		}
+
+		/* Make sure MI contains IMSI before referencing it */
+		if (match(mi_lv.mobile_id, decmatch tr_MI_IMSI(imsi))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* Return true if a given Packet Paging Request contains the given P-TMSI, false otherwise */
+function f_pkt_paging_match_tmsi(in PacketPagingReq req, template GsmTmsi tmsi,
+				 boolean cs_domain := true, boolean ps_domain := true)
+runs on MS_BTS_IFACE_CT return boolean {
+	if (not ispresent(req.repeated_pageinfo)) {
+		setverdict(fail, "Packet Paging Request without MIs?!?");
+		f_shutdown(__BFILE__, __LINE__);
+	}
+
+	for (var integer i := 0; i < lengthof(req.repeated_pageinfo); i := i + 1) {
+		var PageInfo info := req.repeated_pageinfo[i].item;
+
+		if (cs_domain and ischosen(info.cs)) {
+			if (not ispresent(info.cs.tmsi))
+				{ continue; }
+			if (match(info.cs.tmsi, tmsi))
+				{ return true; }
+		} else if (ps_domain) {
+			if (not ispresent(info.ps.ptmsi))
+				{ continue; }
+			if (match(info.ps.ptmsi, tmsi))
+				{ return true; }
+		}
+	}
+
+	return false;
+}
+
+}

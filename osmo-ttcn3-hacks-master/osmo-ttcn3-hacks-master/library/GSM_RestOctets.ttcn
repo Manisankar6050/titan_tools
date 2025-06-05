@@ -1,0 +1,1444 @@
+/**
+ * GSM Rest Octets definitions as per 3GPP TS 44.018.
+ *
+ * (C) 2020 by sysmocom s.f.m.c. GmbH <info@sysmocom.de>
+ * (C) 2020 Vadim Yanitskiy <axilirator@gmail.com>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module GSM_RestOctets {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from RLCMAC_CSN1_Types all;
+import from GSM_Types all;
+
+/* 10.5.2.16 IA (Immediate Assignment) Rest Octets */
+type record IaRestOctets {
+	BIT2		presence,
+	IaRestOctLL	ll optional,
+	IaRestOctLH	lh optional,
+	IaRestOctHL	hl optional,
+	IaRestOctHH	hh optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (ll) "PRESENCE(presence = '00'B)"
+	variant (lh) "PRESENCE(presence = '01'B)"
+	variant (hl) "PRESENCE(presence = '10'B)"
+	variant (hh) "PRESENCE(presence = '11'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+type record IaRestOctLL {
+	BIT1		compressed_irat_ho_info_ind
+} with {
+	variant (compressed_irat_ho_info_ind) "CSN.1 L/H"
+};
+
+type record IaRestOctLH {
+	BIT2		presence,
+	EgprsUlAss	egprs_ul optional,
+	octetstring	multiblock_dl_ass optional /* TODO */
+} with {
+	variant (egprs_ul) "PRESENCE(presence = '00'B)"
+	variant (multiblock_dl_ass) "PRESENCE(presence = '01'B)"
+};
+
+/* EGPRS Packet Uplink Assignment */
+type record EgprsUlAss {
+	BIT5 ext_ra,
+	BIT1 ats_present,
+	AccessTechnologiesRequestRepetition ats optional,
+	BIT1			presence,
+	EgprsUlAssignDyn	dynamic optional,
+	EgprsUlAssignMultiblock	multiblock optional
+} with {
+	variant (ats)	"PRESENCE(ats_present = '1'B)"
+	variant (dynamic)	"PRESENCE(presence = '1'B)"
+	variant (multiblock)	"PRESENCE(presence = '0'B)"
+	/* See https://bugs.eclipse.org/bugs/show_bug.cgi?id=562488 */
+	variant (ext_ra) "BYTEORDER(last)" // FIXME: should be first
+};
+
+type record EgprsUlAssignDyn {
+	uint5_t		tfi_assignment,
+	BIT1		polling,
+	BIT1		spare ('0'B),
+	uint3_t		usf,
+	BIT1		usf_granularity,
+	BIT1		p0_present,
+	uint4_t		p0 optional,
+	BIT1		pr_mode optional,
+	EgprsChCodingCommand	egprs_ch_coding_cmd,
+	BIT1		tlli_block_chan_coding,
+	BIT1		bep_period2_present,
+	BIT4		bep_period2 optional,
+	BIT1		resegment,
+	EgprsWindowSize	egprs_window_size,
+	BIT1		alpha_present,
+	uint4_t		alpha optional,
+	uint5_t		gamma,
+	BIT1		ta_index_present,
+	uint4_t		ta_index optional,
+	BIT1		tbf_starting_time_present,
+	TbfStartingTime	tbf_starting_time optional
+	/* TODO: Additions for Rel-7 */
+} with {
+	variant (p0)		"PRESENCE(p0_present = '1'B)"
+	variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+	variant (bep_period2)	"PRESENCE(bep_period2_present = '1'B)"
+	variant (alpha)		"PRESENCE(alpha_present = '1'B)"
+	variant (ta_index)	"PRESENCE(ta_index_present = '1'B)"
+	variant (tbf_starting_time)	"PRESENCE(tbf_starting_time_present = '1'B)"
+};
+
+type record EgprsUlAssignMultiblock {
+	BIT1		alpha_present,
+	uint4_t		alpha optional,
+	uint5_t		gamma,
+	TbfStartingTime	tbf_starting_time,
+	BIT2		nr_radio_blocks_allocated,
+	BIT1		p0_present,
+	uint4_t		p0 optional,
+	BIT1		spare ('0'B) optional,
+	BIT1		pr_mode optional
+	/* TDO: Additions for Rel-6 */
+} with {
+	variant (alpha)		"PRESENCE(alpha_present = '1'B)"
+	variant (p0)		"PRESENCE(p0_present = '1'B)"
+	variant (spare)		"PRESENCE(p0_present = '1'B)"
+	variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+};
+
+type record IaRestOctHL {
+	uint6_t		freq_par_len,
+	BIT2		padding ('00'B) optional,
+	uint6_t		maio optional,
+	octetstring	mobile_allocation optional
+} with {
+	variant (freq_par_len)	"LENGTHTO(mobile_allocation,maio,padding)"
+/*
+	variant (padding)	"PRESENCE(freq_par_len != 0)"
+	variant (maio)		"PRESENCE(freq_par_len != 0)"
+	variant (mobile_allocation) "PRESENCE(freq_par_len != 0)"
+*/
+};
+
+type record IaRestOctHH {
+	/* Packet Assignment discriminator:
+	 * Packet Uplink / Downlink Assignment (0)
+	 * Second Part Packet Assignment (1) */
+	BIT1			pa_disc,
+	PacketAssignUnion	pa
+} with {
+	variant (pa) "CROSSTAG(spa, pa_disc = '1'B; uldl, pa_disc = '0'B)"
+};
+
+type union PacketAssignUnion {
+	SecondPartAssign	spa,
+	PacketUlDlAssign	uldl
+};
+
+type record SecondPartAssign {
+	BIT1		r99, /* L / H */
+	BIT1		presence optional,
+	BIT5		ext_ra optional
+} with {
+	variant (r99) "CSN.1 L/H"
+	variant (presence) "PRESENCE(r99 = '1'B)" /* H */
+	variant (ext_ra) "PRESENCE(presence = '1'B)"
+	/* See https://bugs.eclipse.org/bugs/show_bug.cgi?id=562488 */
+	variant (ext_ra) "BYTEORDER(last)" // FIXME: should be first
+};
+
+type record PacketUlDlAssign {
+	BIT1			ass_disc,
+	PacketUlDlAssignUnion	ass
+} with {
+	variant (ass) "CROSSTAG(dl, ass_disc = '1'B; ul, ass_disc = '0'B)"
+};
+
+type union PacketUlDlAssignUnion {
+	PacketUlAssign		ul,
+	PacketDlAssign		dl
+};
+
+type record PacketUlAssign {
+	BIT1			presence,
+	PacketUlAssignDyn	dynamic optional,
+	PacketUlAssignSgl	single optional
+	/* TODO: Estended RA, PFI */
+} with {
+	variant (dynamic)	"PRESENCE(presence = '1'B)"
+	variant (single)	"PRESENCE(presence = '0'B)"
+};
+
+type record PacketUlAssignDyn {
+	uint5_t		tfi_assignment,
+	BIT1		polling,
+	BIT1		spare ('0'B),
+	uint3_t		usf,
+	BIT1		usf_granularity,
+	BIT1		p0_present,
+	uint4_t		p0 optional,
+	BIT1		pr_mode optional,
+	ChCodingCommand	ch_coding_cmd,
+	BIT1		tlli_block_chan_coding,
+	BIT1		alpha_present,
+	uint4_t		alpha optional,
+	uint5_t		gamma,
+	BIT1		ta_index_present,
+	uint4_t		ta_index optional,
+	BIT1		tbf_starting_time_present,
+	TbfStartingTime	tbf_starting_time optional
+} with {
+	variant (p0)		"PRESENCE(p0_present = '1'B)"
+	variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+	variant (alpha)		"PRESENCE(alpha_present = '1'B)"
+	variant (ta_index)	"PRESENCE(ta_index_present = '1'B)"
+	variant (tbf_starting_time)	"PRESENCE(tbf_starting_time_present = '1'B)"
+};
+
+type record PacketUlAssignSgl {
+	BIT1		alpha_present,
+	uint4_t		alpha optional,
+	uint5_t		gamma,
+	BIT2		padding ('01'B),
+	TbfStartingTime	tbf_starting_time
+	/* TODO: P0 / PR_MODE */
+} with {
+	variant (alpha)		"PRESENCE(alpha_present = '1'B)"
+};
+
+type record PacketDlAssign {
+	GprsTlli	tlli,
+	BIT1		group1_present,
+	PacketDlAssG1	group1 optional,
+	BIT1		ta_index_present,
+	uint4_t		ta_index optional,
+	BIT1		tbf_starting_time_present,
+	TbfStartingTime	tbf_starting_time optional,
+	BIT1		p0_present,
+	uint4_t		p0 optional,
+	BIT1		pr_mode optional
+	/* TODO: EGPRS window size, etc. */
+} with {
+	variant (group1)	"PRESENCE(group1_present = '1'B)"
+	variant (ta_index)	"PRESENCE(ta_index_present = '1'B)"
+	variant (tbf_starting_time)	"PRESENCE(tbf_starting_time_present = '1'B)"
+	variant (p0)		"PRESENCE(p0_present = '1'B)"
+	variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+};
+
+type record PacketDlAssG1 {
+	uint5_t		tfi_assignment,
+	BIT1		rlc_mode,
+	BIT1		alpha_present,
+	uint4_t		alpha optional,
+	uint5_t		gamma,
+	BIT1		polling,
+	BIT1		ta_valid
+} with { variant "" };
+
+type record TbfStartingTime {
+	uint5_t		t1,
+	uint6_t		t3,
+	uint5_t		t2
+};
+
+/* 10.5.2.17 IAR (Immediate Assignment Reject) Rest Octets */
+type record IARRestOctets {
+	ExtRAList		ext_ra_list,
+	BIT1			rel13_ind, // L/H
+	uint3_t			rcc optional
+	/* Addition in Rel-15: PEO IMM Cell Group Details struct */
+} with {
+	variant (rel13_ind) "CSN.1 L/H"
+	variant (rcc) "PRESENCE(rel13_ind = '1'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+/* Optional extended RA: 0 | 1 < Extended RA 1 : bit (5) > */
+type record length(4) of ExtRAOpt ExtRAList;
+type record ExtRAOpt {
+	BIT1			presence, // L/H
+	BIT5			ext_ra optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (ext_ra) "PRESENCE(presence = '1'B)"
+	/* See https://bugs.eclipse.org/bugs/show_bug.cgi?id=562488 */
+	variant (ext_ra) "BYTEORDER(last)"
+};
+
+template PacketDlAssign tr_PacketDlAssign(template GprsTlli tlli) := {
+	tlli := tlli,
+	group1_present := ?,
+	group1 := *,
+	ta_index_present := ?,
+	ta_index := *,
+	tbf_starting_time_present := ?,
+	tbf_starting_time := *,
+	p0_present := ?,
+	p0 := *,
+	pr_mode := *
+};
+
+template IaRestOctets tr_IaRestOctets_DLAss(template PacketDlAssign dl_ass) := {
+	presence := '11'B, /* HH */
+	ll := omit, lh := omit, hl := omit,
+	hh := {
+		pa_disc := '0'B, /* Packet Assignment (0) */
+		pa := {
+			uldl := {
+				ass_disc := '1'B, /* Downlink Assignment (1) */
+				ass := { dl := dl_ass }
+			}
+		}
+	}
+};
+
+template PacketUlAssign tr_PacketUlDynAssign(template uint5_t tfi := ?,
+					     template BIT1 polling := ?,
+					     template uint3_t usf := ?,
+					     template BIT1 usf_granularity := ?,
+					     template ChCodingCommand cs := ?) := {
+	presence := '1'B, /* Dynamic Block Allocation */
+	dynamic := {
+		tfi_assignment := tfi,
+		polling := polling,
+		spare := '0'B, /* Dynamic Block Allocation (mandatory after Rel-4) */
+		usf := usf,
+		usf_granularity := usf_granularity,
+		p0_present := ?,
+		p0 := *,
+		pr_mode := *,
+		ch_coding_cmd := cs,
+		tlli_block_chan_coding := ?,
+		alpha_present := ?,
+		alpha := *,
+		gamma := ?,
+		/* TODO: add to parameters */
+		ta_index_present := ?,
+		ta_index := *,
+		tbf_starting_time_present := ?,
+		tbf_starting_time := *
+	},
+	single := omit
+};
+
+template PacketUlAssign tr_PacketUlSglAssign := {
+	presence := '0'B, /* Single Block Allocation */
+	dynamic := omit,
+	single := {
+		alpha_present := ?,
+		alpha := *,
+		gamma := ?,
+		padding := '01'B,
+		tbf_starting_time := ?
+	}
+};
+
+template IaRestOctets tr_IaRestOctets_ULAss(template PacketUlAssign ul_ass) := {
+	presence := '11'B, /* HH */
+	ll := omit, lh := omit, hl := omit,
+	hh := {
+		pa_disc := '0'B, /* Packet Assignment (0) */
+		pa := {
+			uldl := {
+				ass_disc := '0'B, /* Uplink Assignment (0) */
+				ass := { ul := ul_ass }
+			}
+		}
+	}
+};
+
+template EgprsUlAss tr_EgprsUlAssDynamic(template (present) BIT5 ext_ra := ?,
+					 template EgprsUlAssignDyn dyn_ass := ?) := {
+	ext_ra := ext_ra,
+	ats_present := ?,
+	ats := *,
+	presence := '1'B,
+	dynamic := dyn_ass,
+	multiblock := omit
+};
+template EgprsUlAss tr_EgprsUlAssMultiblock(template (present) BIT5 ext_ra := ?,
+					    template EgprsUlAssignMultiblock mb_ass := ?) := {
+	ext_ra := ext_ra,
+	ats_present := ?,
+	ats := *,
+	presence := '0'B,
+	dynamic := omit,
+	multiblock := mb_ass
+};
+
+template IaRestOctets tr_IaRestOctets_EGPRSULAss(template EgprsUlAss ul_ass) := {
+	presence := '01'B, /* LH */
+	ll := omit,
+	lh := {
+		presence := '00'B,
+		egprs_ul := ul_ass,
+		multiblock_dl_ass := omit
+	},
+	hl := omit,
+	hh := omit
+};
+
+template IARRestOctets tr_IARRestOctets(template ExtRAList ext_ra_list := ?,
+					template uint3_t rcc := ?) := {
+	ext_ra_list := ext_ra_list,
+	rel13_ind := ?,
+	rcc := rcc ifpresent
+};
+
+template ExtRAOpt tr_ExtRAOpt(template BIT5 ext_ra := ?) := {
+	presence := '1'B, // L/H
+	ext_ra := ext_ra
+};
+
+
+external function enc_IaRestOctets(in IaRestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_IaRestOctets(in octetstring stream) return IaRestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_IARRestOctets(in IARRestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_IARRestOctets(in octetstring stream) return IARRestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+
+/* 10.5.2.33b SI 2quater Rest Octets */
+type record SI2quaterRestOctets {
+	BIT1				ba_ind,
+	BIT1				ba_3g_ind,
+	BIT1				mp_change_mark,
+	uint4_t				si2quater_index,
+	uint4_t				si2quater_count,
+
+	/* Measurement Parameters Description */
+	MeasParamsDescOpt	meas_params_desc,
+	/* GPRS specific parameters */
+	record {
+		GPRS_RealTimeDiffDescOpt	rt_diff_desc,
+		GPRS_BSICDescOpt		bsic_desc,
+		GPRS_ReportPrioDescOpt		rep_prio_desc,
+		MeasParamsDescOpt		meas_params_desc
+	} gprs,
+	/* NC Measurement Parameters Description */
+	NCMeasParamsOpt			nc_meas_params,
+	/* SI2quater Extension Information */
+	SI2quaterExtInfoOpt		ext_info,
+
+	/* 3G Neighbour Cell Description */
+	UTRAN_NeighDescOpt		utran_neigh_desc,
+	/* 3G Measurement Parameters Description */
+	UTRAN_MeasParamsDescOpt		utran_meas_params_desc,
+	/* GPRS 3G Measurement Parameters Description */
+	UTRAN_GPRSMeasParamsDescOpt	utran_gprs_meas_params_desc,
+
+	/* SI2quater Rel-{5,6,7,8,9,10} Additions (Matrioshka!) */
+	SI2quaterAdditions		rel_additions
+} with {
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+type record of SI2quaterRestOctets SI2quaterRestOctetsList;
+
+/* Measurement Parameters Description */
+private type record MeasParamsDescOpt {
+	BIT1				presence, // 0/1
+	MeasParamsDesc			desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record MeasParamsDesc {
+	BIT1				report_type,
+	BIT2				serving_band_reporting
+} with { variant "" };
+
+/* GPRS Real Time Difference Description (not implemented) */
+private type record GPRS_RealTimeDiffDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* GPRS BSIC Description (not implemented) */
+private type record GPRS_BSICDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* GPRS Report Priority Description (not implemented) */
+private type record GPRS_ReportPrioDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* NC (Network Controlled?) Measurement Parameters */
+private type record NCMeasParams {
+	/* Network Control Order */
+	BIT2				nco,
+	BIT1				p_presence,
+	NCMeasPeriods			p optional
+} with {
+	variant (p) "PRESENCE(p_presence = '1'B)"
+};
+
+/* NC Measurement Periods */
+private type record NCMeasParamsOpt {
+	BIT1				presence, // 0/1
+	NCMeasParams			params optional
+} with {
+	variant (params) "PRESENCE(presence = '1'B)"
+};
+
+private type record NCMeasPeriods {
+	BIT3				non_drx_period,
+	BIT3				rep_period_i,
+	BIT3				rep_period_t
+} with { variant "" };
+
+/* SI2quater Extersion Information */
+private type record SI2quaterExtInfoOpt {
+	BIT1				presence, // 0/1
+	SI2quaterExtInfo		info optional
+} with {
+	variant (info) "PRESENCE(presence = '1'B)"
+};
+
+private type record SI2quaterExtInfo {
+	uint8_t				len,
+	CCNSupportDescOpt		ccn_supp_desc optional,
+	bitstring			padding /* Octet alignment? */
+} with {
+	variant (len) "LENGTHTO(ccn_supp_desc,padding) + 1"
+	variant (len) "UNIT(bits)"
+};
+
+/* CCN Support Description */
+private type record CCNSupportDescOpt {
+	BIT1				presence, // 0/1
+	CCNSupportDesc			desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record CCNSupportDesc {
+	uint7_t				nr_of_cells,
+	bitstring			ccn_supported
+} with {
+	variant (nr_of_cells) "LENGTHTO(ccn_supported)"
+	variant (nr_of_cells) "UNIT(bits)"
+};
+
+/* 3G Neighbour Cell Description */
+private type record UTRAN_NeighDescOpt {
+	BIT1				presence, // 0/1
+	UTRAN_NeighDesc			desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record UTRAN_NeighDesc {
+	BIT1				idx_start_3g_presence,
+	uint7_t				idx_start_3g optional,
+	BIT1				abs_idx_start_emr_presence,
+	uint7_t				abs_idx_start_emr optional,
+	UTRAN_FDDDescOpt		fdd_desc,
+	UTRAN_TDDDescOpt		tdd_desc
+} with {
+	variant (idx_start_3g) "PRESENCE(idx_start_3g_presence = '1'B)"
+	variant (abs_idx_start_emr) "PRESENCE(abs_idx_start_emr_presence = '1'B)"
+};
+
+/* UTRAN (3G) FDD/TDD Description (not implementaed).
+ *
+ * TODO: Repeated UTRAN FDD/TDD Neighbour Cells structure contains a variable length
+ * field, that needs to be computed using tables (see 9.1.54.1a and 9.1.54.1b) with
+ * magic numbers. This cannot be described uing TITAN's RAW codec attributes. */
+private type record UTRAN_FDDDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record UTRAN_TDDDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* 3G Measurement Parameters Description (not implemented) */
+private type record UTRAN_MeasParamsDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* GPRS 3G Measurement Parameters Description (not implemented) */
+private type record UTRAN_GPRSMeasParamsDescOpt {
+	BIT1				presence ('0'B), // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* SI2quater Rel-{5,6,7,8,9,10} Additions */
+private type record SI2quaterAdditions {
+	BIT1				rel5_presence, // L/H
+	SI2quaterR5Additions		rel5 optional
+} with {
+	variant (rel5_presence) "CSN.1 L/H"
+	variant (rel5) "PRESENCE(rel5_presence = '1'B)"
+};
+
+/* SI2quater Rel-5 and Rel-{6,7,8,9,10} Additions */
+private type record SI2quaterR5Additions {
+	UMTS_AddMeasParamsDescOpt	umts_add_meas_params_desc,
+	UMTS_AddMeasParamsDesc2Opt	umts_add_meas_params_desc2,
+	BIT1				rel6_presence, // L/H
+	SI2quaterR6Additions		rel6 optional
+} with {
+	variant (rel6_presence) "CSN.1 L/H"
+	variant (rel6) "PRESENCE(rel6_presence = '1'B)"
+};
+
+/* 3G Additional Measurement Parameters Description */
+private type record UMTS_AddMeasParamsDescOpt {
+	BIT1				presence, // 0/1
+	UMTS_AddMeasParamsDesc		desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record UMTS_AddMeasParamsDesc {
+	BIT3				fdd_qmin_offset,
+	BIT4				fdd_rscpmin
+} with { variant "" };
+
+/* 3G Additional Measurement Parameters Description 2 */
+private type record UMTS_AddMeasParamsDesc2Opt {
+	BIT1				presence, // 0/1
+	UMTS_AddMeasParamsDesc		desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record UMTS_AddMeasParamsDesc2 {
+	/* FDD Reporting Threshold 2 */
+	BIT1				presence, // 0/1
+	uint6_t				threshold optional
+} with {
+	variant (threshold) "PRESENCE(presence = '1'B)"
+};
+
+/* SI2quater Rel-6 and Rel-{7,8,9,10} Additions */
+private type record SI2quaterR6Additions {
+	BIT1				umts_ccn_active,
+	BIT1				rel7_presence, // L/H
+	SI2quaterR7Additions		rel7 optional
+} with {
+	variant (rel7_presence) "CSN.1 L/H"
+	variant (rel7) "PRESENCE(rel7_presence = '1'B)"
+};
+
+/* SI2quater Rel-7 and Rel-{8,9,10} Additions */
+private type record SI2quaterR7Additions {
+	Rel7RepOffseThresholdOpt	rep700,
+	Rel7RepOffseThresholdOpt	rep810,
+	BIT1				rel8_presence, // L/H
+	SI2quaterR8Additions		rel8 optional
+} with {
+	variant (rel8_presence) "CSN.1 L/H"
+	variant (rel8) "PRESENCE(rel8_presence = '1'B)"
+};
+
+/* Additions in Rel-7: Reporting Offset & Threshold */
+private type record Rel7RepOffseThresholdOpt {
+	BIT1				presence, // 0/1
+	Rel7RepOffseThreshold		val optional
+} with {
+	variant (val) "PRESENCE(presence = '1'B)"
+};
+
+private type record Rel7RepOffseThreshold {
+	BIT3				offset,
+	BIT3				threshold
+} with { variant "" };
+
+/* SI2quater Rel-8 and Rel-{9,10} Additions */
+private type record SI2quaterR8Additions {
+	Rel8PrioEUTRANParamsDescOpt	prio_eutran_params_desc,
+	Rel8UTRANCSGDescOpt		utran_csg_desc,
+	Rel8EUTRANCSGDescOpt		eutran_csg_desc
+	// TODO: Rel9 Additions (not implemented)
+} with { variant "" };
+
+/* Additions in Rel-8: Priority and E-UTRAN Parameters Description */
+private type record Rel8PrioEUTRANParamsDescOpt {
+	BIT1				presence, // 0/1
+	Rel8PrioEUTRANParamsDesc	desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record Rel8PrioEUTRANParamsDesc {
+	ServingCellPrioParamsDescOpt	sc_prio_params_desc,
+	UTRAN_PrioParamsDescOpt		utran_prio_params_desc,
+	EUTRAN_ParamsDescOpt		eutran_params_desc
+} with { variant "" };
+
+/* Serving Cell Priority Parameters Description */
+private type record ServingCellPrioParamsDescOpt {
+	BIT1				presence, // 0/1
+	ServingCellPrioParamsDesc	desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record ServingCellPrioParamsDesc {
+	uint3_t				geran_priority,
+	uint4_t				thresh_priority_search,
+	uint4_t				thresh_gsm_low,
+	uint2_t				h_prio,
+	uint2_t				t_reselection
+} with { variant "" };
+
+/* 3G Priority Parameters Description (not implemented) */
+private type record UTRAN_PrioParamsDescOpt {
+	BIT1				presence, // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* E-UTRAN Parameters Description */
+private type record EUTRAN_ParamsDescOpt {
+	BIT1				presence, // 0/1
+	EUTRAN_ParamsDesc		desc optional
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+private type record EUTRAN_ParamsDesc {
+	BIT1				ccn_active,
+	BIT1				e_start,
+	BIT1				e_stop,
+
+	/* E-UTRAN Measurement Parameters Description */
+	EUTRAN_MeasParamsDescOpt	meas_params_desc,
+	/* GPRS E-UTRAN Measurement Parameters Description */
+	EUTRAN_GPRSMeasParamsDescOpt	gprs_meas_params_desc,
+
+	/* { 1 < Repeated E-UTRAN Neighbour Cells > } ** 0 */
+	EUTRAN_RepeatedNeighbourCells	repeated_neigh_cells optional,
+	BIT1				repeated_neigh_cells_term ('0'B),
+	/* { 1 < Repeated E-UTRAN Not Allowed Cells > } ** 0 */
+	EUTRAN_RepeatedNotAllowedCells	repeated_not_allowed_cells optional,
+	BIT1				repeated_not_allowed_cells_term ('0'B),
+	/* { 1 < Repeated E-UTRAN PCID to TA mapping > } ** 0 */
+	EUTRAN_PCID2TAMaps		pcid2ta_map_list optional,
+	BIT1				pcid2ta_map_list_term ('0'B)
+} with { variant "" };
+
+/* E-UTRAN Measurement Parameters Description (not implemented) */
+private type record EUTRAN_MeasParamsDescOpt {
+	BIT1				presence, // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* GPRS E-UTRAN Measurement Parameters Description (not implemented) */
+private type record EUTRAN_GPRSMeasParamsDescOpt {
+	BIT1				presence, // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* Repeated E-UTRAN Neighbour Cells */
+private type record of EUTRAN_NeighbourCells EUTRAN_RepeatedNeighbourCells;
+type record EUTRAN_NeighbourCells {
+	BIT1				item_ind ('1'B),
+	/* { 1 < Repeated E-UTRAN Neighbour Cells > } ** 0 */
+	EUTRAN_CellDescs		cell_desc_list optional,
+	BIT1				cell_desc_list_term ('0'B),
+	BIT1				prio_presence, // 0/1
+	uint3_t				prio optional,
+	uint5_t				thresh_high,
+	BIT1				thresh_low_presence, // 0/1
+	uint5_t				thresh_low optional,
+	BIT1				qrxlevmin_presence, // 0/1
+	uint5_t				qrxlevmin optional
+} with {
+	variant "PRESENCE(item_ind = '1'B)"
+	variant (prio) "PRESENCE(prio_presence = '1'B)"
+	variant (thresh_low) "PRESENCE(thresh_low_presence = '1'B)"
+	variant (qrxlevmin) "PRESENCE(qrxlevmin_presence = '1'B)"
+};
+
+/* Repeated E-UTRAN Cell Description (E-ARFCN & Measurement Bandwidth) List */
+type record of EUTRAN_CellDesc EUTRAN_CellDescs;
+type record EUTRAN_CellDesc {
+	BIT1				item_ind ('1'B),
+	uint16_t			e_arfcn,
+	BIT1				meas_bw_presence, // 0/1
+	uint3_t				meas_bw optional
+} with {
+	variant "PRESENCE(item_ind = '1'B)"
+	variant (meas_bw) "PRESENCE(meas_bw_presence = '1'B)"
+};
+
+/* Repeated E-UTRAN Not Allowed Cells */
+private type record of EUTRAN_NotAllowedCells EUTRAN_RepeatedNotAllowedCells;
+private type record EUTRAN_NotAllowedCells {
+	BIT1				item_ind ('1'B),
+	/* FIXME: Not Allowed Cells : < PCID Group IE > (not implemented) */
+	BIT1				pcid_group_presence ('0'B),
+	/* { 1 < Repeated E-UTRAN_FREQUENCY_INDEX > } ** 0 */
+	EUTRAN_FreqIndexes		freq_idx_list optional,
+	BIT1				freq_idx_list_term ('0'B)
+} with {
+	variant "PRESENCE(item_ind = '1'B)"
+};
+
+/* Repeated E-UTRAN PCID to TA mapping List */
+private type record of EUTRAN_PCID2TAMap EUTRAN_PCID2TAMaps;
+private type record EUTRAN_PCID2TAMap {
+	BIT1				item_ind ('1'B),
+	/* FIXME: PCID to TA mapping : < PCID Group IE > (not implemented) */
+	BIT1				pcid_group_presence ('0'B),
+	/* { 1 < Repeated E-UTRAN_FREQUENCY_INDEX > } ** 0 */
+	EUTRAN_FreqIndexes		freq_idx_list optional,
+	BIT1				freq_idx_list_term ('0'B)
+} with {
+	variant "PRESENCE(item_ind = '1'B)"
+};
+
+/* Repeated E-UTRAN Frequency Index List */
+private type record of EUTRAN_FreqIndex EUTRAN_FreqIndexes;
+private type record EUTRAN_FreqIndex {
+	BIT1				item_ind ('1'B),
+	uint3_t				idx
+} with {
+	variant "PRESENCE(item_ind = '1'B)"
+};
+
+/* Additions in Rel-8: 3G CSG Description (not implemented) */
+private type record Rel8UTRANCSGDescOpt {
+	BIT1				presence, // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+/* Additions in Rel-8: E-UTRAN CSG Description (not implemented) */
+private type record Rel8EUTRANCSGDescOpt {
+	BIT1				presence, // 0/1
+	bitstring			desc optional // TODO
+} with {
+	variant (desc) "PRESENCE(presence = '1'B)"
+};
+
+
+/* Basic any-/omit-matching templates. To be inherited by other templates (see below).
+ * The point is that you cannot fit everything into 20 octets, so usually several kinds
+ * of SI2quater are being sub-multiplexed by the BTS.  This is achieved using both
+ * 'si2quater_index' and 'si2quater_count' fields. */
+template SI2quaterRestOctets tra_SI2quaterRestOctets_base := {
+	ba_ind := ?,
+	ba_3g_ind := ?,
+	mp_change_mark := ?,
+	si2quater_index := ?,
+	si2quater_count := ?,
+
+	meas_params_desc := { presence := ?, desc := * },
+	gprs := {
+		rt_diff_desc := { presence := ?, desc := * },
+		bsic_desc := { presence := ?, desc := * },
+		rep_prio_desc := { presence := ?, desc := * },
+		meas_params_desc := { presence := ?, desc := * }
+	},
+	nc_meas_params := { presence := ?, params := * },
+	ext_info := { presence := ?, info := * },
+
+	utran_neigh_desc := { presence := ?, desc := * },
+	utran_meas_params_desc := { presence := ?, desc := * },
+	utran_gprs_meas_params_desc := { presence := ?, desc := * },
+
+	rel_additions := ?
+};
+
+template SI2quaterRestOctets tro_SI2quaterRestOctets_base := {
+	ba_ind := ?,
+	ba_3g_ind := ?,
+	mp_change_mark := ?,
+	si2quater_index := ?,
+	si2quater_count := ?,
+
+	meas_params_desc := { presence := '0'B, desc := omit },
+	gprs := {
+		rt_diff_desc := { presence := '0'B, desc := omit },
+		bsic_desc := { presence := '0'B, desc := omit },
+		rep_prio_desc := { presence := '0'B, desc := omit },
+		meas_params_desc := { presence := '0'B, desc := omit }
+	},
+	nc_meas_params := { presence := '0'B, params := omit },
+	ext_info := { presence := '0'B, info := omit },
+
+	utran_neigh_desc := { presence := '0'B, desc := omit },
+	utran_meas_params_desc := { presence := '0'B, desc := omit },
+	utran_gprs_meas_params_desc := { presence := '0'B, desc := omit },
+
+	rel_additions := { rel5_presence := CSN1_L, rel5 := omit }
+};
+
+template SI2quaterRestOctets tro_SI2quaterRestOctets_rel8_EUTRAN
+modifies tro_SI2quaterRestOctets_base
+:= {
+	ba_ind := ?,
+	ba_3g_ind := ?,
+	mp_change_mark := ?,
+	si2quater_index := ?,
+	si2quater_count := ?,
+
+	rel_additions := {
+		rel5_presence := CSN1_H,
+		rel5 := {
+			umts_add_meas_params_desc := { presence := '0'B, desc := omit },
+			umts_add_meas_params_desc2 := { presence := '0'B, desc := omit },
+			rel6_presence := CSN1_H,
+			rel6 := {
+				umts_ccn_active := '0'B,
+				rel7_presence := CSN1_H,
+				rel7 := {
+					rep700 := { presence := '0'B, val := omit },
+					rep810 := { presence := '0'B, val := omit },
+					rel8_presence := CSN1_H,
+					rel8 := {
+						prio_eutran_params_desc := {
+							presence := '1'B,
+							desc := {
+								sc_prio_params_desc := { presence := '0'B, desc := omit },
+								utran_prio_params_desc := { presence := '0'B, desc := omit },
+								eutran_params_desc := {
+									presence := '1'B,
+									desc := {
+										ccn_active := ?,
+										e_start := ?,
+										e_stop := ?,
+										meas_params_desc := { presence := '0'B, desc := omit },
+										gprs_meas_params_desc := { presence := '0'B, desc := omit },
+										repeated_neigh_cells := *,
+										repeated_neigh_cells_term := '0'B,
+										repeated_not_allowed_cells := omit,
+										repeated_not_allowed_cells_term := '0'B,
+										pcid2ta_map_list := omit,
+										pcid2ta_map_list_term := '0'B
+									}
+								}
+							}
+						},
+						utran_csg_desc := { presence := '0'B, desc := omit },
+						eutran_csg_desc := { presence := '0'B, desc := omit }
+					}
+				}
+			}
+		}
+	}
+};
+
+template EUTRAN_CellDesc tr_EUTRAN_CellDesc(template (present) uint16_t e_arfcn := ?,
+					    template (present) BIT1 meas_bw_presence := ?,
+					    template uint3_t meas_bw := *)
+:= {
+	item_ind := '1'B,
+	e_arfcn := e_arfcn,
+	meas_bw_presence := meas_bw_presence,
+	meas_bw := meas_bw
+}
+
+/* Defaults correspond to osmo-bsc cfg:
+ *   si2quater neighbor-list add earfcn 111 thresh-hi 20 thresh-lo 10 prio 3 qrxlv 22 meas 3
+ */
+template EUTRAN_NeighbourCells tr_EUTRAN_NeighbourCells(template (present) EUTRAN_CellDescs cell_desc_list := { tr_EUTRAN_CellDesc },
+							template (present) BIT1 prio_presence := ?,
+							template uint3_t prio := *,
+							template (present) uint5_t thresh_high := ?,
+							template (present) BIT1 thresh_low_presence := ?,
+							template uint5_t thresh_low := *,
+							template (present) BIT1 qrxlevmin_presence := ?,
+							template uint5_t qrxlevmin := *)
+:= {
+	item_ind := '1'B,
+	cell_desc_list := cell_desc_list,
+	cell_desc_list_term := '0'B,
+	prio_presence := prio_presence,
+	prio := prio,
+	thresh_high := thresh_high,
+	thresh_low_presence := thresh_low_presence,
+	thresh_low := thresh_low,
+	qrxlevmin_presence := qrxlevmin_presence,
+	qrxlevmin := qrxlevmin
+};
+
+template SI2quaterRestOctets tr_SI2quaterRestOctets_EUTRAN(
+	template integer index := 0,
+	template integer count := 0,
+	template EUTRAN_RepeatedNeighbourCells repeated_neigh_cells := { tr_EUTRAN_NeighbourCells }
+) modifies tro_SI2quaterRestOctets_rel8_EUTRAN := {
+	si2quater_index := index,
+	si2quater_count := count,
+	rel_additions := {
+		rel5 := {
+			rel6 := {
+				rel7 := {
+					rel8 := {
+						prio_eutran_params_desc := {
+							desc := {
+								sc_prio_params_desc := {
+									presence := '1'B,
+									desc := {
+										geran_priority := 0,
+										thresh_priority_search := 0,
+										thresh_gsm_low := 0,
+										h_prio := 0,
+										t_reselection := 0
+									}
+								},
+								eutran_params_desc := {
+									desc := {
+										ccn_active := '0'B,
+										e_start := '1'B,
+										e_stop := '1'B,
+										repeated_neigh_cells := repeated_neigh_cells
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+};
+
+
+/* 10.5.2.34 SI 3 Rest Octets */
+type record SI3RestOctets {
+	SelectionParamsOpt	sel_params,
+	PowerOffsetOpt		pwr_offset,
+	BIT1			si_2ter_ind,
+	BIT1			early_cm_ind,
+	SchedIfAndWhere		sched_where,
+	GPRSIndicatorOpt	gprs_ind,
+	BIT1			umts_early_cm_ind,
+	SI2quaterIndicatorOpt	si2_quater_ind,
+	BIT1			iu_mode_ind ('1'B) optional,
+	SI21IndicatorOpt	si21_ind optional
+	/* ... spare padding ... */
+} with {
+	variant (si_2ter_ind) "CSN.1 L/H"
+	variant (early_cm_ind) "CSN.1 L/H"
+	variant (umts_early_cm_ind) "CSN.1 L/H"
+
+	/* If Iu mode is not supported in the cell, the Iu Indicator is not sent
+	 * within this cell. Iu Indicator is included if and only if GPRS is
+	 * not supported, and Iu mode is supported in the cell. */
+	variant (iu_mode_ind) "PRESENCE(gprs_ind.presence = '0'B)"
+	/* SI21 field is only present if 'WHERE' information is not present. */
+	variant (si21_ind) "PRESENCE(sched_where.presence = '0'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+/* 10.5.2.35 SI 4 Rest Octets (O & S) */
+type record SI4RestOctets {
+	SelectionParamsOpt	sel_params,
+	PowerOffsetOpt		pwr_offset,
+	GPRSIndicatorOpt	gprs_ind,
+	BIT1			s_presence, // L/H
+	/* TODO: optional "Rest Octets S" part */
+	bitstring		s optional
+} with {
+	variant (s_presence) "CSN.1 L/H"
+	variant (s) "PRESENCE(s_presence = '1'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+/* 10.5.2.35a SI 6 Rest Octets */
+type record SI6RestOctets {
+	PchAndNchInfoOpt	pch_nch_info,
+	VbsVgcsOptionsOpt	vbs_vgcs_options,
+	BIT1			dtm_support, // L/H
+	uint8_t			rac optional,
+	uint3_t			max_lapdm optional,
+	BIT1			band_ind // L/H (DCS/PCS)
+	/* TODO: add more fields */
+} with {
+	variant (dtm_support) "CSN.1 L/H"
+	variant (rac) "PRESENCE(dtm_support = '1'B)"
+	variant (max_lapdm) "PRESENCE(dtm_support = '1'B)"
+	variant (band_ind) "CSN.1 L/H"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+/* Optional PCH and NCH info: L | H < PCH and NCH info > */
+type record PchAndNchInfoOpt {
+	BIT1			presence, // L/H
+	PchAndNchInfo		info optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (info) "PRESENCE(presence = '1'B)"
+};
+
+/* PCH and NCH info */
+type record PchAndNchInfo {
+	BIT1			pag_chan_restruct,
+	uint2_t			nln_sacch,
+	BIT1			call_prio_presence,
+	uint3_t			call_prio optional,
+	BIT1			nln_status_sacch
+} with {
+	variant (call_prio) "PRESENCE(call_prio_presence = '1'B)"
+};
+
+/* Optional VBS/VGCS options: L | H < VBS/VGCS options > */
+type record VbsVgcsOptionsOpt {
+	BIT1			presence, // L/H
+	BIT2			options optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (options) "PRESENCE(presence = '1'B)"
+};
+
+/* 10.5.2.37b SI 13 Rest Octets (O & S) */
+type record SI13RestOctets {
+	BIT1			presence, // L/H
+	uint3_t			bcch_change_mark,
+	BIT4			si_change_field,
+	BIT1			presence2,
+	BIT2			si13_change_mark optional,
+	GprsMobileAllocation	gprs_ma optional,
+	BIT1			zero ('0'B), /* PBCCH not present in cell */
+	uint8_t			rac,
+	BIT1			spgc_ccch_sup,
+	BIT3			priority_access_thr,
+	BIT2			network_control_order,
+	GprsCellOptions		gprs_cell_opts,
+	GprsPowerControlParameters gprs_pwr_ctrl_params
+	/* TODO: Additions in release 99 */
+} with {
+
+	variant (presence) "CSN.1 L/H"
+	/* TODO: for all fields after presencte: variant (<field>) "PRESENCE(presence = '1'B)" */
+	variant (si13_change_mark) "PRESENCE(presence2 = '1'B)"
+	variant (gprs_ma) "PRESENCE(presence2 = '1'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+/* Selection Parameters */
+type record SelectionParams {
+	boolean			cbq,
+	uint6_t			cr_offset,
+	uint3_t			temp_offset,
+	uint5_t			penalty_time
+} with {
+	variant (cbq) "FIELDLENGTH(1)"
+};
+
+/* Optional Selection Parameters: L | H < Selection Parameters > */
+type record SelectionParamsOpt {
+	BIT1			presence, // L/H
+	SelectionParams		params optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (params) "PRESENCE(presence = '1'B)"
+};
+
+/* Optional Power Offset: L | H < Power Offset bit(2) > */
+type record PowerOffsetOpt {
+	BIT1			presence, // L/H
+	uint2_t			offset optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (offset) "PRESENCE(presence = '1'B)"
+};
+
+/* Scheduling if and where: L | H < WHERE bit(3) > */
+type record SchedIfAndWhere {
+	BIT1			presence, // L/H
+	uint3_t			where optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (where) "PRESENCE(presence = '1'B)"
+};
+
+type record GPRSIndicator {
+	uint3_t			ra_colour,
+	BIT1			si13_pos
+} with { variant "" };
+
+/* Optional GPRS Indicator: L | H < GPRS Indicator > */
+type record GPRSIndicatorOpt {
+	BIT1			presence, // L/H
+	GPRSIndicator		ind optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (ind) "PRESENCE(presence = '1'B)"
+};
+
+/* Optional SI2quater Indicator: L | H < SI2quater Indicator > */
+type record SI2quaterIndicatorOpt {
+	BIT1			presence, // L/H
+	BIT1			ind optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (ind) "PRESENCE(presence = '1'B)"
+};
+
+/* Optional SI21 Indicator: L | H < SI21 Position > */
+type record SI21IndicatorOpt {
+	BIT1			presence, // L/H
+	BIT1			pos optional
+} with {
+	variant (presence) "CSN.1 L/H"
+	variant (pos) "PRESENCE(presence = '1'B)"
+};
+
+
+/* 10.5.2.44 SI10 rest octets (ASCI) */
+type record SI10RestOctets {
+	BIT1			ba_ind,
+	BIT1			neigh_info_presence, // L/H
+	SI10NeighInfo		neigh_info optional
+} with {
+	variant (neigh_info_presence) "CSN.1 L/H"
+	variant (neigh_info) "PRESENCE(neigh_info_presence = '1'B)"
+
+	/* The TITAN's RAW encoder generates an octet-aligned octetstring,
+	 * so we should make sure that unused bits contain proper padding. */
+	variant "PADDING(yes), PADDING_PATTERN('00101011'B)"
+};
+
+private type record SI10NeighInfo {
+	uint5_t			first_freq,
+	SI10CellInfo		cell_info,
+	SI10InfoFieldList	info_field optional,
+	BIT1			info_field_term ('0'B) // L/H
+} with {
+	variant (info_field_term) "CSN.1 L/H"
+};
+
+private type record SI10CellInfo {
+	uint6_t			bsic,
+	BIT1			cell_params_presence, // L/H
+	SI10CellParams		cell_params optional
+} with {
+	variant (cell_params_presence) "CSN.1 L/H"
+	variant (cell_params) "PRESENCE(cell_params_presence = '1'B)"
+};
+
+private type record SI10CellParams {
+	BIT1			cell_barred, // L/H
+	SI10FurtherCellInfo	further_cell_info optional
+} with {
+	variant (cell_barred) "CSN.1 L/H"
+	variant (further_cell_info) "PRESENCE(cell_barred = '0'B)"
+};
+
+private type record SI10FurtherCellInfo {
+	BIT1			la_different, // L/H
+	uint3_t			cell_resel_hyst optional,
+	uint5_t			ms_txpwr_max_cch,
+	uint6_t			rxlev_access_min,
+	uint6_t			cell_resel_offset,
+	uint3_t			temp_offset,
+	uint5_t			penalty_time
+} with {
+	variant (la_different) "CSN.1 L/H"
+	variant (cell_resel_hyst) "PRESENCE(la_different = '1'B)"
+};
+
+private type record of SI10InfoField SI10InfoFieldList;
+private type record SI10InfoField {
+	BIT1			item_ind ('1'B),
+	SI10NextFreqList	next_freq optional,
+	BIT1			next_freq_term ('0'B), // L/H
+	SI10DiffCellInfo	diff_cell_info
+} with {
+	variant (item_ind) "CSN.1 L/H"
+	variant "PRESENCE(item_ind = '1'B)"
+	variant (next_freq_term) "CSN.1 L/H"
+};
+
+private type record of SI10NextFreq SI10NextFreqList;
+private type BIT1 SI10NextFreq with { variant "CSN.1 L/H" };
+
+private type record SI10DiffCellInfo {
+	BIT1			bcc_or_bsic, // L/H
+	uint3_t			bcc optional,
+	uint6_t			bsic optional,
+	BIT1			diff_cell_params_presence, // L/H
+	SI10DiffCellParams	diff_cell_params optional
+} with {
+	variant (bcc_or_bsic) "CSN.1 L/H"
+	variant (bcc) "PRESENCE(bcc_or_bsic = '1'B)"
+	variant (bsic) "PRESENCE(bcc_or_bsic = '0'B)"
+	variant (diff_cell_params_presence) "CSN.1 L/H"
+	variant (diff_cell_params) "PRESENCE(diff_cell_params_presence = '1'B)"
+};
+
+private type record SI10DiffCellParams {
+	BIT1				cell_barred, // L/H
+	SI10FurtherDiffCellInfo		further_diff_cell_info optional
+} with {
+	variant (cell_barred) "CSN.1 L/H"
+	variant (further_diff_cell_info) "PRESENCE(cell_barred = '0'B)"
+};
+
+private type record SI10FurtherDiffCellInfo {
+	BIT1			la_different, // L/H
+	uint3_t			cell_resel_hyst optional,
+	BIT1			ms_txpwr_max_cch_presence, // L/H
+	uint5_t			ms_txpwr_max_cch optional,
+	BIT1			rxlev_access_min_presence, // L/H
+	uint6_t			rxlev_access_min optional,
+	BIT1			cell_resel_offset_presence, // L/H
+	uint6_t			cell_resel_offset optional,
+	BIT1			temp_offset_presence, // L/H
+	uint3_t			temp_offset optional,
+	BIT1			penalty_time_presence, // L/H
+	uint5_t			penalty_time optional
+} with {
+	variant (la_different) "CSN.1 L/H"
+	variant (cell_resel_hyst) "PRESENCE(la_different = '1'B)"
+	variant (ms_txpwr_max_cch_presence) "CSN.1 L/H"
+	variant (ms_txpwr_max_cch) "PRESENCE(ms_txpwr_max_cch_presence = '1'B)"
+	variant (rxlev_access_min_presence) "CSN.1 L/H"
+	variant (rxlev_access_min) "PRESENCE(rxlev_access_min_presence = '1'B)"
+	variant (cell_resel_offset_presence) "CSN.1 L/H"
+	variant (cell_resel_offset) "PRESENCE(cell_resel_offset_presence = '1'B)"
+	variant (temp_offset_presence) "CSN.1 L/H"
+	variant (temp_offset) "PRESENCE(temp_offset_presence = '1'B)"
+	variant (penalty_time_presence) "CSN.1 L/H"
+	variant (penalty_time) "PRESENCE(penalty_time_presence = '1'B)"
+};
+
+
+external function enc_SI2quaterRestOctets(in SI2quaterRestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI2quaterRestOctets(in octetstring stream) return SI2quaterRestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_SI3RestOctets(in SI3RestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI3RestOctets(in octetstring stream) return SI3RestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_SI4RestOctets(in SI4RestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI4RestOctets(in octetstring stream) return SI4RestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_SI6RestOctets(in SI4RestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI6RestOctets(in octetstring stream) return SI6RestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_SI13RestOctets(in SI13RestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI13RestOctets(in octetstring stream) return SI13RestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+external function enc_SI10RestOctets(in SI10RestOctets ro) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_SI10RestOctets(in octetstring stream) return SI10RestOctets
+	with { extension "prototype(convert) decode(RAW)" };
+
+
+/* Basic templates to be extended in place */
+template (value) SI3RestOctets ts_SI3RestOctets := {
+	sel_params := {
+		presence := CSN1_L,
+		params := omit
+	},
+	pwr_offset := {
+		presence := CSN1_L,
+		offset := omit
+	},
+	si_2ter_ind := CSN1_L,
+	early_cm_ind := CSN1_L,
+	sched_where := {
+		presence := CSN1_L,
+		where := omit
+	},
+	gprs_ind := {
+		presence := CSN1_L,
+		ind := omit
+	},
+	umts_early_cm_ind := CSN1_L,
+	si2_quater_ind := {
+		presence := CSN1_L,
+		ind := omit
+	},
+	iu_mode_ind := omit,
+	si21_ind := {
+		presence := CSN1_L,
+		pos := omit
+	}
+}
+
+template (value) SI4RestOctets ts_SI4RestOctets := {
+	sel_params := {
+		presence := CSN1_L,
+		params := omit
+	},
+	pwr_offset := {
+		presence := CSN1_L,
+		offset := omit
+	},
+	gprs_ind := {
+		presence := CSN1_L,
+		ind := omit
+	},
+	s_presence := CSN1_L,
+	s := omit
+}
+
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" }

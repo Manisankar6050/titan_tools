@@ -1,0 +1,923 @@
+/* OsmoS1GW (S1AP Gateway) test suite in TTCN-3
+ *
+ * (C) 2024-2025 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * Author: Vadim Yanitskiy <vyanitskiy@sysmocom.de>
+ *
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module S1GW_Tests {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+import from IPL4asp_Types all;
+import from Misc_Helpers all;
+import from Mutex all;
+
+import from S1AP_CodecPort all;
+import from S1AP_CodecPort_CtrlFunct all;
+import from S1AP_Types all;
+import from S1AP_Templates all;
+import from S1AP_PDU_Descriptions all;
+import from S1AP_IEs all;
+import from S1AP_PDU_Contents all;
+import from S1AP_Constants all;
+
+import from PFCP_Types all;
+import from PFCP_Emulation all;
+import from PFCP_Templates all;
+import from PFCP_CodecPort all;
+
+import from SCTP_Templates all;
+
+import from StatsD_Types all;
+import from StatsD_CodecPort all;
+import from StatsD_CodecPort_CtrlFunct all;
+import from StatsD_Checker all;
+
+import from S1AP_Server all;
+import from S1GW_ConnHdlr all;
+import from S1GW_UEMux all;
+
+modulepar {
+	charstring mp_s1gw_enb_ip := "127.0.1.1";	/* eNB facing address of the S1GW */
+	charstring mp_enb_bind_ip := "127.0.1.10";	/* eNB address to use locally when connecting to S1GW */
+	charstring mp_s1gw_mme_ip := "127.0.2.1";	/* MME facing address of the S1GW */
+	charstring mp_mme_bind_ip := "127.0.2.10";	/* MME address on which we get connections from S1GW */
+	charstring mp_s1gw_upf_ip := "127.0.3.1";	/* UPF facing address of the S1GW */
+	charstring mp_upf_bind_ip := "127.0.3.10";	/* UPF address on which we get connections from S1GW */
+
+	/* Our emulated StatsD server: */
+	charstring mp_local_statsd_ip := "127.0.4.10";
+	integer mp_local_statsd_port := 8125;
+	charstring mp_statsd_prefix := "s1gw.";
+
+	integer mp_multi_enb_num := 42;			/* number of eNBs in _multi TCs */
+	integer mp_multi_ue_num := 128;			/* number of UEs in _multi TCs */
+}
+
+type component test_CT extends StatsD_Checker_CT {
+	timer g_Tguard;
+	var MutexDispCT vc_mutex_disp;
+	var S1AP_Server_CT vc_S1APSRV;
+	var PFCP_Emulation_CT vc_PFCP;
+	var StatsD_Checker_CT vc_STATSD;
+};
+
+private altstep as_Tguard() runs on test_CT {
+	[] g_Tguard.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Tguard timeout");
+	}
+}
+
+function f_init(boolean s1apsrv_start := true,
+		boolean upf_start := true,
+		float Tval := 20.0) runs on test_CT {
+	g_Tguard.start(Tval);
+	activate(as_Tguard());
+
+	vc_mutex_disp := f_MutexDisp_start();
+
+	f_init_statsd("StatsDSRV", vc_STATSD, mp_local_statsd_ip, mp_local_statsd_port);
+
+	if (s1apsrv_start) {
+		f_init_s1ap_srv();
+	}
+	if (upf_start) {
+		f_init_pfcp();
+		f_pfcp_assoc();
+	}
+}
+
+function f_init_s1ap_srv() runs on test_CT {
+	var S1APSRV_ConnParams cpars := {
+		local_ip := mp_mme_bind_ip,
+		local_port := 36412
+	};
+
+	vc_S1APSRV := S1AP_Server_CT.create("S1APSRV-" & testcasename()) alive;
+	vc_S1APSRV.start(S1AP_Server.main(cpars));
+}
+
+function f_init_pfcp() runs on test_CT {
+	var PFCP_Emulation_Cfg pfcp_cfg := {
+		pfcp_bind_ip := mp_upf_bind_ip,
+		pfcp_bind_port := PFCP_PORT,
+		pfcp_remote_ip := mp_s1gw_upf_ip,
+		pfcp_remote_port := PFCP_PORT,
+		role := UPF
+	};
+
+	vc_PFCP := PFCP_Emulation_CT.create("PFCPEM-" & testcasename()) alive;
+	vc_PFCP.start(PFCP_Emulation.main(pfcp_cfg));
+}
+
+/* ensure that the PFCP association is set up */
+function f_pfcp_assoc() runs on test_CT {
+	var verdicttype verdict;
+	var ConnHdlr vc_conn;
+
+	vc_conn := f_ConnHdlr_spawn(refers(f_ConnHdlr_pfcp_assoc_handler),
+				    pars := valueof(t_ConnHdlrPars));
+	vc_conn.done -> value verdict;
+	if (verdict != pass) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+	}
+}
+
+template (value) ConnHdlrPars
+t_ConnHdlrPars(integer idx := 0,
+	       integer num_erabs := 1,
+	       charstring statsd_prefix := mp_statsd_prefix,
+	       charstring pfcp_loc_addr := mp_upf_bind_ip,
+	       charstring pfcp_rem_addr := mp_s1gw_upf_ip) := {
+	idx := idx,
+	genb_id := ts_Global_ENB_ID(idx),
+	statsd_prefix := statsd_prefix,
+	pfcp_loc_addr := pfcp_loc_addr,
+	pfcp_rem_addr := pfcp_rem_addr,
+	mme_ue_id := 4242,
+	erabs := f_gen_erab_list(idx, num_erabs)
+}
+
+private function f_gen_erab_list(integer idx, integer num_erabs)
+return ERabList {
+	var OCT6 seid_prefix := char2oct("TTCN-3");
+	var ERabList erabs;
+
+	for (var integer id := 0; id < num_erabs; id := id + 1) {
+		var OCT2 uid := int2oct(idx, 1) & int2oct(id, 1);
+
+		erabs[id] := {
+			erab_id := id, /* sequentially assign E-RAB IDs */
+			u2c := {'0001'O & uid, "127.0.0.1"},
+			c2u := {'0101'O & uid, "127.0.1.1"},
+			a2u := {'0202'O & uid, "127.0.2.2"},
+			u2a := {'0002'O & uid, "127.0.0.2"},
+			u2cm := {'0011'O & uid, "127.127.0.1"},
+			u2am := {'0022'O & uid, "127.127.0.2"},
+			pfcp_loc_seid := seid_prefix & uid,
+			pfcp_rem_seid := omit /* assigned by S1GW */
+		};
+	}
+
+	return erabs;
+}
+
+function f_ConnHdlr_connect(ConnHdlr vc_conn)
+runs on test_CT {
+	if (isbound(vc_STATSD) and vc_STATSD.running) {
+		connect(vc_conn:STATSD_PROC, vc_STATSD:STATSD_PROC);
+	}
+	if (isbound(vc_S1APSRV) and vc_S1APSRV.running) {
+		connect(vc_conn:S1AP_CONN, vc_S1APSRV:S1AP_CLIENT);
+		connect(vc_conn:S1AP_PROC, vc_S1APSRV:S1AP_PROC);
+	}
+	if (isbound(vc_PFCP) and vc_PFCP.running) {
+		connect(vc_conn:PFCP, vc_PFCP:CLIENT);
+		connect(vc_conn:PFCP_PROC, vc_PFCP:CLIENT_PROC);
+	}
+	f_MutexDisp_connect(vc_mutex_disp, vc_conn);
+}
+
+function f_ConnHdlr_spawn(void_fn fn, ConnHdlrPars pars)
+runs on test_CT return ConnHdlr {
+	var ConnHdlr vc_conn;
+	var charstring id := "ConnHdlr-" & testcasename() & "-" & int2str(pars.idx);
+
+	vc_conn := ConnHdlr.create(id) alive;
+	f_ConnHdlr_connect(vc_conn);
+	vc_conn.start(f_ConnHdlr_init(fn, id, pars));
+
+	return vc_conn;
+}
+
+function f_UEMux_spawn(void_fn2 fn, ConnHdlrPars pars)
+runs on test_CT return UEMux_CT {
+	var UEMux_CT vc_conn;
+	var charstring id := "UEMux-" & testcasename() & "-" & int2str(pars.idx);
+
+	vc_conn := UEMux_CT.create(id) alive;
+	f_ConnHdlr_connect(vc_conn);
+	vc_conn.start(f_UEMux_init(fn, id, pars));
+
+	return vc_conn;
+}
+
+function f_TC_UEMux_main(charstring id) runs on UEMux_CT {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	S1GW_UEMux.main();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+
+function f_UEMuxUE_create(in UEMux_CT vc_uemux,
+			  in ConnHdlrPars pars,
+			  MME_UE_S1AP_ID mme_ue_id,
+			  ENB_UE_S1AP_ID enb_ue_id)
+runs on test_CT return UEMuxUE {
+	var charstring id := "UEMuxUE-" & testcasename();
+	var UEMuxUE vc_ue;
+
+	vc_ue := UEMuxUE.create(id) alive;
+	connect(vc_ue:UEMUX_CONN, vc_uemux:UEMUX_CONN);
+	connect(vc_ue:UEMUX_PROC, vc_uemux:UEMUX_PROC);
+
+	/* pre-initialize the component */
+	vc_ue.start(f_UEMuxUE_init(pars, mme_ue_id, enb_ue_id));
+	vc_ue.done;
+
+	return vc_ue;
+}
+
+function f_UEMuxUE_init(in ConnHdlrPars pars,
+			MME_UE_S1AP_ID mme_ue_id,
+			ENB_UE_S1AP_ID enb_ue_id)
+runs on UEMuxUE {
+	g_mme_ue_id := mme_ue_id;
+	g_enb_ue_id := enb_ue_id;
+
+	g_ies.tai := {
+		pLMNidentity := pars.genb_id.pLMNidentity,
+		tAC := int2oct(12345, 2), /* XXX: hard-coded */
+		iE_Extensions := omit
+	};
+	g_ies.eutran_cgi := {
+		pLMNidentity := pars.genb_id.pLMNidentity,
+		cell_ID := int2bit(pars.idx, 28),
+		iE_Extensions := omit
+	};
+}
+
+/* wait for all ConnHdlr in the given list to be .done() */
+function f_ConnHdlrList_all_done(in ConnHdlrList vc_conns)
+runs on test_CT {
+	for (var integer i := 0; i < lengthof(vc_conns); i := i + 1) {
+		vc_conns[i].done;
+	}
+}
+
+/* wait for all UEMux_CT in the given list to be .done() */
+function f_UEMuxUEList_all_done(in UEMuxUEList vc_ues)
+runs on test_CT {
+	for (var integer i := 0; i < lengthof(vc_ues); i := i + 1) {
+		vc_ues[i].done;
+	}
+}
+
+function f_TC_exec(void_fn fn,
+		   integer num_enbs := 1,
+		   integer num_erabs := 1)
+runs on test_CT {
+	var ConnHdlrList vc_conns;
+
+	f_init();
+
+	for (var integer i := 0; i < num_enbs; i := i + 1) {
+		var ConnHdlrPars pars := valueof(t_ConnHdlrPars(i, num_erabs));
+		vc_conns[i] := f_ConnHdlr_spawn(fn, pars);
+	}
+
+	f_ConnHdlrList_all_done(vc_conns);
+}
+
+function f_TC_setup(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+
+	/* Expected values relative to snapshot: */
+	var StatsDExpects statsd_exp := {
+		{name := mp_statsd_prefix & "gauge.s1ap.enb.num_sctp_connections.value", mtype := "g", min := 1, max := 1},
+		{name := mp_statsd_prefix & "ctr.s1ap.proxy.out_pkt.forward.unmodified.value", mtype := "c", min := 2, max := 2}
+	}
+	var StatsDMetrics statsd_snapshot := f_statsd_snapshot(f_statsd_keys_from_expect(statsd_exp));
+
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+	f_sleep(0.5); /* keep the connection idle for some time */
+
+	f_statsd_expect_from_snapshot(statsd_exp, wait_converge := true, snapshot := statsd_snapshot);
+
+	f_ConnHdlr_s1ap_disconnect();
+
+	/* Validate gauge decreases when we disconnect: */
+	f_statsd_expect({{name := mp_statsd_prefix & "gauge.s1ap.enb.num_sctp_connections.value", mtype := "g", min := 0, max := 0}},
+			wait_converge := true);
+
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_setup() runs on test_CT {
+	f_TC_exec(refers(f_TC_setup));
+}
+
+function f_TC_setup_multi(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+	f_sleep(0.5); /* keep the connection idle for some time */
+
+	f_ConnHdlr_s1ap_disconnect();
+
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_setup_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_setup_multi), mp_multi_enb_num);
+}
+
+
+/* MME terminates connection, expect S1GW to terminate the eNB connection */
+function f_TC_conn_term_by_mme(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+	f_sleep(0.5); /* keep the connection idle for some time */
+
+	/* MME (S1AP_Server_CT) terminates connection */
+	f_ConnHdlr_s1ap_close_conn(g_pars.genb_id);
+	/* expect our eNB connection to be released gracefully */
+	f_ConnHdlr_s1ap_expect_shutdown();
+
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_conn_term_by_mme() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars);
+	var ConnHdlr vc_conn;
+
+	f_init();
+
+	vc_conn := f_ConnHdlr_spawn(refers(f_TC_conn_term_by_mme), pars);
+	vc_conn.done;
+}
+
+
+/* MME is not available, expect S1GW to terminate the eNB connection */
+function f_TC_conn_term_mme_unavail(charstring id) runs on ConnHdlr {
+	/* establish an eNB connection to the S1GW */
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	/* expect our eNB connection to be released gracefully */
+	f_ConnHdlr_s1ap_expect_shutdown();
+	setverdict(pass);
+}
+testcase TC_conn_term_mme_unavail() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars);
+	var ConnHdlr vc_conn;
+
+	f_init(s1apsrv_start := false);
+
+	vc_conn := f_ConnHdlr_spawn(refers(f_TC_conn_term_mme_unavail), pars);
+	vc_conn.done;
+}
+
+/* Test E-RAB SETUP and RELEASE.cmd procedures */
+function f_TC_e_rab_setup(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_erab_setup_req_();
+	f_ConnHdlr_erab_setup_rsp_();
+	f_ConnHdlr_erab_release_cmd_();
+	f_ConnHdlr_erab_release_rsp_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+/* 1 E-RAB at a time, single eNB */
+testcase TC_e_rab_setup() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_setup));
+}
+/* 1 E-RAB at a time, multiple eNB connections */
+testcase TC_e_rab_setup_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_setup), mp_multi_enb_num);
+}
+/* 3 E-RABs at a time, single eNB */
+testcase TC_e_rab_setup3() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_setup), 1, 3);
+}
+/* 3 E-RABs at a time, multiple eNB connections */
+testcase TC_e_rab_setup3_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_setup), mp_multi_enb_num, 3);
+}
+
+/* Test E-RAB SETUP and RELEASE.ind procedures */
+function f_TC_e_rab_release_ind(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_erab_setup_req_();
+	f_ConnHdlr_erab_setup_rsp_();
+	f_ConnHdlr_erab_release_ind_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_e_rab_release_ind() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_release_ind));
+}
+
+/* Test E-RAB SETUP procedure being aborted by the S1GW due to
+ * PFCP Session Establishment failure (cause=REQUEST_REJECTED). */
+function f_TC_e_rab_setup_failure(charstring id) runs on ConnHdlr {
+	var OCT4 addr := f_inet_addr(g_pars.pfcp_loc_addr);
+	var ERab erab := g_pars.erabs[0];
+
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	/* see comments in f_ConnHdlr_erab_setup_req() */
+	f_PFCPEM_subscribe_seid('0000000000000000'O);
+	f_PFCPEM_subscribe_seid(erab.pfcp_loc_seid);
+
+	log("eNB <- [S1GW <- MME]: E-RAB SETUP REQUEST");
+	f_ConnHdlr_tx_erab_setup_req({erab}, g_pars.mme_ue_id, g_pars.idx);
+	log("UPF <- S1GW: PFCP Session Establishment Request");
+	var PDU_PFCP req := f_ConnHdlr_rx_session_establish_req(erab);
+	/* store peer's SEID, so that it can be used in outgoing PDUs later */
+	erab.pfcp_rem_seid := req.message_body.pfcp_session_establishment_request.CP_F_SEID.seid;
+
+	log("UPF -> S1GW: PFCP Session Establishment Response (failure)");
+	var template (value) PDU_PFCP resp;
+	resp := ts_PFCP_Session_Est_Resp(seq_nr := req.sequence_number,
+					 node_id := ts_PFCP_Node_ID_ipv4(addr),
+					 seid := erab.pfcp_rem_seid,
+					 f_seid := ts_PFCP_F_SEID_ipv4(addr, erab.pfcp_loc_seid),
+					 created_pdr := {},
+					 cause := ts_PFCP_Cause(REQUEST_REJECTED));
+	PFCP.send(resp);
+
+	/* see comments in f_ConnHdlr_erab_setup_req() */
+	f_PFCPEM_unsubscribe_seid('0000000000000000'O);
+	f_PFCPEM_unsubscribe_seid(erab.pfcp_loc_seid);
+
+	/* expect E-RAB SETUP RESPONSE replied by the S1GW */
+	var template (present) S1AP_PDU setup_rsp;
+	var template (present) E_RABItem item;
+	var S1AP_PDU s1ap_pdu;
+
+	log("eNB -- [S1GW -> MME]: E-RAB SETUP RESPONSE (failure)");
+	item := tr_E_RABItem(erab.erab_id, {transport := transport_resource_unavailable});
+	setup_rsp := tr_S1AP_RABSetupRsp(g_pars.mme_ue_id, g_pars.idx,
+					 rab_setup_items := omit,
+					 rab_failed_items := tr_E_RABList(item));
+	f_ConnHdlr_rx_s1ap_from_enb(s1ap_pdu);
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_e_rab_setup_failure() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_setup_failure));
+}
+
+/* Test E-RAB MODIFY Req/Rsp procedure */
+function f_TC_e_rab_modify_req_rsp(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_erab_setup_req_();
+	f_ConnHdlr_erab_setup_rsp_();
+
+	/* MME orders eNB to modify all 4 E-RABs */
+	f_ConnHdlr_erab_modify_req(g_pars.erabs);
+	/* eNB modifies E-RABs 1 and 3, but not E-RAB 0 and 2 */
+	f_ConnHdlr_erab_modify_rsp(erabs_modified := {1, 3},
+				   erabs_failed := {0, 2});
+
+	f_ConnHdlr_erab_release_cmd_();
+	f_ConnHdlr_erab_release_rsp_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+/* 4 E-RABs at a time, single eNB */
+testcase TC_e_rab_modify_req_rsp() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_modify_req_rsp), 1, 4);
+}
+/* 4 E-RABs at a time, multiple eNB connections */
+testcase TC_e_rab_modify_req_rsp_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_modify_req_rsp), mp_multi_enb_num, 4);
+}
+
+/* Test E-RAB MODIFICATION Ind/Cnf procedure */
+function f_TC_e_rab_modify_ind_cnf(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_erab_setup_req_();
+	f_ConnHdlr_erab_setup_rsp_();
+
+	/* eNB wants to modify all E-RABs but E-RAB 4 */
+	f_ConnHdlr_erab_modify_ind(erabs_modified := {0, 1, 2, 3},
+				   erabs_not_modified := {4});
+	/* MME modifies E-RABs 1 and 3, but not E-RAB 0 and 2 */
+	f_ConnHdlr_erab_modify_cnf(erabs_modified := {1, 3},
+				   erabs_not_modified := {0, 2});
+
+	/* For the sake of fun, test forwarding of an empty confirmation,
+	 * which is expected to be forwarded unmodified */
+	f_ConnHdlr_erab_modify_cnf();
+
+	f_ConnHdlr_erab_release_cmd_();
+	f_ConnHdlr_erab_release_rsp_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+/* 5 E-RABs at a time, single eNB */
+testcase TC_e_rab_modify_ind_cnf() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_modify_ind_cnf), 1, 5);
+}
+/* 5 E-RABs at a time, multiple eNB connections */
+testcase TC_e_rab_modify_ind_cnf_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_e_rab_modify_ind_cnf), mp_multi_enb_num, 5);
+}
+
+/* Test INITIAL CONTEXT SETUP procedure (successful case) */
+function f_TC_initial_ctx_setup(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_initial_ctx_setup_req_();
+	f_ConnHdlr_initial_ctx_setup_rsp_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+/* 1 E-RAB at a time, single eNB */
+testcase TC_initial_ctx_setup() runs on test_CT {
+	f_TC_exec(refers(f_TC_initial_ctx_setup));
+}
+/* 1 E-RAB at a time, multiple eNB connections */
+testcase TC_initial_ctx_setup_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_initial_ctx_setup), mp_multi_enb_num);
+}
+/* 3 E-RABs at a time, single eNB */
+testcase TC_initial_ctx_setup3() runs on test_CT {
+	f_TC_exec(refers(f_TC_initial_ctx_setup), 1, 3);
+}
+/* 3 E-RABs at a time, multiple eNB connections */
+testcase TC_initial_ctx_setup3_multi() runs on test_CT {
+	f_TC_exec(refers(f_TC_initial_ctx_setup), mp_multi_enb_num, 3);
+}
+
+/* Test INITIAL CONTEXT SETUP procedure (failure) */
+function f_TC_initial_ctx_setup_failure(charstring id) runs on ConnHdlr {
+	var template (present) PDU_PFCP pfcp_pdu;
+	var template (value) S1AP_PDU s1ap_pdu;
+	var S1AP_PDU unused;
+
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	/* Initiate E-RAB establishment by sending INITIAL CONTEXT SETUP */
+	f_ConnHdlr_initial_ctx_setup_req_();
+	/* At this point, the associated PFCP session is created, but not modified yet.
+	 * The E-RAB FSM in the IUT is waiting for INITIAL CONTEXT SETUP RESPONSE. */
+
+	/* INITIAL CONTEXT SETUP FAILURE does not immediately trigger deletion of PFCP
+	 * sessions.  It's forwarded as-is without any action. */
+	s1ap_pdu := ts_S1AP_InitialCtxSetupFail(mme_id := g_pars.mme_ue_id,
+						enb_id := g_pars.idx,
+						cause := { misc := unspecified });
+	f_ConnHdlr_tx_s1ap_from_enb(s1ap_pdu);
+	f_ConnHdlr_rx_s1ap_from_enb(unused, s1ap_pdu);
+
+	/* TODO: Ideally, the IUT should terminate PFCP session(s) immediately. */
+
+	/* E-RAB FSM in the IUT terminates due to a timeout and deletes PFCP session. */
+	pfcp_pdu := tr_PFCP_Session_Del_Req(g_pars.erabs[0].pfcp_loc_seid);
+	f_ConnHdlr_pfcp_expect(pfcp_pdu, Tval := 8.0); /* > ERAB_T_WAIT_RELEASE_RSP */
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_initial_ctx_setup_failure() runs on test_CT {
+	f_TC_exec(refers(f_TC_initial_ctx_setup_failure));
+}
+
+/* Test UE CONTEXT RELEASE REQUEST procedure (eNB initiated) */
+function f_TC_ue_ctx_release_req(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_initial_ctx_setup_req_();
+	f_ConnHdlr_initial_ctx_setup_rsp_();
+	f_ConnHdlr_ue_ctx_release_req_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_ue_ctx_release_req() runs on test_CT {
+	f_TC_exec(refers(f_TC_ue_ctx_release_req), num_erabs := 1);
+}
+testcase TC_ue_ctx_release_req3() runs on test_CT {
+	f_TC_exec(refers(f_TC_ue_ctx_release_req), num_erabs := 3);
+}
+
+/* Test UE CONTEXT RELEASE COMMAND/COMPLETE procedure (MME initiated) */
+function f_TC_ue_ctx_release_cmd_compl(charstring id) runs on ConnHdlr {
+	f_ConnHdlr_s1ap_register(g_pars.genb_id);
+	f_ConnHdlr_s1ap_connect(mp_enb_bind_ip, mp_s1gw_enb_ip);
+	f_ConnHdlr_s1ap_setup(g_pars.genb_id);
+
+	f_ConnHdlr_initial_ctx_setup_req_();
+	f_ConnHdlr_initial_ctx_setup_rsp_();
+
+	f_ConnHdlr_ue_ctx_release_cmd_();
+	f_ConnHdlr_ue_ctx_release_compl_();
+
+	f_ConnHdlr_s1ap_disconnect();
+	f_ConnHdlr_s1ap_unregister(g_pars.genb_id);
+}
+testcase TC_ue_ctx_release_cmd_compl() runs on test_CT {
+	f_TC_exec(refers(f_TC_ue_ctx_release_cmd_compl), num_erabs := 1);
+}
+testcase TC_ue_ctx_release_cmd_compl3() runs on test_CT {
+	f_TC_exec(refers(f_TC_ue_ctx_release_cmd_compl), num_erabs := 3);
+}
+
+/* Test multiple UEs concurrently doing the following:
+ *   eNB -> MME: INITIAL UE MESSAGE
+ *   eNB <- MME: DOWNLINK NAS TRANSPORT
+ *   eNB -> MME: UPLINK NAS TRANSPORT
+ *   eNB <- MME: DOWNLINK NAS TRANSPORT
+ *   eNB <- MME: UE CONTEXT RELEASE COMMAND
+ *   eNB -> MME: UE CONTEXT RELEASE COMPLETE
+ * All S1AP PDUs are expected to be forwarded as-is. */
+function f_TC_uemux_uldl_nas_release()
+runs on UEMuxUE {
+	var template (value) S1AP_PDU pdu;
+	var float Tval := 5.0;
+
+	f_UEMuxUE_subscribe_for_mme_ue_id(g_mme_ue_id);
+	f_UEMuxUE_subscribe_for_enb_ue_id(g_enb_ue_id);
+
+	/* eNB -> MME: INITIAL UE MESSAGE */
+	pdu := ts_S1AP_InitialUE(g_enb_ue_id, ''O, g_ies.tai, g_ies.eutran_cgi, mo_Signalling);
+	f_UEMuxUE_trx_s1ap_from_enb(pdu, pdu, Tval);
+	/* eNB <- MME: DOWNLINK NAS TRANSPORT */
+	pdu := ts_S1AP_DlNasTransport(g_mme_ue_id, g_enb_ue_id, ''O);
+	f_UEMuxUE_trx_s1ap_from_mme(pdu, pdu, Tval);
+	/* eNB -> MME: UPLINK NAS TRANSPORT */
+	pdu := ts_S1AP_UlNasTransport(g_mme_ue_id, g_enb_ue_id, ''O, g_ies.eutran_cgi, g_ies.tai);
+	f_UEMuxUE_trx_s1ap_from_enb(pdu, pdu, Tval);
+	/* eNB <- MME: DOWNLINK NAS TRANSPORT */
+	pdu := ts_S1AP_DlNasTransport(g_mme_ue_id, g_enb_ue_id, ''O);
+	f_UEMuxUE_trx_s1ap_from_mme(pdu, pdu, Tval);
+
+	var UE_S1AP_IDs ue_ids := {
+		uE_S1AP_ID_pair := {
+			mME_UE_S1AP_ID := g_mme_ue_id,
+			eNB_UE_S1AP_ID := g_enb_ue_id,
+			iE_Extensions := omit
+		}
+	};
+
+	/* eNB <- MME: UE CONTEXT RELEASE COMMAND */
+	pdu := ts_S1AP_UeContextReleaseCmd(mme_ids := ue_ids,
+					   cause := {nas := normal_release});
+	f_UEMuxUE_trx_s1ap_from_mme(pdu, pdu, Tval);
+	/* eNB -> MME: UE CONTEXT RELEASE COMPLETE */
+	pdu := ts_S1AP_UeContextReleaseCompl(g_mme_ue_id, g_enb_ue_id);
+	f_UEMuxUE_trx_s1ap_from_enb(pdu, pdu, Tval);
+
+	f_UEMuxUE_unsubscribe();
+}
+testcase TC_uemux_uldl_nas_release() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars);
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_uldl_nas_release());
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+
+function f_TC_uemux_e_rab_setup_release(in ERabList erabs,
+					boolean release_cmd := false,
+					boolean release_ind := false)
+runs on UEMuxUE {
+	f_UEMuxUE_subscribe_for_mme_ue_id(g_mme_ue_id);
+	f_UEMuxUE_subscribe_for_enb_ue_id(g_enb_ue_id);
+
+	f_rnd_sleep(0.5);
+	f_UEMux_erab_setup(erabs);
+
+	if (release_cmd) {
+		f_rnd_sleep(0.5);
+		f_UEMux_erab_release_cmd(erabs);
+	}
+	if (release_ind) {
+		f_rnd_sleep(0.5);
+		f_UEMux_erab_release_ind(erabs);
+	}
+
+	f_UEMuxUE_unsubscribe();
+}
+testcase TC_uemux_e_rab_setup() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_e_rab_setup_release(erabs));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+testcase TC_uemux_e_rab_release_cmd() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_e_rab_setup_release(erabs, release_cmd := true));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+testcase TC_uemux_e_rab_release_ind() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_e_rab_setup_release(erabs, release_ind := false));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+
+function f_TC_uemux_initial_ctx_setup_release(in ERabList erabs,
+					      boolean release_req := false,
+					      boolean release_cmd := false)
+runs on UEMuxUE {
+	f_UEMuxUE_subscribe_for_mme_ue_id(g_mme_ue_id);
+	f_UEMuxUE_subscribe_for_enb_ue_id(g_enb_ue_id);
+
+	f_rnd_sleep(0.5);
+	f_UEMux_initial_ctx_setup(erabs);
+
+	if (release_req) {
+		f_rnd_sleep(0.5);
+		f_UEMux_ue_ctx_release_req(erabs);
+	}
+	if (release_cmd) {
+		f_rnd_sleep(0.5);
+		f_UEMux_ue_ctx_release_cmd(erabs);
+	}
+
+	f_UEMuxUE_unsubscribe();
+}
+testcase TC_uemux_initial_ctx_setup() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_initial_ctx_setup_release(erabs));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+testcase TC_uemux_ue_ctx_release_req() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_initial_ctx_setup_release(erabs, release_req := true));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+testcase TC_uemux_ue_ctx_release_cmd() runs on test_CT {
+	var ConnHdlrPars pars := valueof(t_ConnHdlrPars(num_erabs := mp_multi_ue_num));
+	var UEMuxUEList vc_ues;
+	var UEMux_CT vc_uemux;
+
+	f_init();
+
+	vc_uemux := f_UEMux_spawn(refers(f_TC_UEMux_main), pars);
+
+	for (var integer i := 0; i < mp_multi_ue_num; i := i + 1) {
+		var ERabList erabs := { pars.erabs[i] };
+
+		vc_ues[i] := f_UEMuxUE_create(vc_uemux, pars, i, i);
+		vc_ues[i].start(f_TC_uemux_initial_ctx_setup_release(erabs, release_cmd := true));
+	}
+
+	f_UEMuxUEList_all_done(vc_ues);
+}
+
+function f_TC_pfcp_heartbeat(charstring id) runs on ConnHdlr {
+	var integer rts := f_PFCPEM_get_recovery_timestamp();
+	var PDU_PFCP pfcp_pdu;
+
+	/* Tx Heartbeat Request */
+	PFCP.send(ts_PFCP_Heartbeat_Req(rts));
+
+	/* Expect Heartbeat Response
+	 * TODO: validate the indicated Recovery Time Stamp against
+	 * the one that we received in the PFCP Association Setup. */
+	pfcp_pdu := f_ConnHdlr_pfcp_expect(tr_PFCP_Heartbeat_Resp);
+	setverdict(pass);
+}
+testcase TC_pfcp_heartbeat() runs on test_CT {
+	f_TC_exec(refers(f_TC_pfcp_heartbeat));
+}
+
+control {
+	execute( TC_setup() );
+	execute( TC_setup_multi() );
+	execute( TC_conn_term_by_mme() );
+	execute( TC_conn_term_mme_unavail() );
+	execute( TC_e_rab_setup() );
+	execute( TC_e_rab_setup3() );
+	execute( TC_e_rab_setup_multi() );
+	execute( TC_e_rab_setup3_multi() );
+	execute( TC_e_rab_release_ind() );
+	execute( TC_e_rab_setup_failure() );
+	execute( TC_e_rab_modify_req_rsp() );
+	execute( TC_e_rab_modify_req_rsp_multi() );
+	execute( TC_e_rab_modify_ind_cnf() );
+	execute( TC_e_rab_modify_ind_cnf_multi() );
+	execute( TC_initial_ctx_setup() );
+	execute( TC_initial_ctx_setup3() );
+	execute( TC_initial_ctx_setup_multi() );
+	execute( TC_initial_ctx_setup3_multi() );
+	execute( TC_initial_ctx_setup_failure() );
+	execute( TC_ue_ctx_release_req() );
+	execute( TC_ue_ctx_release_req3() );
+	execute( TC_ue_ctx_release_cmd_compl() );
+	execute( TC_ue_ctx_release_cmd_compl3() );
+	execute( TC_uemux_uldl_nas_release() );
+	execute( TC_uemux_e_rab_setup() );
+	execute( TC_uemux_e_rab_release_cmd() );
+	execute( TC_uemux_e_rab_release_ind() );
+	execute( TC_uemux_initial_ctx_setup() );
+	execute( TC_uemux_ue_ctx_release_req() );
+	execute( TC_uemux_ue_ctx_release_cmd() );
+	execute( TC_pfcp_heartbeat() );
+}
+
+}

@@ -1,0 +1,1895 @@
+module SIP_Templates {
+
+import from SIPmsg_Types all;
+import from TCCConversion_Functions all;
+import from TCCOpenSecurity_Functions all;
+import from TCCDateTime_Functions all;
+import from Native_Functions all;
+import from Osmocom_Types all;
+import from Misc_Helpers all;
+
+/* wrapper type to encapsulate the Addr_Union + parameter list used in From, To. ... */
+type record SipAddr {
+	Addr_Union 		addr,
+	SemicolonParam_List	params optional
+}
+
+const charstring c_SIP_VERSION := "SIP/2.0";
+
+template (value) GenericParam ts_Param(template (value) charstring id,
+				       template (omit) charstring paramValue := omit) := {
+	id := id,
+	paramValue := paramValue
+}
+template (present) GenericParam tr_Param(template (present) charstring id := ?,
+					 template charstring paramValue := *) := {
+	id := id,
+	paramValue := paramValue
+}
+function f_ts_Param_omit(template (value) charstring id,
+			 template (omit) charstring paramValue := omit)
+	return template (omit) GenericParam
+{
+	if (istemplatekind(paramValue, "omit")) {
+		return omit;
+	}
+	return ts_Param(id, paramValue);
+}
+
+template (value) SipUrl ts_SipUrl(template (value) HostPort host_port,
+				  template (omit) UserInfo user_info := omit,
+				  template (value) charstring scheme := "sip") := {
+	scheme := scheme,
+	userInfo := user_info,
+	hostPort := host_port,
+	urlParameters := omit,
+	headers := omit
+}
+template (present) SipUrl tr_SipUrl(template (present) HostPort host_port := ?,
+				    template UserInfo user_info := *,
+				    template (present) charstring scheme := "sip") := {
+	scheme := scheme,
+	userInfo := user_info,
+	hostPort := host_port,
+	urlParameters := *,
+	headers := *
+}
+
+template (value) SipUrl ts_SipUrlHost(template (value) charstring host,
+				      template (omit) integer portField := omit,
+				      template (value) charstring scheme := "sip")
+	:= ts_SipUrl(ts_HostPort(host, portField), scheme := scheme);
+
+function ts_SipUrl_from_Addr_Union(template (value) Addr_Union au)
+return template (value) SipUrl {
+	if (ischosen(au.nameAddr)) {
+		return au.nameAddr.addrSpec;
+	} else { /* au.addrSpecUnion */
+		return au.addrSpecUnion;
+	}
+}
+
+// [20.1, RFC2616 14.1]
+template (present) AcceptBody tr_AcceptBody(template (present) charstring mediaRange,
+					    template SemicolonParam_List acceptParam := *) := {
+	mediaRange := mediaRange,
+	acceptParam := acceptParam
+}
+template (value) AcceptBody ts_AcceptBody(template (value) charstring mediaRange,
+					  template (omit) SemicolonParam_List acceptParam := omit) := {
+	mediaRange := mediaRange,
+	acceptParam := acceptParam
+}
+template (present) Accept tr_Accept(template AcceptBody_List acceptArgs := *) := {
+	fieldName := ACCEPT_E,
+	acceptArgs := acceptArgs
+}
+template (value) Accept ts_Accept(template (omit) AcceptBody_List acceptArgs := omit) := {
+	fieldName := ACCEPT_E,
+	acceptArgs := acceptArgs
+}
+
+// [20.5]
+template (present) Allow tr_Allow(template Method_List methods := *) := {
+	fieldName := ALLOW_E,
+	methods := methods
+}
+template (value) Allow ts_Allow(template (omit) Method_List methods := omit) := {
+	fieldName := ALLOW_E,
+	methods := methods
+}
+
+template (present) Credentials tr_Credentials_DigestResponse(template (present) CommaParam_List digestResponse) := {
+	digestResponse := digestResponse
+}
+template (value) Credentials ts_Credentials_DigestResponse(template (value) CommaParam_List digestResponse) := {
+	digestResponse := digestResponse
+}
+
+template (value) Credentials ts_Credentials_DigestResponseMD5(
+			template (value) charstring username,
+			template (value) charstring realm,
+			template (value) charstring nonce,
+			template (value) charstring uri,
+			template (value) charstring response,
+			template (value) charstring opaque,
+			template (value) charstring algorithm := "MD5",
+			template (value) charstring qop := "auth",
+			template (omit) charstring cnonce := omit,
+			template (omit) charstring nc := omit
+			) := {
+	digestResponse := {
+		// Already added by digestResponse automatically:
+		//ts_Param("Digest", omit),
+		ts_Param("username", f_sip_str_quote(username)),
+		ts_Param("realm", f_sip_str_quote(realm)),
+		ts_Param("nonce", f_sip_str_quote(nonce)),
+		ts_Param("uri", f_sip_str_quote(uri)),
+		ts_Param("response", f_sip_str_quote(response)),
+		ts_Param("opaque", f_sip_str_quote(opaque)),
+		ts_Param("algorithm", algorithm),
+		ts_Param("qop", qop),
+		// FIXME: If "omit" is passed, these below end up in;
+		// "Dynamic test case error: Performing a valueof or send operation on a non-specific template of type @SIPmsg_Types.GenericParam"
+		f_ts_Param_omit("cnonce", f_sip_str_quote(cnonce)),
+		f_ts_Param_omit("nc", nc)
+	}
+}
+
+template (value) Credentials ts_Credentials_OtherAuth(template (value) OtherAuth otherResponse) := {
+	otherResponse := otherResponse
+}
+
+template (present) Authorization tr_Authorization(template (present) Credentials body) := {
+	fieldName := AUTHORIZATION_E,
+	body := body
+}
+template (value) Authorization ts_Authorization(template (value) Credentials body) := {
+	fieldName := AUTHORIZATION_E,
+	body := body
+}
+
+// [20.10]
+template (present) NameAddr tr_NameAddr(template (present) SipUrl addrSpec := ?,
+				      template charstring displayName := *) := {
+	displayName := displayName,
+	addrSpec := addrSpec
+}
+template (value) NameAddr ts_NameAddr(template (value) SipUrl addrSpec,
+				      template (omit) charstring displayName := omit) := {
+	displayName := displayName,
+	addrSpec := addrSpec
+}
+
+template (present) Addr_Union tr_Addr_Union_NameAddr(template (present) NameAddr nameAddr := ?) := {
+	nameAddr := nameAddr
+}
+template (value) Addr_Union ts_Addr_Union_NameAddr(template (value) NameAddr nameAddr) := {
+	nameAddr := nameAddr
+}
+
+template (present) Addr_Union tr_Addr_Union_SipUrl(template (present) SipUrl sipUrl := ?) := {
+	addrSpecUnion := sipUrl
+}
+template (value) Addr_Union ts_Addr_Union_SipUrl(template (value) SipUrl sipUrl) := {
+	addrSpecUnion := sipUrl
+}
+
+
+template (present) ContactAddress tr_ContactAddress(template (present) Addr_Union addressField := ?,
+						  template SemicolonParam_List contactParams := *) := {
+	addressField := addressField,
+	contactParams := contactParams
+}
+template (value) ContactAddress ts_ContactAddress(template (value) Addr_Union addressField,
+						  template (omit) SemicolonParam_List contactParams := omit) := {
+	addressField := addressField,
+	contactParams := contactParams
+}
+
+template (present) Contact tr_Contact(template (present) ContactAddress_List contactAddresses := ?) := {
+	fieldName := CONTACT_E,
+	contactBody := {
+		contactAddresses := contactAddresses
+	}
+}
+template (value) Contact ts_Contact(template (value) ContactAddress_List contactAddresses) := {
+	fieldName := CONTACT_E,
+	contactBody := {
+		contactAddresses := contactAddresses
+	}
+}
+
+template (value) Contact ts_ContactWildcard := {
+	fieldName := CONTACT_E,
+	contactBody := {
+		wildcard := "*"
+	}
+}
+
+template (present) Contact tr_Contact_SipAddr(template (present) SipAddr contact_addr := ?)
+	:= tr_Contact({ tr_ContactAddress(contact_addr.addr, contact_addr.params) });
+
+private function f_tr_Contact_SipAddr(template SipAddr contact_addr) return template Contact
+{
+	if (istemplatekind(contact_addr, "omit")) {
+		return omit;
+	} else if (istemplatekind(contact_addr, "*")) {
+		return *;
+	}
+	return tr_Contact_SipAddr(contact_addr);
+}
+
+template (value) Contact ts_Contact_SipAddr(template (value) SipAddr contact_addr)
+	:= ts_Contact({ ts_ContactAddress(contact_addr.addr, contact_addr.params) });
+private function ts_Contact_SipAddr_omit(template (omit) SipAddr contact_addr := omit) return template (omit) Contact
+{
+	if (istemplatekind(contact_addr, "omit")) {
+		return omit;
+	}
+	return ts_Contact_SipAddr(contact_addr);
+}
+
+
+// [20.14]
+template (value) ContentLength ts_ContentLength(template (value) integer len := 0) := {
+	fieldName := CONTENT_LENGTH_E,
+	len := len
+}
+template (present) ContentLength tr_ContentLength(template (present) integer len := ?) := {
+	fieldName := CONTENT_LENGTH_E,
+	len := len
+}
+
+// [20.19]
+template (value) Expires ts_Expires(template (value) DeltaSec deltaSec := "7200") := {
+	fieldName := EXPIRES_E,
+	deltaSec := deltaSec
+}
+template (present) Expires tr_Expires(template (present) DeltaSec deltaSec := ?) := {
+	fieldName := EXPIRES_E,
+	deltaSec := deltaSec
+}
+
+// [20.20]
+template (value) From ts_From(template (value) Addr_Union addressField,
+			      template (omit) SemicolonParam_List fromParams := omit) := {
+	fieldName := FROM_E,
+	addressField := addressField,
+	fromParams := fromParams
+}
+template (present) From tr_From(template (present) Addr_Union addressField := ?,
+			        template SemicolonParam_List fromParams := *) := {
+	fieldName := FROM_E,
+	addressField := addressField,
+	fromParams := fromParams
+}
+
+// [20.23]
+template (value) MinExpires ts_MinExpires(template (value) DeltaSec deltaSec := "800000") := {
+	fieldName := MIN_EXPIRES_E,
+	deltaSec := deltaSec
+}
+
+// [RFC draft-ietf-sip-session-timer-15]
+template (value) Min_SE ts_Min_SE(template (value) DeltaSec deltaSec := "800000",
+				  template (omit) SemicolonParam_List params := omit) := {
+	fieldName := MIN_SE_E,
+	deltaSec := deltaSec,
+	params := params
+}
+template (present) Min_SE tr_Min_SE(template (present) DeltaSec deltaSec := ?,
+				    template SemicolonParam_List params := *) := {
+	fieldName := MIN_SE_E,
+	deltaSec := deltaSec,
+	params := params
+}
+
+
+// [RFC3455 5.4] + 3GPP 24.229 V8.7.0
+template (present) Access_net_spec tr_Access_net_spec(template (present) charstring access_type := ?,
+						      template SemicolonParam_List access_info := *) := {
+	access_type := access_type,
+	access_info := access_info
+}
+template (present) Access_net_spec tr_Access_net_spec_EUTRAN(template (present) charstring uli_str := ?) := {
+	access_type := "3GPP-E-UTRAN-FDD",
+	access_info := {tr_Param("utran-cell-id-3gpp", uli_str)}
+}
+
+// [RFC3455 5.4] + 3GPP 24.229 V8.7.0
+template (present) P_Access_Network_Info tr_P_Access_Network_Info(template (present) Access_net_spec_list access_net_specs := ?) := {
+	fieldName := P_ACCESS_NETWORK_INFO,
+	access_net_specs := access_net_specs
+}
+
+// [RFC3455 4.1]
+template (present) P_Assoc_uri_spec tr_P_Assoc_uri_spec(template (present) NameAddr p_asso_uri := ?,
+							template SemicolonParam_List ai_params := *) := {
+	p_asso_uri := p_asso_uri,
+	ai_params := ai_params
+}
+template (value) P_Assoc_uri_spec ts_P_Assoc_uri_spec(template (value) NameAddr p_asso_uri,
+						      template (omit) SemicolonParam_List ai_params := omit) := {
+	p_asso_uri := p_asso_uri,
+	ai_params := ai_params
+}
+
+// [RFC3455 4.1]
+template (present) P_Associated_Uri tr_P_Associated_Uri(template (present) P_Assoc_uri_spec_list p_assoc_uris := ?) := {
+	fieldName := P_ASSOCIATED_URI,
+	p_assoc_uris := p_assoc_uris
+}
+template (value) P_Associated_Uri ts_P_Associated_Uri(template (value) P_Assoc_uri_spec_list p_assoc_uris := {}) := {
+	fieldName := P_ASSOCIATED_URI,
+	p_assoc_uris := p_assoc_uris
+}
+
+// RFC5009
+template (present) P_Early_Media tr_P_Early_Media(template Em_param_List em_param_list := *) := {
+	fieldName := P_EARLY_MEDIA_E,
+	em_param_list := em_param_list
+}
+template (value) P_Early_Media ts_P_Early_Media(template (omit) Em_param_List em_param_list := omit) := {
+	fieldName := P_EARLY_MEDIA_E,
+	em_param_list := em_param_list
+}
+
+// [RFC6050]
+template (present) P_Preferred_Service tr_P_Preferred_Service(template (present) Service_ID_List p_ps := ?) := {
+	fieldName := P_PREFERRED_SERVICE_E,
+	p_ps := p_ps
+}
+
+// RFC 3262
+template (value) RAck ts_RAck(template (value) integer response_num,
+			      template (value) integer seq_nr,
+			      template (value) charstring method := "INVITE") := {
+	fieldName := RACK_E,
+	response_num := response_num,
+	seqNumber := seq_nr,
+	method := method
+}
+template (present) RAck tr_RAck(template (present) integer response_num := ?,
+			        template (present) integer seq_nr := ?,
+			        template (present) charstring method := ?) := {
+	fieldName := RACK_E,
+	response_num := response_num,
+	seqNumber := seq_nr,
+	method := method
+}
+
+// [20.32]
+template (value) Require ts_Require(template (value) OptionTag_List optionsTags := {}) := {
+	fieldName := REQUIRE_E,
+	optionsTags := optionsTags
+}
+template (present) Require tr_Require(template (present) OptionTag_List optionsTags := ?) := {
+	fieldName := REQUIRE_E,
+	optionsTags := optionsTags
+}
+
+// RFC 3262
+template (value) RSeq ts_RSeq(template (value) integer response_num) := {
+	fieldName := RSEQ_E,
+	response_num := response_num
+}
+template (present) RSeq tr_RSeq(template (present) integer response_num := ?) := {
+	fieldName := RSEQ_E,
+	response_num := response_num
+}
+
+// [RFC draft-ietf-sip-session-timer-15]
+template (value) Session_expires ts_Session_expires(template (value) DeltaSec deltaSec,
+						    template (omit) SemicolonParam_List se_params := omit) := {
+	fieldName := SESSION_EXPIRES_E,
+	deltaSec := deltaSec,
+	se_params := se_params
+}
+
+// [20.35 RFC2616 14.38]
+template (value) Server ts_Server(template (value) ServerVal_List serverBody := {}) := {
+	fieldName := SERVER_E,
+	serverBody := serverBody
+}
+template (present) Server tr_Server(template (present) ServerVal_List serverBody := ?) := {
+	fieldName := SERVER_E,
+	serverBody := serverBody
+}
+
+// [20.37]
+template (value) Supported ts_Supported(template (value) OptionTag_List optionsTags := {}) := {
+	fieldName := SUPPORTED_E,
+	optionsTags := optionsTags
+}
+template (present) Supported tr_Supported(template (present) OptionTag_List optionsTags := ?) := {
+	fieldName := SUPPORTED_E,
+	optionsTags := optionsTags
+}
+
+// [20.39]
+template (value) To ts_To(template (value) Addr_Union addressField,
+			  template (omit) SemicolonParam_List toParams := omit) := {
+	fieldName := TO_E,
+	addressField := addressField,
+	toParams := toParams
+}
+template (present) To tr_To(template (present) Addr_Union addressField := ?,
+			    template SemicolonParam_List toParams := *) := {
+	fieldName := TO_E,
+	addressField := addressField,
+	toParams := toParams
+}
+
+// [20.41 RFC2616 14.43]
+template (value) UserAgent ts_UserAgent(template (value) ServerVal_List userAgentBody := {}) := {
+	fieldName := USER_AGENT_E,
+	userAgentBody := userAgentBody
+}
+template (present) UserAgent tr_UserAgent(template (present) ServerVal_List userAgentBody := ?) := {
+	fieldName := USER_AGENT_E,
+	userAgentBody := userAgentBody
+}
+
+
+template (value) SipAddr ts_SipAddr(template (value) HostPort host_port,
+				    template (omit) UserInfo user_info := omit,
+				    template (omit) charstring displayName := omit,
+				    template (omit) SemicolonParam_List params := omit) := {
+	addr := {
+		nameAddr := {
+			displayName := displayName,
+			addrSpec := ts_SipUrl(host_port, user_info)
+		}
+	},
+	params := params
+}
+template (present) SipAddr tr_SipAddr(template (present) HostPort host_port := ?,
+				      template UserInfo user_info := *,
+				      template charstring displayName := *,
+				      template SemicolonParam_List params := *) := {
+	addr := {
+		nameAddr := {
+			displayName := displayName,
+			addrSpec := tr_SipUrl(host_port, user_info)
+		}
+	},
+	params := params
+}
+
+/* build a receive template from a value: substitute '*' for omit */
+function tr_SipUrl_from_val(template (value) SipUrl tin) return template (present) SipUrl {
+	var template (present) SipUrl ret := tin;
+
+	/* if the port number is 5060, it may be omitted */
+	if (ispresent(tin.hostPort.portField) and
+	    valueof(tin.hostPort.portField) == 5060) {
+		ret.hostPort.portField := 5060 ifpresent;
+	}
+	if (not ispresent(tin.userInfo.password)) {
+		ret.userInfo.password := *;
+	}
+
+	return ret;
+}
+function tr_Addr_Union_from_val(template (value) Addr_Union tin) return template (present) Addr_Union {
+	var template (present) Addr_Union ret := tin;
+
+	if (not ispresent(tin.nameAddr.displayName)) {
+		ret.nameAddr.displayName := *;
+	} else if (f_str_tolower(f_sip_str_unquote(tin.nameAddr.displayName)) == "anonymous") {
+		/* if the user is Anonymous, it may be omitted */
+		ret.nameAddr.displayName := tin.nameAddr.displayName ifpresent;
+	}
+
+	ret.nameAddr.addrSpec := tr_SipUrl_from_val(tin.nameAddr.addrSpec);
+
+	return ret;
+}
+function tr_SipAddr_from_val(template (value) SipAddr tin) return template (present) SipAddr {
+	var template (present) SipAddr ret := tin;
+
+	ret.addr := tr_Addr_Union_from_val(tin.addr);
+
+	if (not ispresent(tin.params)) {
+		ret.params := *;
+	}
+	return ret;
+}
+
+function ts_SipAddr_from_Addr_Union(template (value) Addr_Union au,
+				    template (omit) SemicolonParam_List	params := omit)
+return template (value) SipAddr {
+	var template (value) SipUrl addrSpec := ts_SipUrl_from_Addr_Union(au);
+	var template (omit) charstring displayName;
+
+	if (ischosen(au.nameAddr)) {
+		displayName := au.nameAddr.displayName;
+	} else { /* au.addrSpecUnion */
+		displayName := omit
+	}
+
+	return ts_SipAddr(addrSpec.hostPort,
+			  addrSpec.userInfo,
+			  displayName,
+			  params);
+}
+
+template (value) HostPort ts_HostPort(template (omit) charstring host := omit,
+				      template (omit) integer portField := omit) := {
+	host := host,
+	portField := portField
+}
+
+template (present) HostPort tr_HostPort(template charstring host := *,
+					template integer portField := *) := {
+	host := host,
+	portField := portField
+}
+function f_tr_HostPort(template charstring host := *,
+		       template integer portField := *)
+return template (present) HostPort {
+	return f_tr_HostPort_opt_defport(tr_HostPort(host, portField));
+}
+function f_tr_HostPort_opt_defport(template (present) HostPort hp) return template (present) HostPort {
+	var template (present) HostPort hpout := hp;
+	/* if the port number is 5060, it may be omitted */
+	if (isvalue(hp.portField) and valueof(hp.portField) == 5060) {
+		hpout.portField := 5060 ifpresent;
+	}
+	return hpout;
+}
+
+function f_tr_SipUrl_opt_defport(template (present) SipUrl url) return template (present) SipUrl {
+	var template (present) SipUrl urlout := url;
+	urlout.hostPort := f_tr_HostPort_opt_defport(url.hostPort);
+	return urlout;
+}
+
+template (value) UserInfo ts_UserInfo(template (value) charstring userOrTelephoneSubscriber,
+				      template (omit) charstring password := omit) := {
+	userOrTelephoneSubscriber := userOrTelephoneSubscriber,
+	password := password
+}
+template (present) UserInfo tr_UserInfo(template (present) charstring userOrTelephoneSubscriber := ?,
+					template charstring password := *) := {
+	userOrTelephoneSubscriber := userOrTelephoneSubscriber,
+	password := password
+}
+
+template (value) RequestLine ts_SIP_ReqLine(Method method,
+					    template (value) SipUrl uri,
+					    charstring ver := c_SIP_VERSION) := {
+	method := method,
+	requestUri := uri,
+	sipVersion := ver
+}
+template (present) RequestLine tr_SIP_ReqLine(template (present) Method method := ?,
+					      template (present) SipUrl uri := ?,
+					      template (present) charstring ver := c_SIP_VERSION) := {
+	method := method,
+	requestUri := uri,
+	sipVersion := ver
+}
+
+template (value) StatusLine ts_SIP_StatusLine(integer status_code, charstring reason) := {
+	sipVersion := "SIP/2.0",
+	statusCode := status_code,
+	reasonPhrase := reason
+}
+template (present) StatusLine tr_SIP_StatusLine(template integer status_code,
+						template charstring reason) := {
+	sipVersion := "SIP/2.0",
+	statusCode := status_code,
+	reasonPhrase := reason
+}
+
+
+template (value) PDU_SIP_Request ts_SIP_req(template (value) RequestLine rl) := {
+	requestLine := rl,
+	msgHeader := c_SIP_msgHeader_empty,
+	messageBody := omit,
+	payload := omit
+}
+
+const Method_List c_SIP_defaultMethods := {
+	"INVITE", "ACK", "BYE", "CANCEL", "OPTIONS", "PRACK", "MESSAGE", "SUBSCRIBE",
+	"NOTIFY", "REFER", "UPDATE" };
+
+private function f_ContentTypeOrOmit(template (omit) ContentType ct, template (omit) charstring body)
+return template (omit) ContentType {
+	/* if user explicitly stated no content type */
+	if (istemplatekind(ct, "omit")) {
+		return omit;
+	}
+	/* if there's no body, then there's no content-type either */
+	if (istemplatekind(body, "omit")) {
+		return omit;
+	}
+	return ct;
+}
+
+private function f_ContentLength(template (omit) charstring body)
+return template (value) ContentLength {
+	/* rfc3261 20.14: "If no body is present in a message, then the
+	 * Content-Length header field value MUST be set to zero." */
+	if (istemplatekind(body, "omit")) {
+		return ts_ContentLength(0);
+	}
+	return ts_ContentLength(lengthof(body));
+}
+
+template (value) ContentType ts_CT_SDP := {
+	fieldName := CONTENT_TYPE_E,
+	mediaType := "application/sdp"
+};
+
+template (value) Via ts_Via_from(template (value) HostPort addr,
+				 template (value) charstring transport := "UDP") := {
+	fieldName := VIA_E,
+	viaBody := {
+		{
+			sentProtocol := { "SIP", "2.0", transport },
+			sentBy := addr,
+			viaParams := omit
+		}
+	}
+}
+template (present) Via tr_Via_from(template (present) HostPort host_port := ?,
+				   template (present) charstring transport := ?,
+				   template SemicolonParam_List viaParams := *) := {
+	fieldName := VIA_E,
+	viaBody := {
+		{
+			sentProtocol := { "SIP", "2.0", ? },
+			sentBy := host_port,
+			viaParams := viaParams
+		}
+	}
+}
+
+template (present) OtherAuth
+tr_OtherAuth(template (present) charstring authScheme := ?,
+	     template (present) CommaParam_List authParams := ?) := {
+	authScheme := authScheme,
+	authParams := authParams
+}
+
+template (value) OtherAuth
+ts_OtherAuth(template (value) charstring authScheme,
+	     template (value) CommaParam_List authParams) := {
+	authScheme := authScheme,
+	authParams := authParams
+}
+
+template (present) Challenge
+tr_Challenge_digestCln(template (present) CommaParam_List digestCln := ?) := {
+	digestCln := digestCln
+}
+
+template (value) Challenge
+ts_Challenge_digestCln(template (value) CommaParam_List digestCln) := {
+	digestCln := digestCln
+}
+
+template (present) Challenge
+tr_Challenge_otherChallenge(template (present) OtherAuth otherChallenge := ?) := {
+	otherChallenge := otherChallenge
+}
+
+template (value) Challenge
+ts_Challenge_otherChallenge(template (value) OtherAuth otherChallenge) := {
+	otherChallenge := otherChallenge
+}
+
+template (present) WwwAuthenticate
+tr_WwwAuthenticate(template (present) Challenge_list challenge := ?) := {
+	fieldName := WWW_AUTHENTICATE_E,
+	challenge := challenge
+}
+
+template (value) WwwAuthenticate
+ts_WwwAuthenticate(template (value) Challenge_list challenge) := {
+	fieldName := WWW_AUTHENTICATE_E,
+	challenge := challenge
+}
+
+// RFC3329
+template (present) Security_client
+tr_Security_client(template (present) Security_mechanism_list sec_mechanism_list := ?) := {
+	fieldName := SECURITY_CLIENT_E,
+	sec_mechanism_list := sec_mechanism_list
+}
+template (value) Security_client
+ts_Security_client(template (value) Security_mechanism_list sec_mechanism_list) := {
+	fieldName := SECURITY_CLIENT_E,
+	sec_mechanism_list := sec_mechanism_list
+}
+
+template (present) Security_server
+tr_Security_server(template (present) Security_mechanism_list sec_mechanism_list := ?) := {
+	fieldName := SECURITY_SERVER_E,
+	sec_mechanism_list := sec_mechanism_list
+}
+template (value) Security_server
+ts_Security_server(template (value) Security_mechanism_list sec_mechanism_list) := {
+	fieldName := SECURITY_SERVER_E,
+	sec_mechanism_list := sec_mechanism_list
+}
+
+template (present) Security_mechanism
+tr_Security_mechanism(template (present) charstring name := ?,
+		      template SemicolonParam_List params := *) := {
+	mechanism_name := name,
+	mechanism_params := params
+}
+template (value) Security_mechanism
+ts_Security_mechanism(template (value) charstring name,
+		      template (omit) SemicolonParam_List params := omit) := {
+	mechanism_name := name,
+	mechanism_params := params
+}
+
+template (value) MessageHeader ts_SIP_msgHeader_empty := c_SIP_msgHeader_empty;
+template (value) MessageHeader
+ts_SIP_msgh_std(template (value) CallidString call_id,
+		template (value) From from_addr,
+		template (value) To to_addr,
+		template (omit) Contact contact,
+		template (value) charstring method,
+		template (value) integer seq_nr,
+		template (value) Via via,
+		template (omit) ContentLength content_length := ts_ContentLength(0),
+		template (omit) ContentType content_type := omit,
+		template (omit) Accept accept := omit,
+		template (omit) Authorization authorization := omit,
+		template (omit) Allow allow := ts_Allow(c_SIP_defaultMethods),
+		template (omit) Expires expires := omit,
+		template (omit) MinExpires minExpires := omit,
+		template (omit) Min_SE min_SE := omit,
+		template (omit) P_Associated_Uri p_associated_uri := omit,
+		template (omit) P_Early_Media p_early_media := omit,
+		template (omit) RAck rack := omit,
+		template (omit) Require require := omit,
+		template (omit) RSeq rseq := omit,
+		template (omit) Security_client security_client := omit,
+		template (omit) Security_server security_server := omit,
+		template (omit) Server server := omit,
+		template (omit) Session_expires session_expires := omit,
+		template (omit) Supported supported := omit,
+		template (omit) UserAgent userAgent := ts_UserAgent({ "osmo-ttcn3-hacks/0.23" }),
+		template (omit) WwwAuthenticate wwwAuthenticate := omit
+	) modifies ts_SIP_msgHeader_empty := {
+	accept := accept,
+	allow := allow,
+	authorization := authorization,
+	callId := {
+		fieldName := CALL_ID_E,
+		callid := call_id
+	},
+	contact := contact,
+	contentLength := content_length,
+	contentType := content_type,
+	cSeq := {
+		fieldName := CSEQ_E,
+		seqNumber := seq_nr,
+		method := method
+	},
+	expires := expires,
+	fromField := from_addr,
+	minExpires := minExpires,
+	min_SE := min_SE,
+	p_associated_uri := p_associated_uri,
+	p_Early_Media := p_early_media,
+	rack := rack,
+	require := require,
+	rseq := rseq,
+	security_client := security_client,
+	security_server := security_server,
+	server := server,
+	session_expires := session_expires,
+	supported := supported,
+	toField := to_addr,
+	userAgent := userAgent,
+	via := via,
+	wwwAuthenticate := wwwAuthenticate
+}
+
+template (present) MessageHeader
+tr_SIP_msgh_std(template CallidString call_id,
+		template From from_addr,
+		template To to_addr,
+		template Contact contact,
+		template (present) Via via := tr_Via_from(?),
+		template charstring method,
+		template integer seq_nr := ?,
+		template ContentLength content_length := *,
+		template ContentType content_type := *,
+		template Accept accept := *,
+		template Allow allow := *,
+		template Authorization authorization := *,
+		template Expires expires := *,
+		template Min_SE min_SE := *,
+		template P_Associated_Uri p_associated_uri := *,
+		template P_Early_Media p_early_media := *,
+		template RAck rack := *,
+		template Require require := *,
+		template RSeq rseq := *,
+		template Security_client security_client := *,
+		template Security_server security_server := *,
+		template Session_expires session_expires := *,
+		template Server server := *,
+		template Supported supported := *,
+		template UserAgent userAgent := *,
+		template WwwAuthenticate wwwAuthenticate := *
+		) modifies t_SIP_msgHeader_any := {
+	accept := accept,
+	allow := allow,
+	authorization := authorization,
+	callId := {
+		fieldName := CALL_ID_E,
+		callid := call_id
+	},
+	contact := contact,
+	contentLength := content_length,
+	contentType := content_type,
+	cSeq := {
+		fieldName := CSEQ_E,
+		seqNumber := seq_nr,
+		method := method
+	},
+	expires := expires,
+	fromField := from_addr,
+	min_SE := min_SE,
+	p_associated_uri := p_associated_uri,
+	p_Early_Media := p_early_media,
+	rack := rack,
+	require := require,
+	rseq := rseq,
+	security_client := security_client,
+	security_server := security_server,
+	session_expires := session_expires,
+	server := server,
+	supported := supported,
+	toField := to_addr,
+	userAgent := userAgent,
+	via := via,
+	wwwAuthenticate := wwwAuthenticate
+}
+
+
+template (value) PDU_SIP_Request
+ts_SIP_REGISTER(template (value) SipUrl sip_url_host_port,
+		template (value) CallidString call_id,
+		template (value) From from_addr,
+		template (value) To to_addr,
+		template (value) Via via,
+		integer seq_nr,
+		template (omit) Contact contact,
+		template (omit) Expires expires,
+		template (omit) Authorization authorization := omit,
+		template (omit) Require require := omit,
+		template (omit) Security_client security_client := omit,
+		template (omit) Supported supported := omit,
+		template (omit) charstring body := omit) := {
+	requestLine := ts_SIP_ReqLine(REGISTER_E, sip_url_host_port),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     "REGISTER", seq_nr, via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     authorization := authorization,
+				     expires := expires,
+				     require := require,
+				     security_client := security_client,
+				     supported := supported),
+	messageBody := body,
+	payload := omit
+}
+template (present) PDU_SIP_Request
+tr_SIP_REGISTER(template (present) SipUrl sip_url_host_port := ?,
+		template (present) CallidString call_id := ?,
+		template (present) From from_addr := ?,
+		template (present) To to_addr := ?,
+		template (present) Via via := tr_Via_from(f_tr_HostPort_opt_defport(?)),
+		template integer seq_nr := *,
+		template Authorization authorization := *,
+		template Contact contact := *,
+		template Expires expires := *,
+		template Require require := *,
+		template Security_client security_client := *,
+		template Supported supported := *,
+		template charstring body := *) := {
+	requestLine := tr_SIP_ReqLine(REGISTER_E, sip_url_host_port),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     via, "REGISTER", seq_nr,
+				     authorization := authorization,
+				     expires := expires,
+				     require := require,
+				     security_client := security_client,
+				     supported := supported),
+	messageBody := body,
+	payload := omit
+}
+
+template (value) PDU_SIP_Request
+ts_SIP_INVITE(template (value) CallidString call_id,
+	      template (value) From from_addr,
+	      template (value) To to_addr,
+	      template (value) Via via,
+	      template (value) Contact contact,
+	      integer seq_nr,
+	      template (omit) Accept accept := omit,
+	      template (omit) P_Early_Media p_early_media := omit,
+	      template (omit) Min_SE min_SE := omit,
+	      template (omit) Session_expires session_expires := omit,
+	      template (omit) Supported supported := omit,
+	      template (omit) charstring body := omit) := {
+	requestLine := ts_SIP_ReqLine(INVITE_E, to_addr.addressField.nameAddr.addrSpec),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     "INVITE", seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     accept := accept,
+				     min_SE := min_SE,
+				     p_early_media := p_early_media,
+				     session_expires := session_expires,
+				     supported := supported),
+	messageBody := body,
+	payload := omit
+}
+template (present) PDU_SIP_Request
+tr_SIP_INVITE(template (present) SipUrl uri,
+	      template CallidString call_id,
+	      template From from_addr,
+	      template To to_addr,
+	      template Via via := tr_Via_from(f_tr_HostPort_opt_defport(?)),
+	      template integer seq_nr,
+	      template Accept accept := *,
+	      template P_Early_Media p_early_media := *,
+	      template Min_SE min_SE := *,
+	      template Session_expires session_expires := *,
+	      template Supported supported := *,
+	      template charstring body := *) := {
+	requestLine := tr_SIP_ReqLine(INVITE_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, ?,
+				     via, "INVITE", seq_nr,
+				     accept := accept,
+				     min_SE := min_SE,
+				     p_early_media := p_early_media,
+				     session_expires := session_expires),
+	messageBody := body,
+	payload := omit
+}
+
+template (value) PDU_SIP_Request
+ts_SIP_BYE(CallidString call_id,
+	   template (value) From from_addr,
+	   template (value) To to_addr,
+	   template (value) Via via,
+	   integer seq_nr,
+	   template (omit) charstring body) := {
+	requestLine := ts_SIP_ReqLine(BYE_E, to_addr.addressField.nameAddr.addrSpec),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, "BYE", seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body)),
+	messageBody := body,
+	payload := omit
+}
+
+template (present) PDU_SIP_Request
+tr_SIP_BYE(template (present) SipUrl uri,
+	   template CallidString call_id,
+	   template From from_addr,
+	   template To to_addr,
+	   template Via via,
+	   template integer seq_nr,
+	   template charstring body := *) := {
+	requestLine := tr_SIP_ReqLine(BYE_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, omit,
+				     via, "BYE", seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+
+template (value) PDU_SIP_Request
+ts_SIP_ACK(template (value) SipUrl uri,
+	   template (value) CallidString call_id,
+	   template (value) From from_addr,
+	   template (value) To to_addr,
+	   template (value) Via via,
+	   integer seq_nr,
+	   template (omit) charstring body) := {
+	requestLine := ts_SIP_ReqLine(ACK_E, uri),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr,
+				     ts_Contact({ ts_ContactAddress(from_addr.addressField, from_addr.fromParams) }),
+				     "ACK", seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body)),
+	messageBody := body,
+	payload := omit
+}
+template (present) PDU_SIP_Request
+tr_SIP_ACK(template (present) SipUrl uri,
+	   template CallidString call_id,
+	   template From from_addr,
+	   template To to_addr,
+	   template Via via,
+	   template integer seq_nr,
+	   template charstring body) := {
+	requestLine := tr_SIP_ReqLine(ACK_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     "ACK", seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+template (present) PDU_SIP_Request
+tr_SIP_CANCEL(template (present) SipUrl uri,
+	      template (present) CallidString call_id,
+	      template (present) From from_addr,
+	      template (present) To to_addr,
+	      template (present) Via via,
+	      template (present) integer seq_nr,
+	      template charstring body := *) := {
+	requestLine := tr_SIP_ReqLine(CANCEL_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     "CANCEL", seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+template (value) PDU_SIP_Request
+ts_SIP_PRACK(template (value) SipUrl uri,
+	     template (value) CallidString call_id,
+	     template (value) From from_addr,
+	     template (value) To to_addr,
+	     template (value) Via via,
+	     integer seq_nr,
+	     template (value) RAck rack,
+	     template (omit) charstring body := omit) := {
+	requestLine := ts_SIP_ReqLine(PRACK_E, uri),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit,
+				     "PRACK", seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     rack := rack),
+	messageBody := body,
+	payload := omit
+}
+template (present) PDU_SIP_Request
+tr_SIP_PRACK(template (present) SipUrl uri,
+	     template CallidString call_id,
+	     template From from_addr,
+	     template To to_addr,
+	     template Via via,
+	     template integer seq_nr,
+	     template RAck rack := tr_RAck(?, ?, ?),
+	     template charstring body := *) := {
+	requestLine := tr_SIP_ReqLine(PRACK_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     "PRACK", seq_nr,
+				     rack := rack),
+	messageBody := body,
+	payload := omit
+}
+
+template (value) PDU_SIP_Request
+ts_SIP_UPDATE(template (value) SipUrl uri,
+	      template (value) CallidString call_id,
+	      template (value) From from_addr,
+	      template (value) To to_addr,
+	      template (value) Via via,
+	      integer seq_nr,
+	      template (omit) Contact contact,
+	      template (value) Require require := ts_Require({"sec-agree", "precondition"}),
+	      template (value) charstring body) := {
+	requestLine := ts_SIP_ReqLine(UPDATE_E, uri),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     "UPDATE", seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     require := require),
+	messageBody := body,
+	payload := omit
+}
+template (present) PDU_SIP_Request
+tr_SIP_UPDATE(template (present) SipUrl uri,
+	      template CallidString call_id,
+	      template From from_addr,
+	      template To to_addr,
+	      template Via via,
+	      template integer seq_nr,
+	      template Require require := *,
+	      template Supported supported := *,
+	      template charstring body) := {
+	requestLine := tr_SIP_ReqLine(UPDATE_E, uri),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     "UPDATE", seq_nr,
+				     require := require,
+				     supported := supported),
+	messageBody := body,
+	payload := omit
+}
+
+template (value) PDU_SIP_Response
+ts_SIP_Response(template (value) CallidString call_id,
+		template (value) From from_addr,
+		template (value) To to_addr,
+		charstring method,
+		integer status_code,
+		integer seq_nr,
+		charstring reason,
+		Via via,
+		template (omit) Allow allow := omit,
+		template (omit) Contact contact := omit,
+		template (omit) P_Associated_Uri p_associated_uri := omit,
+		template (omit) Require require := omit,
+		template (omit) Server server := omit,
+		template (omit) Session_expires session_expires := omit,
+		template (omit) Supported supported := omit,
+		template (omit) UserAgent userAgent := omit,
+		template (omit) charstring body := omit) := {
+	statusLine := ts_SIP_StatusLine(status_code, reason),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, contact, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     allow := allow,
+				     p_associated_uri := p_associated_uri,
+				     require := require,
+				     server := server,
+				     session_expires := session_expires,
+				     supported := supported,
+				     userAgent := userAgent),
+	messageBody := body,
+	payload := omit
+}
+/* 100 Trying */
+template (value) PDU_SIP_Response
+ts_SIP_Response_Trying(
+	template (value) CallidString call_id,
+	template (value) From from_addr,
+	template (value) To to_addr,
+	Via via,
+	integer seq_nr,
+	charstring method := "INVITE",
+	template (omit) Allow allow := omit,
+	template (omit) Server server := omit,
+	template (omit) UserAgent userAgent := omit,
+	template (omit) charstring body := omit) := {
+	statusLine := ts_SIP_StatusLine(100, "Trying"),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     allow := allow,
+				     server := server,
+				     userAgent := userAgent),
+	messageBody := body,
+	payload := omit
+}
+/* 180 Ringing */
+template (value) PDU_SIP_Response
+ts_SIP_Response_Ringing(
+	template (value) CallidString call_id,
+	template (value) From from_addr,
+	template (value) To to_addr,
+	Via via,
+	integer seq_nr,
+	charstring method := "INVITE",
+	template (omit) charstring body := omit) := {
+	statusLine := ts_SIP_StatusLine(180, "Ringing"),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body)),
+	messageBody := body,
+	payload := omit
+}
+
+/* 183 Session Progress */
+template (value) PDU_SIP_Response
+ts_SIP_Response_SessionProgress(
+	template (value) CallidString call_id,
+	template (value) From from_addr,
+	template (value) To to_addr,
+	Via via,
+	integer seq_nr,
+	charstring method := "INVITE",
+	template (omit) P_Early_Media p_early_media := omit,
+	template (omit) Require require := ts_Require({"100rel", "precondition"}),
+	template (omit) RSeq rseq := ts_RSeq(1),
+	template (omit) charstring body := omit) := {
+	statusLine := ts_SIP_StatusLine(183, "Session Progress"),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     p_early_media := p_early_media,
+				     require := require,
+				     rseq := rseq),
+	messageBody := body,
+	payload := omit
+}
+
+/* 401 Unauthorized */
+template (value) PDU_SIP_Response
+ts_SIP_Response_Unauthorized(
+	template (value) CallidString call_id,
+	template (value) From from_addr,
+	template (value) To to_addr,
+	Via via,
+	template (value) WwwAuthenticate wwwAuthenticate,
+	integer seq_nr,
+	charstring method := "REGISTER",
+	template (omit) Allow allow := omit,
+	template (omit) P_Associated_Uri p_associated_uri := omit,
+	template (omit) Security_server security_server := omit,
+	template (omit) Server server := omit,
+	template (omit) Supported supported := omit,
+	template (omit) UserAgent userAgent := omit,
+	template (omit) charstring body := omit) := {
+	statusLine := ts_SIP_StatusLine(401, "Unauthorized"),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(body),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, body),
+				     allow := allow,
+				     p_associated_uri := p_associated_uri,
+				     security_server := security_server,
+				     server := server,
+				     supported := supported,
+				     userAgent := userAgent,
+				     wwwAuthenticate := wwwAuthenticate),
+	messageBody := body,
+	payload := omit
+}
+
+/* Tx 423 Interval Too Brief */
+template (value) PDU_SIP_Response
+ts_SIP_Response_423_Interval_Too_Brief(
+	template (value) CallidString call_id,
+	template (value) From from_addr,
+	template (value) To to_addr,
+	Via via,
+	integer seq_nr,
+	charstring method := "REGISTER",
+	template (omit) Allow allow := omit,
+	template (value) MinExpires minExpires := ts_MinExpires(),
+	template (omit) Server server := omit,
+	template (omit) Supported supported := omit,
+	template (omit) UserAgent userAgent := omit) := {
+	statusLine := ts_SIP_StatusLine(423, "Interval Too Brief"),
+	msgHeader := ts_SIP_msgh_std(call_id, from_addr, to_addr, omit, method, seq_nr,
+				     via,
+				     content_length := f_ContentLength(omit),
+				     content_type := f_ContentTypeOrOmit(ts_CT_SDP, omit),
+				     allow := allow,
+				     minExpires := minExpires,
+				     server := server,
+				     supported := supported,
+				     userAgent := userAgent),
+	messageBody := omit,
+	payload := omit
+}
+
+template (present) PDU_SIP_Response
+tr_SIP_Response(template CallidString call_id,
+		template From from_addr,
+		template To to_addr,
+		template (present) Via via := tr_Via_from(?),
+		template Contact contact,
+		template charstring method,
+		template integer status_code,
+		template integer seq_nr := ?,
+		template charstring reason := ?,
+		template charstring body := *) := {
+	statusLine := tr_SIP_StatusLine(status_code, reason),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     via,
+				     method, seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+/* Expect during first REGISTER/INVITE/... when authorization is required: */
+template (present) PDU_SIP_Response
+tr_SIP_Response_Unauthorized(
+	template CallidString call_id,
+	template From from_addr,
+	template To to_addr,
+	template (present) Via via := tr_Via_from(?),
+	template Contact contact := *,
+	template (present) WwwAuthenticate wwwAuthenticate := ?,
+	template integer seq_nr := ?,
+	template charstring method := "REGISTER",
+	template integer status_code := 401,
+	template charstring reason := "Unauthorized",
+	template charstring body := *) := {
+	statusLine := tr_SIP_StatusLine(status_code, reason),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, contact,
+				     via,
+				     method, seq_nr,
+				     wwwAuthenticate := wwwAuthenticate),
+	messageBody := body,
+	payload := omit
+}
+
+/* 100 Trying */
+template (present) PDU_SIP_Response
+tr_SIP_Response_Trying(
+	template CallidString call_id,
+	template From from_addr,
+	template To to_addr,
+	template (present) Via via := tr_Via_from(?),
+	template integer seq_nr := ?,
+	template charstring method := "INVITE",
+	template integer status_code := 100,
+	template charstring reason := "Trying",
+	template charstring body := *) := {
+	statusLine := tr_SIP_StatusLine(status_code, reason),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, omit,
+				     via,
+				     method, seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+/* 180 Ringing */
+template (present) PDU_SIP_Response
+tr_SIP_Response_Ringing(
+	template CallidString call_id,
+	template From from_addr,
+	template To to_addr,
+	template (present) Via via := tr_Via_from(?),
+	template integer seq_nr := ?,
+	template charstring method := "INVITE",
+	template integer status_code := 180,
+	template charstring reason := "Ringing",
+	template charstring body := *) := {
+	statusLine := tr_SIP_StatusLine(status_code, reason),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     method, seq_nr),
+	messageBody := body,
+	payload := omit
+}
+
+/* 183 Session Progress */
+template (present) PDU_SIP_Response
+tr_SIP_Response_SessionProgress(
+	template (present) CallidString call_id,
+	template (present) From from_addr,
+	template (present) To to_addr,
+	template (present) Via via,
+	template (present) integer seq_nr := ?,
+	template (present) charstring method := "INVITE",
+	template Require require := *,
+	template RSeq rseq := *,
+	template charstring body := *) := {
+	statusLine := tr_SIP_StatusLine(183, "Session Progress"),
+	msgHeader := tr_SIP_msgh_std(call_id, from_addr, to_addr, *,
+				     via,
+				     method, seq_nr,
+				     require := require,
+				     rseq := rseq),
+	messageBody := body,
+	payload := omit
+}
+
+/****************
+ * FUNCTIONS:
+ ****************/
+
+function f_sip_param_find(GenericParam_List li,
+			  template (present) charstring id := ?)
+return template (omit) GenericParam {
+	var integer i;
+
+	for (i := 0; i < lengthof(li); i := i + 1) {
+		if (not ispresent(li[i])) {
+			continue;
+		}
+		if (match(li[i].id, id)) {
+			return li[i];
+		}
+	}
+	return omit;
+}
+
+function f_sip_param_find_or_fail(GenericParam_List li,
+				  template (present) charstring id := ?)
+return GenericParam {
+	var template (omit) GenericParam parameter;
+	parameter := f_sip_param_find(li, id);
+	if (istemplatekind(parameter, "omit")) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("Param ", id, " not found in ", li));
+	}
+	return valueof(parameter);
+}
+
+function f_sip_param_get_value(GenericParam_List li,
+			       template (present) charstring id := ?)
+return template (omit) charstring {
+	var template (omit) GenericParam parameter;
+	parameter := f_sip_param_find(li, id);
+	if (istemplatekind(parameter, "omit")) {
+		return omit;
+	}
+	return parameter.paramValue;
+}
+
+function f_sip_param_get_value_or_fail(GenericParam_List li,
+					       template (present) charstring id := ?)
+return template (omit) charstring {
+	var GenericParam parameter;
+	parameter := f_sip_param_find_or_fail(li, id);
+	return parameter.paramValue;
+}
+
+function f_sip_param_get_value_present_or_fail(GenericParam_List li,
+				       template (present) charstring id := ?)
+return charstring {
+	var GenericParam parameter;
+	parameter := f_sip_param_find_or_fail(li, id);
+	if (not ispresent(parameter.paramValue)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Param ", id, " value not present in ", li));
+	}
+	return parameter.paramValue;
+}
+
+function f_sip_param_match_value(GenericParam_List li,
+				 template (present) charstring id := ?,
+				 template charstring exp_paramValue := *)
+return boolean {
+	var template (omit) charstring val;
+	val := f_sip_param_get_value_or_fail(li, id);
+	if (istemplatekind(val, "omit")) {
+		return istemplatekind(val, "omit") or istemplatekind(val, "*");
+	}
+	return match(valueof(val), exp_paramValue);
+}
+
+function f_sip_param_match_value_or_fail(GenericParam_List li,
+					 template (present) charstring id := ?,
+					 template charstring exp_paramValue := *)
+{
+	var template (omit) charstring val := f_sip_param_get_value_or_fail(li, id);
+	if (istemplatekind(val, "omit")) {
+		if (istemplatekind(val, "omit") or istemplatekind(val, "*")) {
+			return;
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Param ", id, " match failed: val ", val,
+							" vs exp ", exp_paramValue));
+		}
+	}
+	if (not match(valueof(val), exp_paramValue)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Param ", id, " match failed: val ", val,
+						" vs exp ", exp_paramValue));
+	}
+}
+
+function f_sip_param_remove(template (omit) GenericParam_List li_tpl, charstring id)
+return GenericParam_List {
+	var integer i;
+	var GenericParam_List li;
+	var GenericParam_List new_li := {};
+
+	if (istemplatekind(li_tpl, "omit")) {
+		return {};
+	}
+
+	li := valueof(li_tpl);
+	for (i := 0; i < lengthof(li); i := i + 1) {
+		if (not ispresent(li[i]) or
+		    not match(li[i].id, id)) {
+			new_li := new_li & {li[i]};
+		}
+	}
+	return new_li;
+}
+
+function f_sip_param_set(template (omit) GenericParam_List li_tpl, charstring id, charstring val)
+return GenericParam_List {
+	var integer i;
+	var GenericParam_List li;
+	var GenericParam_List new_li := {};
+	var boolean found := false;
+
+	if (istemplatekind(li_tpl, "omit")) {
+		return { valueof(ts_Param(id, val)) };
+	}
+
+	li := valueof(li_tpl);
+	for (i := 0; i < lengthof(li); i := i + 1) {
+		if (not ispresent(li[i]) or
+		    not match(li[i].id, id)) {
+			new_li := new_li & {li[i]};
+			continue;
+		}
+		new_li := new_li & { valueof(ts_Param(li[i].id, val)) };
+		found := true;
+	}
+
+	if (not found) {
+		new_li := new_li & { valueof(ts_Param(id, val)) };
+	}
+	return new_li;
+}
+
+/* Make sure string is quoted. */
+function f_sip_str_quote(template (value) charstring val) return charstring {
+	var charstring str := valueof(val);
+	if (lengthof(str) == 0) {
+		return "";
+	}
+
+	if (str[0] != "\"") {
+		return "\"" & str & "\"";
+	}
+	return str;
+}
+
+/* Make sure string is unquoted.
+ * Similar to unq() in RFC 2617 */
+function f_sip_str_unquote(template (value) charstring val) return charstring {
+	var charstring str := valueof(val);
+	var integer len := lengthof(str);
+
+	if (len <= 1) {
+		return str;
+	}
+
+	if (str[0] == "\"" and str[len - 1] == "\"") {
+		return substr(str, 1, len - 2);
+	}
+	return str;
+}
+
+/* RFC 2617 3.2.2.2 A1 */
+function f_sip_digest_A1(charstring user, charstring realm, charstring password) return charstring {
+
+	/* RFC 2617 3.2.2.2 A1 */
+	var charstring A1 := f_sip_str_unquote(user) & ":" &
+			     f_sip_str_unquote(realm) & ":" &
+			     password;
+	var charstring digestA1 := f_str_tolower(f_calculateMD5(A1));
+	log("A1: md5(", A1, ") = ", digestA1);
+	return digestA1;
+}
+
+/* RFC 3310: Same as f_sip_digest_A1(), but using an octet buffer as password (AKAv1-MD5, pwd=RES) */
+function f_sip_digest_A1_octpwd(charstring user, charstring realm, octetstring password) return charstring {
+	var charstring A1pre := f_sip_str_unquote(user) & ":" &
+				f_sip_str_unquote(realm) & ":";
+	var octetstring A1 := char2oct(A1pre) & password;
+	var charstring digestA1 := f_str_tolower(oct2str(f_calculateMD5_oct(A1)));
+	log("A1-octpwd: md5(", A1, ") = ", digestA1);
+	return digestA1;
+}
+
+/* RFC 2617 3.2.2.2 A2 */
+function f_sip_digest_A2(charstring method, charstring uri) return charstring {
+
+	var charstring A2 := method & ":" & uri
+	var charstring digestA2 := f_str_tolower(f_calculateMD5(A2));
+	log("A2: md5(", A2, ") = ", digestA2);
+	return digestA2;
+}
+
+/* RFC 2617 3.2.2.1 Request-Digest */
+function f_sip_digest_RequestDigest(charstring digestA1, charstring nonce,
+				    charstring nc, charstring cnonce,
+				    charstring qop, charstring digestA2) return charstring {
+	var charstring digest_data := f_sip_str_unquote(nonce) & ":" &
+				      nc & ":" &
+				      cnonce & ":" &
+				      f_sip_str_unquote(qop) & ":" &
+				      digestA2;
+	var charstring req_digest := f_sip_digest_KD(digestA1, digest_data);
+	log("Request-Digest: md5(\"" & digestA1 & ":" & digest_data & "\") = " & "\"" & req_digest & "\"");
+	return req_digest;
+}
+
+/* RFC 2617 3.2.1 The WWW-Authenticate Response Header
+ * KD(secret, data) = H(concat(secret, ":", data))
+ */
+function f_sip_digest_KD(charstring secret, charstring data) return charstring {
+	return f_str_tolower(f_calculateMD5(secret & ":" & data));
+}
+
+/* Digest Auth: RFC 2617 */
+function f_sip_digest_gen_Authorization_Response_MD5(charstring user, charstring realm, charstring password,
+						     charstring method, charstring uri, charstring qop,
+						     charstring nonce, charstring cnonce, charstring nc)
+return charstring {
+	/* RFC 2617 3.2.2.2 A1 */
+	var charstring digestA1 := f_sip_digest_A1(user, realm, password);
+
+	/* RFC 2617 3.2.2.3 A2 */
+	var charstring digestA2 := f_sip_digest_A2(method, uri);
+
+	/* RFC 2617 3.2.2.1 Request-Digest */
+	var charstring req_digest := f_sip_digest_RequestDigest(digestA1, nonce,
+								nc, cnonce,
+								qop, digestA2);
+	return req_digest;
+}
+
+/* Digest Auth: RFC 2617 */
+function f_sip_digest_gen_Authorization_Response_AKAv1MD5(charstring user, charstring realm, octetstring password,
+							  charstring method, charstring uri, charstring qop,
+							  charstring nonce, charstring cnonce, charstring nc)
+return charstring {
+	/* RFC 2617 3.2.2.2 A1 */
+	var charstring digestA1 := f_sip_digest_A1_octpwd(user, realm, password);
+	/* RFC 2617 3.2.2.3 A2 */
+	var charstring digestA2 := f_sip_digest_A2(method, uri);
+
+	/* RFC 2617 3.2.2.1 Request-Digest */
+	var charstring req_digest := f_sip_digest_RequestDigest(digestA1, nonce,
+								nc, cnonce,
+								qop, digestA2);
+	return req_digest;
+}
+
+function f_sip_digest_gen_Authorization_MD5(WwwAuthenticate www_authenticate,
+				 charstring user, charstring password,
+				 charstring method, charstring uri,
+				 charstring cnonce := "0a4f113b", integer nc_int := 1) return Authorization {
+	var CommaParam_List digestCln;
+	var template (value) Authorization authorization;
+	var template (value) Credentials cred;
+	var template (omit) GenericParam rx_param;
+
+	digestCln := www_authenticate.challenge[0].digestCln;
+
+	var charstring algorithm;
+	rx_param := f_sip_param_find(digestCln, "algorithm");
+	if (istemplatekind(rx_param, "omit")) {
+		/* Assume MD5 if not set */
+		algorithm := "MD5"
+	} else {
+		algorithm := valueof(rx_param.paramValue);
+		if (f_strstr(algorithm, "MD5") == -1) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Unexpected algorithm: ", algorithm));
+		}
+	}
+
+	var charstring realm := f_sip_param_get_value_present_or_fail(digestCln, "realm");
+	var charstring nonce := f_sip_param_get_value_present_or_fail(digestCln, "nonce");
+	var charstring opaque := f_sip_param_get_value_present_or_fail(digestCln, "opaque");
+	var charstring qop := f_sip_param_get_value_present_or_fail(digestCln, "qop");
+
+	if (f_strstr(qop, "auth") == -1) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected qop: ", qop));
+	}
+	var charstring selected_qop := "auth";
+	var charstring nc := f_str_tolower(hex2str(int2hex(nc_int, 8)));
+
+	var charstring req_digest;
+	req_digest :=
+		f_sip_digest_gen_Authorization_Response_MD5(user, realm, password,
+							    method, uri, selected_qop,
+							    nonce, cnonce, nc);
+
+	cred := ts_Credentials_DigestResponseMD5(user, realm, nonce,
+						 uri, req_digest,
+						 opaque, algorithm, selected_qop, cnonce, nc);
+
+	authorization := ts_Authorization(cred);
+	return valueof(authorization);
+}
+
+/* RFC 3310: Same as f_sip_digest_validate_Authorization_MD5(), but using an octet buffer as password (AKAv1-MD5, pwd=RES) */
+function f_sip_digest_validate_Authorization_AKAv1MD5(Authorization authorization, charstring method, octetstring password) {
+	var CommaParam_List auth_pars := authorization.body.digestResponse;
+	var template (omit) GenericParam rx_param;
+
+	rx_param := f_sip_param_find(auth_pars, "algorithm");
+	if (istemplatekind(rx_param, "omit")) {
+		/* Assume MD5 if not set */
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Algorithm param not present");
+	} else {
+		var charstring algorithm := valueof(rx_param.paramValue);
+		if (f_strstr(algorithm, "AKAv1-MD5") == -1) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Unexpected algorithm: ", algorithm));
+		}
+	}
+
+	var charstring user := f_sip_param_get_value_present_or_fail(auth_pars, "username");
+	var charstring realm := f_sip_param_get_value_present_or_fail(auth_pars, "realm");
+	var charstring uri := f_sip_param_get_value_present_or_fail(auth_pars, "uri");
+	var charstring nonce := f_sip_param_get_value_present_or_fail(auth_pars, "nonce");
+	var charstring qop := f_sip_param_get_value_present_or_fail(auth_pars, "qop");
+	var charstring response := f_sip_param_get_value_present_or_fail(auth_pars, "response");
+	var charstring cnonce := f_sip_param_get_value_present_or_fail(auth_pars, "cnonce");
+	var charstring nc := f_sip_param_get_value_present_or_fail(auth_pars, "nc");
+
+	if (f_strstr(qop, "auth") == -1) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected qop: ", qop));
+	}
+
+	var charstring exp_response :=
+		f_sip_digest_gen_Authorization_Response_AKAv1MD5(f_sip_str_unquote(user),
+								 f_sip_str_unquote(realm),
+								 password,
+								 method,
+								 f_sip_str_unquote(uri),
+								 qop,
+								 f_sip_str_unquote(nonce),
+								 f_sip_str_unquote(cnonce),
+								 nc);
+
+	response := f_sip_str_unquote(response);
+	if (response != exp_response) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Wrong digest response: ", response,
+						" vs exp: ", exp_response, ". Params: ", auth_pars));
+	}
+}
+
+/* RFC 2617 3.5 Example */
+function f_sip_digest_selftest() {
+/*
+The following example assumes that an access-protected document is
+being requested from the server via a GET request. The URI of the
+document is "http://www.nowhere.org/dir/index.html". Both client and
+server know that the username for this document is "Mufasa", and the
+password is "Circle Of Life" (with one space between each of the
+three words).
+
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Digest
+	realm="testrealm@host.com",
+	qop="auth,auth-int",
+	nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093",
+	opaque="5ccc069c403ebaf9f0171e9517f40e41"
+
+Authorization: Digest username="Mufasa",
+	realm="testrealm@host.com",
+	nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093",
+	uri="/dir/index.html",
+	qop=auth,
+	nc=00000001,
+	cnonce="0a4f113b",
+	response="6629fae49393a05397450978507c4ef1",
+	opaque="5ccc069c403ebaf9f0171e9517f40e41"
+*/
+	var template (value) CommaParam_List digestCln := {
+		ts_Param("realm", f_sip_str_quote("testrealm@host.com")),
+		ts_Param("qop", f_sip_str_quote("auth,auth-int")),
+		ts_Param("nonce", f_sip_str_quote("dcd98b7102dd2f0e8b11d0f600bfb0c093")),
+		ts_Param("opaque", f_sip_str_quote("5ccc069c403ebaf9f0171e9517f40e41"))
+	};
+	var template (value) WwwAuthenticate www_authenticate :=
+		ts_WwwAuthenticate( { ts_Challenge_digestCln(digestCln) } )
+
+	var Authorization authorization :=
+		f_sip_digest_gen_Authorization_MD5(valueof(www_authenticate),
+						   "Mufasa",
+						   "Circle Of Life",
+						   "GET",
+						   "/dir/index.html",
+						   cnonce := "0a4f113b",
+						   nc_int := 1);
+
+	var CommaParam_List digestResp := authorization.body.digestResponse;
+	f_sip_param_match_value_or_fail(digestResp, "realm",	f_sip_str_quote("testrealm@host.com"));
+	f_sip_param_match_value_or_fail(digestResp, "nonce",	f_sip_str_quote("dcd98b7102dd2f0e8b11d0f600bfb0c093"));
+	f_sip_param_match_value_or_fail(digestResp, "uri",	f_sip_str_quote("/dir/index.html"));
+	f_sip_param_match_value_or_fail(digestResp, "qop",	"auth");
+	f_sip_param_match_value_or_fail(digestResp, "nc",	"00000001");
+	f_sip_param_match_value_or_fail(digestResp, "cnonce",	f_sip_str_quote("0a4f113b"));
+	f_sip_param_match_value_or_fail(digestResp, "response",	f_sip_str_quote("6629fae49393a05397450978507c4ef1"));
+	f_sip_param_match_value_or_fail(digestResp, "opaque",	f_sip_str_quote("5ccc069c403ebaf9f0171e9517f40e41"));
+}
+
+/* RFC 3261 8.1.1.5:
+ * "The sequence number value MUST be expressible as a 32-bit unsigned integer
+ *  and MUST be less than 2**31."
+ */
+function f_sip_rand_seq_nr() return integer {
+	 /* 2**31 = 2147483648 */
+	return f_rnd_int(2147483648)
+}
+
+function f_sip_next_seq_nr(integer seq_nr) return integer {
+	return (seq_nr + 1) mod 2147483648;
+}
+
+function f_sip_Request_inc_seq_nr(inout template (value) PDU_SIP_Request req) {
+	req.msgHeader.cSeq.seqNumber := f_sip_next_seq_nr(valueof(req.msgHeader.cSeq.seqNumber));
+}
+
+function f_sip_rand_tag() return charstring {
+	/* Tags shall have at least 32 bit of randomness */
+	var integer rnd_int := f_rnd_int(4294967296);
+	/* Make collisions harder by appending time to the final string: */
+	var integer ts_int := f_time_ms() mod 4294967296;
+	return hex2str(int2hex(rnd_int, 8)) & "-" & hex2str(int2hex(ts_int, 8));
+}
+
+/* Generate a "branch" tag value.
+ * RFC 3261 p.105 section 8:
+ * "A common way to create this value is to compute a
+ * cryptographic hash of the To tag, From tag, Call-ID header
+ * field, the Request-URI of the request received (before
+ * translation), the topmost Via header, and the sequence number
+ * from the CSeq header field, in addition to any Proxy-Require
+ * and Proxy-Authorization header fields that may be present.  The
+ * algorithm used to compute the hash is implementation-dependent,
+ * but MD5 (RFC 1321 [35]),expressed in hexadecimal, is a reasonable
+ * choice."
+ * See also Section 8.1.1.7:
+ * "The branch ID inserted by an element compliant with this
+ * specification MUST always begin with the characters "z9hG4bK"."
+ */
+const charstring sip_magic_cookie := "z9hG4bK";
+function f_sip_gen_branch(charstring tag_to,
+			  charstring tag_from,
+			  charstring tag_call_id,
+			  integer cseq) return charstring {
+	var charstring str := tag_to & tag_from & tag_call_id & int2str(cseq);
+	var charstring hash := f_calculateMD5(str);
+	var charstring branch := sip_magic_cookie & hash;
+	return branch;
+}
+
+function f_sip_HostPort_to_str(HostPort host_port) return charstring {
+	var charstring str := "";
+	if (ispresent(host_port.host)) {
+		str := host_port.host;
+	}
+	if (ispresent(host_port.portField)) {
+		str := str & ":" & int2str(host_port.portField);
+	}
+	return str;
+}
+
+function f_sip_SipUrl_to_str(SipUrl uri) return charstring {
+	var charstring str := uri.scheme & ":";
+	if (ispresent(uri.userInfo)) {
+		str := str & uri.userInfo.userOrTelephoneSubscriber & "@";
+	}
+	str := str & f_sip_HostPort_to_str(uri.hostPort);
+	return str;
+}
+
+function f_sip_NameAddr_to_str(NameAddr naddr) return charstring {
+	if (ispresent(naddr.displayName)) {
+		return naddr.displayName & " <" & f_sip_SipUrl_to_str(naddr.addrSpec) & ">";
+	} else {
+		return f_sip_SipUrl_to_str(naddr.addrSpec);
+	}
+}
+
+function f_sip_Addr_Union_to_str(Addr_Union addru) return charstring {
+	if (ischosen(addru.nameAddr)) {
+		return f_sip_NameAddr_to_str(addru.nameAddr);
+	} else {
+		return f_sip_SipUrl_to_str(addru.addrSpecUnion);
+	}
+}
+
+function f_sip_SipAddr_to_str(SipAddr sip_addr) return charstring {
+	return f_sip_Addr_Union_to_str(sip_addr.addr);
+}
+
+}

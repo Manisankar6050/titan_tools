@@ -1,0 +1,57 @@
+[ORDERED_INCLUDE]
+# Common configuration, shared between test suites
+"../Common.cfg"
+
+[LOGGING]
+#*.FileMask := LOG_ALL
+ConsoleMask := ERROR | WARNING | TESTCASE | TIMEROP_START | USER
+PCUIF.ConsoleMask := ERROR | TESTCASE | TIMEROP_START | USER
+"ClckGen-0".ConsoleMask := ERROR
+
+[MODULE_PARAMETERS]
+SGSN_Components.mp_gb_cfg := {
+	nsei := 1234,
+	sgsn_role := true,
+	bvc := {
+		{
+			bvci := 1234,
+			cell_id := {
+				ra_id := {
+					lai := {
+						mcc_mnc := '262F42'H, lac := 13135
+					},
+					rac := 0
+				},
+				cell_id := 20960
+			},
+			depth := BSSGP_DECODE_DEPTH_BSSGP
+		}
+	}
+};
+Osmocom_VTY_Functions.mp_prompt_prefix := "OsmoPCU";
+PCUIF_Types.mp_pcuif_version := 12;
+
+[TESTPORT_PARAMETERS]
+*.PCU.socket_type := "SEQPACKET"
+*.PCUVTY.CTRL_MODE := "client"
+*.PCUVTY.CTRL_HOSTNAME := "127.0.0.1"
+*.PCUVTY.CTRL_PORTNUM := "4240"
+*.PCUVTY.CTRL_LOGIN_SKIPPED := "yes"
+*.PCUVTY.CTRL_DETECT_SERVER_DISCONNECTED := "yes"
+*.PCUVTY.CTRL_READMODE := "buffered"
+*.PCUVTY.CTRL_CLIENT_CLEANUP_LINEFEED := "yes"
+*.PCUVTY.CTRL_DETECT_CONNECTION_ESTABLISHMENT_RESULT := "yes"
+*.PCUVTY.PROMPT1 := "OsmoPCU> "
+*.STATSVTY.CTRL_MODE := "client"
+*.STATSVTY.CTRL_HOSTNAME := "127.0.0.1"
+*.STATSVTY.CTRL_PORTNUM := "4240"
+*.STATSVTY.CTRL_LOGIN_SKIPPED := "yes"
+*.STATSVTY.CTRL_DETECT_SERVER_DISCONNECTED := "yes"
+*.STATSVTY.CTRL_READMODE := "buffered"
+*.STATSVTY.CTRL_CLIENT_CLEANUP_LINEFEED := "yes"
+*.STATSVTY.CTRL_DETECT_CONNECTION_ESTABLISHMENT_RESULT := "yes"
+*.STATSVTY.PROMPT1 := "OsmoPCU> "
+
+[MAIN_CONTROLLER]
+
+[EXECUTE]

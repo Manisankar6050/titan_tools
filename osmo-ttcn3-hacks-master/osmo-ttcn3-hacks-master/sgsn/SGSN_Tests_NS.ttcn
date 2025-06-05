@@ -1,0 +1,129 @@
+module SGSN_Tests_NS {
+
+/* Osmocom SGSN test suite in TTCN-3
+ * (C) 2020 sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+import from Osmocom_Gb_Types all;
+import from Osmocom_VTY_Functions all;
+import from Misc_Helpers all;
+import from NS_Types all;
+import from RAW_NS all;
+import from SGSN_Tests all;
+
+type component RAW_Test_CT extends RAW_NS_CT, test_CT {
+}
+
+testcase TC_NS_connect_reset() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+
+	/* Send a NS-ALIVE */
+	f_outgoing_ns_reset();
+
+	f_sleep(1.0);
+	f_clean_ns_codec();
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+testcase TC_NS_connect_alive() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+
+	/* Send a NS-ALIVE */
+	NSCP[0].send(t_NS_ALIVE);
+	alt {
+	[] NSCP[0].receive(t_NS_ALIVE_ACK);
+	[] NSCP[0].receive(tr_NS_STATUS(*)) { setverdict(fail); }
+	[] NSCP[0].receive { repeat; }
+	}
+
+	f_sleep(1.0);
+	f_clean_ns_codec();
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* perform outgoing SNS-SIZE procedure */
+testcase TC_SNS_size() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+	g_handle_rx_alive := true;
+
+	f_outgoing_sns_size();
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* outgoing SNS-SIZE procedure with more BSS side IPs than SGSN can handle */
+testcase TC_SNS_size_too_big() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+	g_handle_rx_alive := true;
+
+	f_outgoing_sns_size(cause := NS_CAUSE_INVALID_NR_OF_NSVCS, num_ip := 100);
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* perform outgoing SNS-CONFIG procedure (for BSS) */
+testcase TC_SNS_config_bss() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+	g_handle_rx_alive := true;
+
+	f_outgoing_sns_size();
+	f_outgoing_sns_config();
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* perform incoming SNS-CONFIG procedure (for SGSN) */
+testcase TC_SNS_config_sgsn() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 10.0);
+	g_handle_rx_alive := true;
+
+	f_outgoing_sns_size();
+	f_outgoing_sns_config();
+	f_incoming_sns_config();
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* perform full SNS handshake and then outbound NS-ALIVE */
+testcase TC_SNS_and_alive() runs on RAW_Test_CT {
+	f_init_vty();
+	f_init_ns_codec(mp_nsconfig[0], guard_secs := 120.0);
+	g_handle_rx_alive := true;
+
+	f_outgoing_sns_size();
+	f_outgoing_sns_config();
+	f_incoming_sns_config();
+	f_outgoing_ns_alive();
+	setverdict(pass);
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+control {
+
+	if (mp_nsconfig[0].handle_sns) {
+		execute( TC_SNS_size() );
+		execute( TC_SNS_size_too_big() );
+		execute( TC_SNS_config_bss() );
+		execute( TC_SNS_config_sgsn() );
+		execute( TC_SNS_and_alive() );
+	} else {
+		execute( TC_NS_connect_alive() );
+		execute( TC_NS_connect_reset() );
+	}
+}
+
+}

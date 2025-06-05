@@ -1,0 +1,419 @@
+module PCU_Tests_SNS {
+
+/* Osmocom PCU test suite for IP Sub-Network-Service (SNS) in TTCN-3
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+import from Osmocom_VTY_Functions all;
+import from PCU_Tests_NS all;
+import from SGSN_Components all;
+import from Osmocom_Gb_Types all;
+import from NS_Emulation all;
+import from NS_Types all;
+import from RAW_NS all;
+import from BSSGP_Types all;
+
+/**********************************************************************************
+ * Modern Gb/IP bring-up test cases using IP Sub-Network Service (SNS)
+ **********************************************************************************/
+
+/* PCU-originated SNS-SIZE: successful case */
+testcase TC_sns_po_size_success() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size();
+	f_sleep(1.0);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* PCU-originated SNS-SIZE: NACK from our side */
+testcase TC_sns_po_size_nack() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size(NS_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
+	/* FIXME: ensure we don't get a SNS-CONFIG */
+	/* FIXME: ensure we get re-transmitted SNS-SIZE attempts */
+	f_sleep(10.0);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* PCU-originated SNS-CONFIG: successful case */
+testcase TC_sns_po_config_success() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	f_sleep(1.0);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* PCU-originated SNS-CONFIG: successful case */
+testcase TC_sns_po_config_nack() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size();
+	f_incoming_sns_config(NS_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
+	/* FIXME: ensure we get re-transmitted SNS-CONFIG attempts */
+	f_sleep(10.0);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+
+/* SGSN-originated SNS-SIZE: successful case */
+testcase TC_sns_so_config_success() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	f_outgoing_sns_config();
+
+	/* wait for one ALIVE cycle, then ACK any further ALIVE in the background */
+	as_rx_alive_tx_ack(oneshot := true);
+	activate(as_rx_alive_tx_ack());
+
+	f_outgoing_ns_alive();
+
+	/* Expect BVC-RESET for signaling (0) and ptp BVCI */
+	as_rx_bvc_reset_tx_ack(0, omit, omit, oneshot := true);
+	as_rx_bvc_reset_tx_ack(mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id, omit, oneshot := true);
+	as_rx_bvc_unblock_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true);
+
+	/* wait for one FLOW-CONTROL BVC and then ACK any further in the future */
+	as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true);
+	activate(as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci));
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+private function f_sns_bringup_1c1u(boolean sgsn_originated_reset := false) runs on RAW_Test_CT {
+	/* Activate two NS codec ports */
+	f_init_ns_codec(mp_nsconfig);
+	f_init_ns_codec(mp_nsconfig, 1);
+	f_init_pcuif();
+	/* Perform Size + BSS-originated config */
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	/* perform SGSN-originated config using idx==0 for signalling and idx==1 for user traffic */
+	f_outgoing_sns_config_1c1u();
+
+	/* wait for one ALIVE cycle, then ACK any further ALIVE in the background
+	 * for both NS-VCs */
+	as_rx_alive_tx_ack(oneshot := true, idx := 0);
+	activate(as_rx_alive_tx_ack(idx := 0));
+	as_rx_alive_tx_ack(oneshot := true, idx := 1);
+	activate(as_rx_alive_tx_ack(idx := 1));
+
+	/* perform outgoing ALIVE procedure for both NS-VCs */
+	f_outgoing_ns_alive(0);
+	f_outgoing_ns_alive(1);
+
+	if (sgsn_originated_reset) {
+		/* Expect BVC-RESET, but ignore it to prevent a race condition of BVC RESETs */
+		var template PDU_NS pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, 0, omit));
+		f_ns_exp(pdu);
+		/* SGSN originated BVC-RESET on an uninitialized signalling BVC */
+		f_tx_bvc_reset_rx_ack(0, omit, omit);
+
+		/* Expect BVC-RESET PTP BVC, but ignore it to prevent a race condition of BVC RESETs */
+		pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id));
+		f_ns_exp(pdu);
+		/* SGSN originated BVC-RESET on an uninitialized PTP BVC */
+		f_tx_bvc_reset_rx_ack(mp_gb_cfg.bvc[0].bvci, omit, mp_gb_cfg.bvc[0].cell_id);
+	} else {
+		/* Expect BVC-RESET for signaling BVCI=0 */
+		as_rx_bvc_reset_tx_ack(0, omit, omit, oneshot := true);
+		/* Expect BVC-RESET from the PCU on PTP BVC */
+		as_rx_bvc_reset_tx_ack(mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id, omit, oneshot := true);
+	}
+	/* Expect UNBLOCK for ptp BVCI on signaling NS-VC (idx==0) */
+	as_rx_bvc_unblock_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true);
+
+	/* wait for one FLOW-CONTROL BVC and then ACK any further in the future. Flow
+	 * control happens on the p-t-p BVCI and hence on index 1 */
+	as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true, idx := 1);
+	activate(as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, idx := 1));
+}
+
+/* Test full IP-SNS bring-up with two NS-VCs, one sig-only and one user-only */
+testcase TC_sns_1c1u() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u();
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+private function f_sns_bringup_1c1u_separate(boolean sgsn_originated_reset := false) runs on RAW_Test_CT {
+	/* Activate two NS codec ports */
+	f_init_ns_codec(mp_nsconfig);
+	f_init_ns_codec(mp_nsconfig, 1);
+	f_init_ns_codec(mp_nsconfig, 2);
+	f_init_pcuif();
+	/* Perform Size + BSS-originated config */
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	/* perform SGSN-originated config using idx==0 for signalling and idx==1 for user traffic */
+	f_outgoing_sns_config_1c1u_separate();
+
+	/* wait for one ALIVE cycle, then ACK any further ALIVE in the background
+	 * for both NS-VCs */
+	as_rx_alive_tx_ack(oneshot := true, idx := 1);
+	activate(as_rx_alive_tx_ack(idx := 1));
+	as_rx_alive_tx_ack(oneshot := true, idx := 2);
+	activate(as_rx_alive_tx_ack(idx := 2));
+	/* ensure there's no NS-ALIVE received on idx==0 */
+	f_ensure_no_ns(t_NS_ALIVE, idx := 0);
+
+	/* perform outgoing ALIVE procedure for both NS-VCs */
+	f_outgoing_ns_alive(1);
+	f_outgoing_ns_alive(2);
+	/* ensure there's no response to NS-ALIVE sent on idx==0 */
+	f_outgoing_ns_alive_no_ack(idx := 0);
+
+	if (sgsn_originated_reset) {
+		/* Expect BVC-RESET, but ignore it to prevent a race condition of BVC RESETs */
+		var template PDU_NS pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, 0, omit));
+		f_ns_exp(pdu, idx := 1);
+		/* SGSN originated BVC-RESET on an uninitialized sign BVC */
+		f_tx_bvc_reset_rx_ack(0, omit, omit, idx := 1);
+
+		/* Expect BVC-RESET PTP BVC, but ignore it to prevent a race condition of BVC RESETs */
+		pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id));
+		f_ns_exp(pdu, idx := 1);
+		f_tx_bvc_reset_rx_ack(mp_gb_cfg.bvc[0].bvci, omit, mp_gb_cfg.bvc[0].cell_id, idx := 1);
+	} else {
+		/* Expect BVC-RESET for signaling BVCI=0 */
+		as_rx_bvc_reset_tx_ack(0, omit, omit, oneshot := true, idx := 1);
+		/* Expect BVC-RESET from the PCU on PTP BVC */
+		as_rx_bvc_reset_tx_ack(mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id, omit, oneshot := true, idx := 1);
+	}
+	/* Expect UNBLOCK for ptp BVCI on signaling NS-VC (idx==1) */
+	as_rx_bvc_unblock_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true, idx := 1);
+
+	/* wait for one FLOW-CONTROL BVC and then ACK any further in the future. Flow
+	 * control happens on the p-t-p BVCI and hence on index 1 */
+	as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true, idx := 2);
+	activate(as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, idx := 2));
+}
+
+/* Test full IP-SNS bring-up with two NS-VCs, one sig-only and one user-only - and where
+ * the initial IP/port for the SNS procedure is *not* part of the NS-VCs later */
+testcase TC_sns_1c1u_separate() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u_separate();
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* Test full IP-SNS bring-up with two NS-VCs, one sig-only and one user-only and use
+ * SGSN-originated BVC-RESET rather than BSS-originated */
+testcase TC_sns_1c1u_so_bvc_reset() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u_separate(sgsn_originated_reset := true);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* Test full IP_SNS bring-up over an initial NS-VC with two NS-VCs */
+testcase TC_sns_1c1u_unconfigured_nsvc() runs on RAW_Test_CT {
+	f_init_vty(testcasename());
+	f_sns_bringup_1c1u_separate();
+	f_vty_transceive_not_match(PCUVTY, "show ns entities", pattern "*UNCONFIGURED*");
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* Transmit BVC-RESET before NS-ALIVE of PCU was ACKed: expect no response */
+testcase TC_sns_1c1u_so_bvc_reset_too_early() runs on RAW_Test_CT {
+	/* Activate two NS codec ports */
+	f_init_ns_codec(mp_nsconfig);
+	f_init_ns_codec(mp_nsconfig, 1);
+	f_init_ns_codec(mp_nsconfig, 2);
+	f_init_pcuif();
+	/* Perform Size + BSS-originated config */
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	/* perform SGSN-originated config using idx==0 for signalling and idx==1 for user traffic */
+	f_outgoing_sns_config_1c1u_separate();
+
+	/* DON'T ACK ANY INBOUND NS-ALIVE HERE! */
+
+	/* perform outgoing ALIVE procedure for both NS-VCs */
+	f_outgoing_ns_alive(1);
+	f_outgoing_ns_alive(2);
+	/* ensure there's no response to NS-ALIVE sent on idx==0 */
+	f_outgoing_ns_alive_no_ack(idx := 0);
+
+	/* Transmit BVC-RESET and expect no ACK*/
+	f_tx_bvc_reset_rx_ack(0, omit, omit, idx := 1, exp_ack := false);
+	f_tx_bvc_reset_rx_ack(mp_gb_cfg.bvc[0].bvci, omit, mp_gb_cfg.bvc[0].cell_id, idx := 1, exp_ack := false);
+	f_clean_ns_codec();
+}
+
+/* Do an SGSN originated BSSGP-Reset of a not-configured BVCI.
+ *
+ * PCU  -X SGSN: BVCI  0 BSSGP-RESET (ignores reset)
+ * PCU <-  SGSN: BVCI  0 BSSGP-RESET
+ * PCU  -> SGSN: BVCI  0 BSSGP-RESET-ACK (with cell information)
+ * PCU  -X SGSN: BVCI 23 BSSGP-RESET (ignores reset, 23 is configured on PCU, 24 is not configured)
+ * PCU <-  SGSN: BVCI 24 BSSGP-RESET (unconfigured BVCI)
+ * PCU  -> SGSN: BVCI 24 BSSGP-STATUS Unknown BVCI
+ */
+testcase TC_sns_so_bvc_reset_unknown_bvci() runs on RAW_Test_CT {
+	g_handle_rx_alive := true;
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+	f_incoming_sns_size();
+	f_incoming_sns_config();
+	f_outgoing_sns_config();
+
+	/* Expect BVC-RESET, but ignore it to prevent a race condition of BVC RESETs */
+	var template PDU_NS pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, 0, omit));
+	f_ns_exp(pdu, idx := 0);
+	/* SGSN originated BVC-RESET on an uninitialized sign BVC */
+	f_tx_bvc_reset_rx_ack(0, omit, omit, idx := 0);
+
+	/* Expect BVC-RESET PTP BVC, but ignore it to prevent a race condition of BVC RESETs */
+	pdu := tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_RESET(?, mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id));
+	f_ns_exp(pdu);
+
+	/* Send a BVC-RESET on the wrong BVC */
+	var BssgpCellId cell_id := mp_gb_cfg.bvc[0].cell_id;
+	cell_id.cell_id := cell_id.cell_id + 1;
+	var PDU_BSSGP bssgp_tx := valueof(ts_BVC_RESET(BSSGP_CAUSE_NET_SV_CAP_MOD_GT_ZERO_KBPS,
+							mp_gb_cfg.bvc[0].bvci + 1, cell_id));
+	NSCP[0].send(ts_NS_UNITDATA(t_SduCtrlB, 0, enc_PDU_BSSGP(bssgp_tx)));
+	NSCP[0].receive(tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BSSGP_STATUS(mp_gb_cfg.bvc[0].bvci + 1, BSSGP_CAUSE_BVCI_UNKNOWN, *)));
+	setverdict(pass);
+
+	f_clean_ns_codec();
+}
+
+/* Test adding new IP endpoints at runtime */
+testcase TC_sns_add() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u();
+
+	/* create another NS codec port on the tester side */
+	f_init_ns_codec(mp_nsconfig, 2);
+
+	g_handle_rx_alive := true;
+	f_outgoing_sns_add(idx_add := 2, w_sig := 0, w_user := 1, idx := 0);
+	g_handle_rx_alive := false;
+
+	/* wait for one ALIVE cycle, then ACK any further ALIVE in the background */
+	as_rx_alive_tx_ack(oneshot := true, idx := 2);
+	activate(as_rx_alive_tx_ack(idx := 2));
+
+	f_outgoing_ns_alive(2);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* Test adding an already present IP endpoint at runtime */
+testcase TC_sns_add_nack() runs on RAW_Test_CT {
+	g_handle_rx_alive := true;
+
+	f_sns_bringup_1c1u();
+
+	f_outgoing_sns_add(idx_add := 0, w_sig := 0, w_user := 1, idx := 0, cause := NS_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* Test deleting IP endpoints at runtime */
+function f_TC_sns_del(integer idx := 0, integer idx_del := 1, float tout := 20.0) runs on RAW_Test_CT {
+	g_handle_rx_alive := true;
+	f_outgoing_sns_del(idx_del := idx_del, w_sig := 0, w_user := 1, idx := idx);
+	g_handle_rx_alive := false;
+
+	/* A small grace period to prevent race conditions */
+	timer Tgrace := 1.0;
+	Tgrace.start;
+	alt {
+	[] NSCP[idx_del].receive(t_NS_ALIVE) {}
+	[] Tgrace.timeout {}
+	}
+
+	/* Fail on any NS PDUs */
+	timer T := tout;
+	T.start;
+	alt {
+	[] ax_rx_fail_on_any_ns(idx_del) {}
+	[] T.timeout {
+		setverdict(pass);
+		}
+	}
+}
+
+testcase TC_sns_del() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u();
+
+	f_TC_sns_del();
+
+	f_clean_ns_codec();
+}
+
+/* Test changing weights at runtime */
+testcase TC_sns_chg_weight() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u();
+
+	g_handle_rx_alive := true;
+	/* change w_user from 1 to 200 */
+	f_outgoing_sns_chg_weight(idx_chg := 1, w_sig := 0, w_user := 200, idx := 0);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+import from PCUIF_Types all;
+import from PCUIF_CodecPort all;
+
+altstep as_pcu_activate() runs on RAW_PCU_CT {
+	var PCUIF_send_data sd;
+	[] PCU.receive(t_SD_PCUIF(g_pcu_conn_id,  tr_PCUIF_ACT_REQ(?, ?, ?))) -> value sd { repeat; }
+
+}
+
+testcase TC_pcuif_rach() runs on RAW_Test_CT {
+	f_sns_bringup_1c1u();
+	activate(as_pcu_activate());
+
+	f_pcuif_tx(ts_PCUIF_RACH_IND(bts_nr:=0, trx_nr:=0, ts_nr:=0, ra:=23,
+				     is_11bit:=0, burst_type:=BURST_TYPE_0,
+				     fn:=42, arfcn:=871, qta:=0));
+	PCU.receive(t_SD_PCUIF(g_pcu_conn_id,
+			       tr_PCUIF_DATA_REQ(bts_nr:=0, trx_nr:=0, ts_nr:=0, block_nr:=?, fn:=?,
+						 sapi:=PCU_IF_SAPI_AGCH_2, data:=?)));
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+
+
+control {
+	execute( TC_sns_po_size_success() );
+	execute( TC_sns_po_size_nack() );
+	execute( TC_sns_po_config_success() );
+	execute( TC_sns_po_config_nack() );
+	execute( TC_sns_so_config_success() );
+	execute( TC_sns_1c1u() );
+	execute( TC_sns_1c1u_separate() );
+	execute( TC_sns_1c1u_so_bvc_reset() );
+	execute( TC_sns_1c1u_so_bvc_reset_too_early() );
+	execute( TC_sns_1c1u_unconfigured_nsvc() );
+	execute( TC_sns_so_bvc_reset_unknown_bvci() );
+	execute( TC_sns_add() );
+	execute( TC_sns_add_nack() );
+	execute( TC_sns_del() );
+	execute( TC_sns_chg_weight() );
+
+	execute( TC_pcuif_rach() );
+}
+
+}

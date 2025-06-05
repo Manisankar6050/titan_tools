@@ -1,0 +1,181 @@
+module IPA_Types {
+
+/* Definitions of abstract data types for the IPA multiplex protocol.
+ * Uses the TITAN "RAW" codec syntax to auto-generate encoder and decoder
+ * functions.
+ *
+ * (C) 2017-2018 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+
+type enumerated IpaStreamId {
+	IPAC_PROTO_RSL_TRX0	(0),
+	IPAC_PROTO_RSL_TRX1	(1),
+	IPAC_PROTO_RSL_TRX2	(2),
+	IPAC_PROTO_RSL_TRX3	(3),
+	IPAC_PROTO_OSMO		(238),
+	IPAC_PROTO_MGCP_OLD	(252),
+	IPAC_PROTO_SCCP		(253),
+	IPAC_PROTO_CCM		(254),
+	IPAC_PROTO_OML		(255)
+} with { variant "FIELDLENGTH(8)" }
+
+type enumerated IpaExtStreamId {
+	IPAC_PROTO_EXT_CTRL	('00'H),
+	IPAC_PROTO_EXT_MGCP	('01'H),
+	IPAC_PROTO_EXT_LAC	('02'H),
+	IPAC_PROTO_EXT_SMSC	('03'H),
+	IPAC_PROTO_EXT_ORC	('04'H),
+	IPAC_PROTO_EXT_GSUP	('05'H),
+	IPAC_PROTO_EXT_OAP	('06'H),
+	IPAC_PROTO_EXT_RSPRO	('07'H),
+	IPAC_PROTO_EXT_OSMO_PCU	('08'H)
+} with { variant "FIELDLENGTH(8)" }
+
+external function enc_PDU_IPA(in PDU_IPA pdu) return octetstring
+with { extension "prototype(convert)"
+       extension "encode(RAW)"
+     }
+
+external function dec_PDU_IPA(in octetstring stream) return PDU_IPA
+with { extension "prototype(convert)"
+       extension "decode(RAW)"
+     }
+
+type record PDU_IPA
+{
+	uint16_t	lengthInd,
+	IpaStreamId	streamId,
+	IpaExtStreamId	streamIdExt optional,
+	octetstring	payloadData
+} with {
+	variant (lengthInd) "LENGTHTO(streamIdExt,payloadData)";
+	variant (lengthInd) "FIELDLENGTH(16)";
+	variant (lengthInd) "BYTEORDER(last)";
+	variant (streamIdExt) "PRESENCE(streamId=IPAC_PROTO_OSMO)";
+}
+
+template PDU_IPA ts_PDU_IPA(IpaStreamId id, template octetstring payload) := {
+	lengthInd := 0,
+	streamId := id,
+	streamIdExt := omit,
+	payloadData := valueof(payload)
+}
+
+
+type enumerated IpaCcmMsgtype {
+	IPAC_MSGT_PING		('00'H),
+	IPAC_MSGT_PONG		('01'H),
+	IPAC_MSGT_ID_GET	('04'H),
+	IPAC_MSGT_ID_RESP	('05'H),
+	IPAC_MSGT_ID_ACK	('06'H)
+} with { variant "FIELDLENGTH(8)" }
+
+type enumerated IpaCcmIdTag {
+	IPAC_IDTAG_SERNR	('00'H),
+	IPAC_IDTAG_UNITNAME	('01'H),
+	IPAC_IDTAG_LOCATION1	('02'H),
+	IPAC_IDTAG_LOCATION2	('03'H),
+	IPAC_IDTAG_EQUIPVERS	('04'H),
+	IPAC_IDTAG_SWVERSION	('05'H),
+	IPAC_IDTAG_IPADDR	('06'H),
+	IPAC_IDTAG_MACADDR	('07'H),
+	IPAC_IDTAG_UNITID	('08'H),
+	IPAC_IDTAG_OSMO_RAND	('23'H)
+} with { variant "FIELDLENGTH(8)" }
+
+
+type record IpaCcmGetPart {
+	uint8_t		len,
+	IpaCcmIdTag	tag
+} with { variant (len) "LENGTHTO(tag)" }
+
+type set of IpaCcmGetPart IpaCcmIdGet;
+
+type record IpaCcmRespPart {
+	uint16_t	len,
+	IpaCcmIdTag	tag,
+	octetstring	data
+} with { variant (len) "LENGTHTO(data,tag)" }
+type set of IpaCcmRespPart IpaCcmIdResp;
+
+type union IpaCcmUnion {
+	IpaCcmIdGet	get,
+	IpaCcmIdResp	resp,
+	octetstring	other
+}
+
+type record PDU_IPA_CCM {
+	IpaCcmMsgtype	msg_type,
+	IpaCcmUnion	u optional
+} with { variant (u) "CROSSTAG(
+			get, msg_type = IPAC_MSGT_ID_GET;
+			resp, msg_type = IPAC_MSGT_ID_RESP;
+			other, OTHERWISE;
+	)" };
+
+
+external function enc_PDU_IPA_CCM(in PDU_IPA_CCM pdu) return octetstring
+with { extension "prototype(convert)"
+       extension "encode(RAW)"
+     }
+
+external function dec_PDU_IPA_CCM(in octetstring stream) return PDU_IPA_CCM
+with { extension "prototype(convert)"
+       extension "decode(RAW)"
+     }
+
+/* Example: 1234/0/0 (site_id=1234, bts_id=0, trx_id=0) */
+type record IpaUnitId {
+	integer		site_id,
+	integer		bts_id,
+	integer		trx_id
+} with {
+	encode "TEXT"
+	variant "SEPARATOR('/')"
+	/* workaround for https://gitlab.eclipse.org/eclipse/titan/titan.core/-/issues/725 */
+	variant (trx_id) "TEXT_CODING(,,'\d+')"
+};
+
+external function enc_IpaUnitId(in IpaUnitId unit_id) return charstring
+	with { extension "prototype(convert) encode(TEXT)" }
+external function dec_IpaUnitId(in charstring stream) return IpaUnitId
+	with { extension "prototype(convert) decode(TEXT)" }
+
+template (value) IpaUnitId ts_IpaUnitId(integer site_id := 1234,
+					integer bts_id := 0,
+					integer trx_id := 0) := {
+	site_id := site_id,
+	bts_id  := bts_id,
+	trx_id  := trx_id
+};
+template (present) IpaUnitId tr_IpaUnitId(template (present) integer site_id := ?,
+					  template (present) integer bts_id := ?,
+					  template (present) integer trx_id := ?) := {
+	site_id := site_id,
+	bts_id  := bts_id,
+	trx_id  := trx_id
+};
+
+/* Finds an IE with the given tag in IPA IDENTITY RESPONSE.
+ * Returns index of an IE if found, -1 otherwise. */
+function f_ipa_id_resp_find_ie(in IpaCcmIdResp resp, IpaCcmIdTag tag)
+return integer {
+	for (var integer i := 0; i < sizeof(resp); i := i + 1) {
+		if (resp[i].tag == tag) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+
+} with { encode "RAW" }

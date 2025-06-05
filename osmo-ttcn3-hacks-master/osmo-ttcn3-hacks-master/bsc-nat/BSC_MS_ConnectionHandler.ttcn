@@ -1,0 +1,219 @@
+module BSC_MS_ConnectionHandler {
+
+/* (C) 2017-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from SCCPasp_Types all;
+import from BSSAP_Types all;
+import from BSSAP_CodecPort all;
+import from RAN_Emulation all;
+import from BSSMAP_Templates all;
+
+import from MobileL3_Types all;
+import from MobileL3_CommonIE_Types all;
+import from L3_Templates all;
+
+import from MGCP_Types all;
+import from MGCP_Templates all;
+import from SDP_Types all;
+import from SDP_Templates all;
+
+type function void_fn_bsc_ms(charstring id) runs on BSC_MS_ConnHdlr;
+
+/* this component represents a single subscriber connection at the MSC.
+ * There is a 1:1 mapping between SCCP connections and RAN_ConnHdlr components.
+ * We inherit all component variables, ports, functions, ... from RAN_ConnHdlr */
+type component BSC_MS_ConnHdlr extends RAN_ConnHdlr {
+	/* SCCP Connecction Identifier for the underlying SCCP connection */
+	var integer g_sccp_conn_id;
+	var MgcpConnectionId g_mgcp_conn_id;
+	var SDP_Message g_sdp;
+	var BSC_State g_state;
+	var BSC_MS_TestHdlrParams g_pars;
+}
+
+type record BSC_MS_TestHdlrParams {
+	SCCP_PAR_Address sccp_addr_own,
+	SCCP_PAR_Address sccp_addr_remote,
+	boolean use_osmux
+};
+
+/* Callback function from general RAN_Emulation whenever a new incoming
+ * SCCP connection arrivces. Must create + start a new component */
+private function CreateCallback(BSSAP_N_CONNECT_ind conn_ind, charstring id)
+runs on RAN_Emulation_CT return RAN_ConnHdlr {
+	log("Incoming SCCP Connection on BSC ?!?");
+	self.stop;
+}
+
+/* Callback function from general RAN_Emulation whenever a connectionless
+ * BSSMAP message arrives.  Can retunr a PDU_BSSAP that should be sent in return */
+private function UnitdataCallback(PDU_BSSAP bssap)
+runs on RAN_Emulation_CT return template PDU_BSSAP {
+	var template PDU_BSSAP resp := omit;
+
+	if (match(bssap, tr_BSSMAP_Reset)) {
+		resp := ts_BSSMAP_ResetAck;
+	}
+
+	return resp;
+}
+
+const RanOps BSC_MS_RanOps := {
+	create_cb := refers(CreateCallback),
+	unitdata_cb := refers(UnitdataCallback),
+	decode_dtap := false,
+	role_ms := true,
+	protocol := RAN_PROTOCOL_BSSAP,
+	transport := BSSAP_TRANSPORT_AoIP,
+	use_osmux := false,
+	bssap_reset_retries := 1,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+}
+
+
+function f_gen_cl3(hexstring imsi) return PDU_BSSAP {
+	var MobileIdentityLV mi := valueof(ts_MI_IMSI_LV(imsi));
+	var PDU_ML3_MS_NW l3 := valueof(ts_CM_SERV_REQ(CM_TYPE_MO_CALL, mi));
+	var BSSMAP_IE_CellIdentifier cell_id := valueof(ts_CellID_LAC_CI(23, 42));
+	var PDU_BSSAP bssap := valueof(ts_BSSMAP_ComplL3(cell_id, enc_PDU_ML3_MS_NW(l3)));
+	return bssap;
+}
+
+type enumerated BSC_State {
+	BSC_STATE_NONE,
+	BSC_STATE_WAIT_ASS_REQ,
+	BSC_STATE_WAIT_CRCX,
+	BSC_STATE_WAIT_MDCX,
+	BSC_STATE_WAIT_MDCX2,
+	BSC_STATE_WAIT_CLEAR_CMD,
+	BSC_STATE_WAIT_DLCX,
+	BSC_STATE_WAIT_DISC_IND
+}
+
+/* main function processing various incoming events */
+function bsc_ms_establish_fully(charstring id)
+runs on BSC_MS_ConnHdlr {
+	var PDU_BSSAP bssap;
+	var MgcpCommand mgcp_cmd;
+	var template MgcpResponse mgcp_resp;
+	var MgcpOsmuxCID osmux_cid;
+
+	log("Starting main of BSC_MS_ConnHdlr");
+
+	g_mgcp_conn_id := f_mgcp_alloc_conn_id();
+
+	/* generate and send the Complete Layer3 Info */
+	bssap := f_gen_cl3('901770123456789'H);
+	var BSSAP_Conn_Req creq := {
+		addr_peer := g_pars.sccp_addr_remote,
+		addr_own := g_pars.sccp_addr_own,
+		bssap := bssap
+	}
+	g_state := BSC_STATE_WAIT_ASS_REQ;
+	BSSAP.send(creq);
+
+	while (true) {
+		alt {
+		/* new SCCP-level connection indication from BSC */
+		[g_state == BSC_STATE_WAIT_ASS_REQ] BSSAP.receive(tr_BSSMAP_AssignmentReq) -> value bssap {
+			/* FIXME: Read CIC */
+			/* respond with ASSIGNMENT COMPL */
+			g_state := BSC_STATE_WAIT_CRCX;
+			BSSAP.send(ts_BSSMAP_AssignmentComplete(bssap.pdu.bssmap.assignmentRequest.circuitIdentityCode));
+			}
+
+		/* CRCX -> OK */
+		[g_state == BSC_STATE_WAIT_CRCX] BSSAP.receive(tr_CRCX) -> value mgcp_cmd {
+			/* FIXME: proper SDP parameters */
+			g_sdp := valueof(ts_SDP("127.0.0.1", "127.0.0.1", "foo", "21", 1000, { "98" },
+						{ valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+						  valueof(ts_SDP_ptime(20)) }));
+			/* respond with CRCX_ACK */
+			g_state := BSC_STATE_WAIT_MDCX;
+
+			if (g_pars.use_osmux != f_MgcpCmd_contains_par(mgcp_cmd, "X-OSMUX")) {
+				setverdict(fail, log2str("Received Osmux CID presence doesn't match presence expectancy (", g_pars.use_osmux, ")"));
+				self.stop;
+			}
+
+			if (g_pars.use_osmux) {
+				osmux_cid := f_MgcpCmd_extract_osmux_cid(mgcp_cmd);
+				mgcp_resp := ts_CRCX_ACK_osmux(mgcp_cmd.line.trans_id, g_mgcp_conn_id, osmux_cid, g_sdp);
+			} else {
+				mgcp_resp := ts_CRCX_ACK(mgcp_cmd.line.trans_id, g_mgcp_conn_id, g_sdp);
+			}
+			BSSAP.send(valueof(mgcp_resp));
+			}
+
+		/* MDCX -> OK */
+		[g_state == BSC_STATE_WAIT_MDCX] BSSAP.receive(tr_MDCX) -> value mgcp_cmd {
+			/* FIXME: verify if local part of endpoint name matches CIC */
+			/* respond with MDCX_ACK */
+			g_state := BSC_STATE_WAIT_MDCX2;
+			BSSAP.send(ts_MDCX_ACK(mgcp_cmd.line.trans_id, g_mgcp_conn_id, g_sdp));
+			}
+
+		/* MDCX -> OK */
+		[g_state == BSC_STATE_WAIT_MDCX2] BSSAP.receive(tr_MDCX) -> value mgcp_cmd {
+			/* FIXME: verify if local part of endpoint name matches CIC */
+			/* respond with MDCX_ACK */
+			g_state := BSC_STATE_WAIT_CLEAR_CMD;
+			BSSAP.send(ts_MDCX_ACK(mgcp_cmd.line.trans_id, g_mgcp_conn_id, g_sdp));
+			}
+
+		/* CLEAR COMMAND from MSC; respond with CLEAR COMPLETE) */
+		[g_state == BSC_STATE_WAIT_CLEAR_CMD] BSSAP.receive(tr_BSSMAP_ClearCommand) -> value bssap {
+			g_state := BSC_STATE_WAIT_DLCX;
+			BSSAP.send(ts_BSSMAP_ClearComplete);
+			}
+
+		/* DLCX -> OK */
+		[g_state == BSC_STATE_WAIT_DLCX] BSSAP.receive(tr_DLCX) -> value mgcp_cmd {
+			/* FIXME: verify if local part of endpoint name matches CIC */
+			g_state := BSC_STATE_WAIT_DISC_IND;
+			BSSAP.send(ts_DLCX_ACK(mgcp_cmd.line.trans_id, g_mgcp_conn_id));
+			}
+
+		[] BSSAP.receive(tr_BSSAP_DTAP) -> value bssap {
+			/* FIXME: verify if local part of endpoint name matches CIC */
+			var PDU_ML3_MS_NW l3 := dec_PDU_ML3_MS_NW(bssap.pdu.dtap);
+			log("Unhandled DTAP ", l3);
+			}
+
+		[g_state == BSC_STATE_WAIT_DISC_IND] BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND) {
+			setverdict(pass);
+			self.stop;
+			}
+
+		[] BSSAP.receive(tr_MSC_CONN_PRIM_CONF_IND) {
+			}
+
+		/* disconnect in invalid state */
+		[] BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND) {
+			setverdict(fail);
+			self.stop;
+			}
+
+
+		[] BSSAP.receive(PDU_BSSAP:?) -> value bssap {
+			log("Received unhandled SCCP-CO: ", bssap);
+			}
+		}
+	}
+}
+
+function bsc_ms_do_nothing(charstring id)
+runs on BSC_MS_ConnHdlr {
+}
+
+}

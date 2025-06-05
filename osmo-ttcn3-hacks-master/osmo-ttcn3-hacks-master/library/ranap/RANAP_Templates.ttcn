@@ -1,0 +1,2114 @@
+module RANAP_Templates {
+
+import from General_Types all;
+import from Misc_Helpers all;
+import from Native_Functions all;
+
+import from RANAP_IEs all;
+import from RANAP_CommonDataTypes all;
+import from RANAP_Constants all;
+import from RANAP_Containers all;
+import from RANAP_PDU_Contents all;
+import from RANAP_PDU_Descriptions all;
+
+template (value) Cause ts_RanapCause_om_intervention := { misc := 113 };
+template (value) Cause ts_RanapCause_nas_normal := { nAS := 83 };
+template (value) Cause ts_RanapCause_radio_rab_preempted := { radioNetwork := 1 };
+template (value) Cause ts_RanapCause_radio_conn_release := { radioNetwork := 40 };
+template (value) Cause ts_RanapCause_radio_conn_lost := { radioNetwork := 46 };
+
+/*****************************************************************************************************
+ * Reset
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_Reset(template (value) Cause cause, template (value) CN_DomainIndicator dom,
+			  template (omit) Reset.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Reset,
+		criticality := reject,
+		value_ := {
+			Reset := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}, {
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_Reset(template Cause cause := ?, template CN_DomainIndicator dom := ?,
+			  template Reset.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_Reset,
+		criticality := reject,
+		value_ := {
+			Reset := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}, {
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, *
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_ResetAck(template (value) CN_DomainIndicator dom,
+		  template (omit) ResetAcknowledge.protocolExtensions exts := omit) := {
+	successfulOutcome := {
+		procedureCode := id_Reset,
+		criticality := reject,
+		value_ := {
+			ResetAcknowledge := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_ResetAck(template CN_DomainIndicator dom := ?,
+		  template ResetAcknowledge.protocolExtensions exts := *) := {
+	successfulOutcome := {
+		procedureCode := id_Reset,
+		criticality := reject,
+		value_ := {
+			ResetAcknowledge := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, *
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Reset Resource
+ *****************************************************************************************************/
+
+template (present) RANAP_PDU
+tr_RANAP_ResetResource(template (present) CN_DomainIndicator dom := ?,
+		       template (present) Cause cause := ?,
+		       template (present) IuSignallingConnectionIdentifier sigc_id := ?,
+		       template ResetResource.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_ResetResource,
+		criticality := reject,
+		value_ := {
+			resetResource := {
+				protocolIEs := {
+					 {
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					},{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					},{
+						id := id_IuSigConIdList,
+						criticality := ignore,
+						value_ := {
+							resetResourceList := {
+								{
+									{
+									id := id_IuSigConIdItem,
+									criticality := reject,
+									value_ := {
+										resetResourceItem := {
+											iuSigConId := sigc_id,
+											iE_Extensions := omit
+										}
+									}
+									}
+								}
+							}
+						}
+					}, *
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_ResetResourceAck(template (value) CN_DomainIndicator dom,
+		  template (value) IuSignallingConnectionIdentifier sigc_id) := {
+	successfulOutcome := {
+		procedureCode := id_ResetResource,
+		criticality := reject,
+		value_ := {
+			resetResourceAcknowledge := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := reject,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					},{
+						id := id_IuSigConIdList,
+						criticality := ignore,
+						value_ := {
+							resetResourceAckList := {
+								{
+									{
+									id := id_IuSigConIdItem,
+									criticality := reject,
+									value_ := {
+										resetResourceAckItem := {
+											iuSigConId := sigc_id,
+											iE_Extensions := omit
+										}
+									}
+									}
+								}
+							}
+						}
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Security Mode Control
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_SecurityModeCmd(template (value) PermittedIntegrityProtectionAlgorithms uia_algs,
+			 template (value) IntegrityProtectionKey uia_key,
+			 template (value) KeyStatus key_sts,
+		  	 template (omit) SecurityModeCommand.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeCommand := {
+				protocolIEs := {
+					{
+						id := id_IntegrityProtectionInformation,
+						criticality := reject,
+						value_ := {
+							integrityProtectionInformation := {
+								permittedAlgorithms := uia_algs,
+								key := uia_key,
+								iE_Extensions := omit
+							}
+						}
+					}, {
+						id := id_KeyStatus,
+						criticality := reject,
+						value_ := {
+							keyStatus := key_sts
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_SecurityModeCmd(template PermittedIntegrityProtectionAlgorithms uia_algs,
+			 template IntegrityProtectionKey uia_key,
+			 template KeyStatus key_sts,
+		  	 template SecurityModeCommand.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeCommand := {
+				protocolIEs := {
+					{
+						id := id_IntegrityProtectionInformation,
+						criticality := reject,
+						value_ := {
+							integrityProtectionInformation := {
+								permittedAlgorithms := uia_algs,
+								key := uia_key,
+								iE_Extensions := *
+							}
+						}
+					}, {
+						id := id_KeyStatus,
+						criticality := reject,
+						value_ := {
+							keyStatus := key_sts
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_SecurityModeCmdEnc(template (value) PermittedIntegrityProtectionAlgorithms uia_algs,
+			    template (value) IntegrityProtectionKey uia_key,
+			    template (value) KeyStatus key_sts,
+			    template (value) PermittedEncryptionAlgorithms uea_algs,
+			    template (value) EncryptionKey uea_key,
+		  	    template (omit) SecurityModeCommand.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeCommand := {
+				protocolIEs := {
+					{
+						id := id_IntegrityProtectionInformation,
+						criticality := reject,
+						value_ := {
+							integrityProtectionInformation := {
+								permittedAlgorithms := uia_algs,
+								key := uia_key,
+								iE_Extensions := omit
+							}
+						}
+					}, {
+						id := id_EncryptionInformation,
+						criticality := ignore,
+						value_ := {
+							encryptionInformation := {
+								permittedAlgorithms := uea_algs,
+								key := uea_key,
+								iE_Extensions := omit
+							}
+						}
+					}, {
+						id := id_KeyStatus,
+						criticality := reject,
+						value_ := {
+							keyStatus := key_sts
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_SecurityModeCmdEnc(template PermittedIntegrityProtectionAlgorithms uia_algs,
+			    template IntegrityProtectionKey uia_key,
+			    template KeyStatus key_sts,
+			    template PermittedEncryptionAlgorithms uea_algs,
+			    template EncryptionKey uea_key,
+		  	    template SecurityModeCommand.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeCommand := {
+				protocolIEs := {
+					{
+						id := id_IntegrityProtectionInformation,
+						criticality := reject,
+						value_ := {
+							integrityProtectionInformation := {
+								permittedAlgorithms := uia_algs,
+								key := uia_key,
+								iE_Extensions := *
+							}
+						}
+					}, {
+						id := id_EncryptionInformation,
+						criticality := ignore,
+						value_ := {
+							encryptionInformation := {
+								permittedAlgorithms := uea_algs,
+								key := uea_key,
+								iE_Extensions := *
+							}
+						}
+					}, {
+						id := id_KeyStatus,
+						criticality := reject,
+						value_ := {
+							keyStatus := key_sts
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_SecurityModeComplete(template (value) IntegrityProtectionAlgorithm uia_alg,
+			      template (omit) SecurityModeComplete.protocolExtensions exts := omit) := {
+	successfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeComplete := {
+				protocolIEs := {
+					{
+						id := id_ChosenIntegrityProtectionAlgorithm,
+						criticality := reject,
+						value_ := {
+							chosenIntegrityProtectionAlgorithm := uia_alg
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_SecurityModeComplete(template IntegrityProtectionAlgorithm uia_alg,
+			      template SecurityModeComplete.protocolExtensions exts := *) := {
+	successfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeComplete := {
+				protocolIEs := {
+					{
+						id := id_ChosenIntegrityProtectionAlgorithm,
+						criticality := reject,
+						value_ := {
+							chosenIntegrityProtectionAlgorithm := uia_alg
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_SecurityModeCompleteEnc(template (value) IntegrityProtectionAlgorithm uia_alg,
+				 template (value) EncryptionAlgorithm uea_alg,
+				 template (omit) SecurityModeComplete.protocolExtensions exts := omit) := {
+	successfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeComplete := {
+				protocolIEs := {
+					{
+						id := id_ChosenIntegrityProtectionAlgorithm,
+						criticality := reject,
+						value_ := {
+							chosenIntegrityProtectionAlgorithm := uia_alg
+						}
+					}, {
+						id := id_ChosenEncryptionAlgorithm,
+						criticality := ignore,
+						value_ := {
+							chosenEncryptionAlgorithm := uea_alg
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_SecurityModeCompleteEnc(template IntegrityProtectionAlgorithm uia_alg,
+				 template EncryptionAlgorithm uea_alg,
+				 template SecurityModeComplete.protocolExtensions exts := *) := {
+	successfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeComplete := {
+				protocolIEs := {
+					{
+						id := id_ChosenIntegrityProtectionAlgorithm,
+						criticality := reject,
+						value_ := {
+							chosenIntegrityProtectionAlgorithm := uia_alg
+						}
+					}, {
+						id := id_ChosenEncryptionAlgorithm,
+						criticality := ignore,
+						value_ := {
+							chosenEncryptionAlgorithm := uea_alg
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_SecurityModeReject(template (value) Cause cause,
+			    template (omit) SecurityModeReject.protocolExtensions exts := omit) := {
+	unsuccessfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeReject := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_SecurityModeReject(template Cause cause,
+			    template SecurityModeReject.protocolExtensions exts := *) := {
+	unsuccessfulOutcome := {
+		procedureCode := id_SecurityModeControl,
+		criticality := reject,
+		value_ := {
+			securityModeReject := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+
+
+/*****************************************************************************************************
+ * Iu Release Request
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_IuReleaseRequest(template (value) Cause cause,
+			  template (omit) Iu_ReleaseRequest.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Iu_ReleaseRequest,
+		criticality := ignore,
+		value_ := {
+			iu_ReleaseRequest := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_IuReleaseRequest(template Cause cause,
+			  template Iu_ReleaseRequest.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_Iu_ReleaseRequest,
+		criticality := ignore,
+		value_ := {
+			iu_ReleaseRequest := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * RAB Release
+ *****************************************************************************************************/
+
+template (value) RAB_ID
+t_RAB_id(integer rab_id) := int2bit(rab_id, 8);
+
+template (value) TransportLayerAddress ts_RAB_TLA4(OCT4 ip) := hex2bit('350001'H & oct2hex(ip) & '00000000000000000000000000'H);
+template (value) TransportLayerAddress ts_RAB_TLA6(OCT16 ip) := hex2bit('350000'H & oct2hex(ip) & '00'H);
+function f_ts_RAB_TLA(charstring addr) return template (value) TransportLayerAddress {
+	if (f_addr_is_ipv6(addr)) {
+		var OCT16 ip6 := f_inet6_addr(addr);
+		return ts_RAB_TLA6(ip6);
+	} else {
+		var OCT4 ip4 := f_inet_addr(addr);
+		return ts_RAB_TLA4(ip4);
+	}
+}
+
+template (value) BindingID
+t_RAB_binding_port(integer prt) := int2oct(prt, 2) & '0000'O;
+
+template (value) RANAP_PDU
+ts_RANAP_RabReleaseRequest(template (value) RAB_ID rab_id, template (value) Cause cause,
+			   template (omit) RAB_ReleaseRequest.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_RAB_ReleaseRequest,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleaseRequest := {
+				protocolIEs := {
+					{
+						id := id_RAB_ReleaseList,
+						criticality := ignore,
+						value_ := {
+							rAB_ReleaseList := {{
+								{
+									id := id_RAB_ReleaseItem,
+									criticality := ignore,
+									value_ := {
+										rAB_ReleaseItem := {
+											rAB_ID := rab_id,
+											cause := cause,
+											iE_Extensions := omit
+										}
+									}
+								}
+							}}
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_RabReleaseRequest(template (present) RAB_ID rab_id, template Cause cause,
+			   template RAB_ReleaseRequest.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_RAB_ReleaseRequest,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleaseRequest := {
+				protocolIEs := {
+					{
+						id := id_RAB_ReleaseList,
+						criticality := ignore,
+						value_ := {
+							rAB_ReleaseList := {{
+								{
+									id := id_RAB_ReleaseItem,
+									criticality := ignore,
+									value_ := {
+										rAB_ReleaseItem := {
+											rAB_ID := rab_id,
+											cause := cause,
+											iE_Extensions := *
+										}
+									}
+								}
+							}}
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+
+/*****************************************************************************************************
+ * Iu Release
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_IuReleaseCommand(template (value) Cause cause,
+			  template (omit) Iu_ReleaseCommand.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Iu_Release,
+		criticality := reject,
+		value_ := {
+			iu_ReleaseCommand := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_IuReleaseCommand(template Cause cause,
+			  template Iu_ReleaseCommand.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_Iu_Release,
+		criticality := reject,
+		value_ := {
+			iu_ReleaseCommand := {
+				protocolIEs := {
+					{
+						id := id_Cause,
+						criticality := ignore,
+						value_ := {
+							cause := cause
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_IuReleaseComplete(template (omit) Iu_ReleaseComplete.protocolIEs ies := {},
+			   template (omit) Iu_ReleaseComplete.protocolExtensions exts := omit) := {
+	successfulOutcome := {
+		procedureCode := id_Iu_Release,
+		criticality := reject,
+		value_ := {
+			iu_ReleaseComplete := {
+				protocolIEs := ies,
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_IuReleaseComplete(template Iu_ReleaseComplete.protocolIEs ies := *,
+			   template Iu_ReleaseComplete.protocolExtensions exts := *) := {
+	successfulOutcome := {
+		procedureCode := id_Iu_Release,
+		criticality := reject,
+		value_ := {
+			iu_ReleaseComplete:= {
+				protocolIEs := ies,
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Paging
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_Paging(template (value) CN_DomainIndicator dom,
+		template (value) IMSI imsi,
+		template (omit) Paging.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Paging,
+		criticality := ignore,
+		value_ := {
+			paging := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, {
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_Paging(template (present) CN_DomainIndicator dom,
+		template (present) IMSI imsi,
+		template Paging.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_Paging,
+		criticality := ignore,
+		value_ := {
+			paging := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, {
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}, *
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+
+template (value) TemporaryUE_ID ts_RANAP_TemporaryUE_ID_TMSI(octetstring tmsi) := {
+	tMSI := tmsi
+}
+
+template (value) RANAP_PDU
+ts_RANAP_Paging_temp_id(template (value) CN_DomainIndicator dom, template (value) IMSI imsi,
+			template (value) TemporaryUE_ID temp_id,
+			template (omit) Paging.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Paging,
+		criticality := ignore,
+		value_ := {
+			paging := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, {
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}, {
+						id := id_TemporaryUE_ID,
+						criticality := ignore,
+						value_ := {
+							temporaryUE_ID := temp_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) LAI ts_RANAP_LAI(template (value) OCT3 pLMNidentity,
+				  template (value) OCT2 lac) := {
+	pLMNidentity := pLMNidentity,
+	lAC := lac,
+	iE_Extensions := omit
+};
+
+template (value) RAI ts_RANAP_RAI(template (value) LAI lai,
+				  template (value) OCT1 rac) := {
+	lAI := lai,
+	rAC := rac,
+	iE_Extensions := omit
+};
+
+template (value) PagingAreaID ts_RANAP_PagingAreaID_LAI(template (value) LAI lai) := {
+	lAI := lai
+};
+
+template (value) PagingAreaID ts_RANAP_PagingAreaID_RAI(template (value) RAI rai) := {
+	rAI := rai
+};
+
+template (value) RANAP_PDU
+ts_RANAP_Paging_pag_area_id(template (value) CN_DomainIndicator dom, template (value) IMSI imsi,
+			    template (value) PagingAreaID pag_area_id,
+			    template (omit) Paging.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_Paging,
+		criticality := ignore,
+		value_ := {
+			paging := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := dom
+						}
+					}, {
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}, {
+						id := id_PagingAreaID,
+						criticality := ignore,
+						value_ := {
+							pagingAreaID := pag_area_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Common ID
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_CommonId(template (value) IMSI imsi,
+		template (omit) CommonID.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_CommonID,
+		criticality := ignore,
+		value_ := {
+			commonID := {
+				protocolIEs := {
+					{
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_CommonId(template IMSI imsi,
+		  template CommonID.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_CommonID,
+		criticality := ignore,
+		value_ := {
+			commonID := {
+				protocolIEs := {
+					{
+						id := id_PermanentNAS_UE_ID,
+						criticality := ignore,
+						value_ := {
+							permanentNAS_UE_ID := {
+								iMSI := imsi
+							}
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Initial UE Message
+ *****************************************************************************************************/
+
+template (value) RANAP_PDU
+ts_RANAP_initialUE_CS(template (value) LAI lai, template (value) SAI sai,
+		      template (value) NAS_PDU nas,
+		      template (value) IuSignallingConnectionIdentifier sigc_id,
+		      template (value) GlobalRNC_ID grnc_id,
+		      template (omit) InitialUE_Message.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_InitialUE_Message,
+		criticality := ignore,
+		value_ := {
+			initialUE_Message := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := cs_domain
+						}
+					}, {
+						id := id_LAI,
+						criticality := ignore,
+						value_ := {
+							lAI := lai
+						}
+					}, {
+						id := id_SAI,
+						criticality := ignore,
+						value_ := {
+							sAI := sai
+						}
+					}, {
+						id := id_NAS_PDU,
+						criticality := ignore,
+						value_ := {
+							nAS_PDU := nas
+						}
+					}, {
+						id := id_IuSigConId,
+						criticality := ignore,
+						value_ := {
+							iuSignallingConnectionIdentifier := sigc_id
+						}
+					}, {
+						id := id_GlobalRNC_ID,
+						criticality := ignore,
+						value_ := {
+							globalRNC_ID := grnc_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_initialUE_CS(template LAI lai, template SAI sai,
+		      template NAS_PDU nas,
+		      template IuSignallingConnectionIdentifier sigc_id,
+		      template GlobalRNC_ID grnc_id,
+		      template InitialUE_Message.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_InitialUE_Message,
+		criticality := ignore,
+		value_ := {
+			initialUE_Message := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := cs_domain
+						}
+					}, {
+						id := id_LAI,
+						criticality := ignore,
+						value_ := {
+							lAI := lai
+						}
+					}, {
+						id := id_SAI,
+						criticality := ignore,
+						value_ := {
+							sAI := sai
+						}
+					}, {
+						id := id_NAS_PDU,
+						criticality := ignore,
+						value_ := {
+							nAS_PDU := nas
+						}
+					}, {
+						id := id_IuSigConId,
+						criticality := ignore,
+						value_ := {
+							iuSignallingConnectionIdentifier := sigc_id
+						}
+					}, {
+						id := id_GlobalRNC_ID,
+						criticality := ignore,
+						value_ := {
+							globalRNC_ID := grnc_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+template (value) RANAP_PDU
+ts_RANAP_initialUE_PS(template (value) LAI lai, template (value) RAC rac, template (value) SAI sai,
+		      template (value) NAS_PDU nas,
+		      template (value) IuSignallingConnectionIdentifier sigc_id,
+		      template (value) GlobalRNC_ID grnc_id,
+		      template (omit) InitialUE_Message.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_InitialUE_Message,
+		criticality := ignore,
+		value_ := {
+			initialUE_Message := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := ps_domain
+						}
+					}, {
+						id := id_LAI,
+						criticality := ignore,
+						value_ := {
+							lAI := lai
+						}
+					}, {
+						id := id_RAC,
+						criticality := ignore,
+						value_ := {
+							rAC := rac
+						}
+					}, {
+						id := id_SAI,
+						criticality := ignore,
+						value_ := {
+							sAI := sai
+						}
+					}, {
+						id := id_NAS_PDU,
+						criticality := ignore,
+						value_ := {
+							nAS_PDU := nas
+						}
+					}, {
+						id := id_IuSigConId,
+						criticality := ignore,
+						value_ := {
+							iuSignallingConnectionIdentifier := sigc_id
+						}
+					}, {
+						id := id_GlobalRNC_ID,
+						criticality := ignore,
+						value_ := {
+							globalRNC_ID := grnc_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_initialUE_PS(template LAI lai, template RAC rac, template SAI sai,
+		      template NAS_PDU nas,
+		      template IuSignallingConnectionIdentifier sigc_id,
+		      template GlobalRNC_ID grnc_id,
+		      template InitialUE_Message.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_InitialUE_Message,
+		criticality := ignore,
+		value_ := {
+			initialUE_Message := {
+				protocolIEs := {
+					{
+						id := id_CN_DomainIndicator,
+						criticality := ignore,
+						value_ := {
+							cN_DomainIndicator := ps_domain
+						}
+					}, {
+						id := id_LAI,
+						criticality := ignore,
+						value_ := {
+							lAI := lai
+						}
+					}, {
+						id := id_RAC,
+						criticality := ignore,
+						value_ := {
+							rAC := rac
+						}
+					}, {
+						id := id_SAI,
+						criticality := ignore,
+						value_ := {
+							sAI := sai
+						}
+					}, {
+						id := id_NAS_PDU,
+						criticality := ignore,
+						value_ := {
+							nAS_PDU := nas
+						}
+					}, {
+						id := id_IuSigConId,
+						criticality := ignore,
+						value_ := {
+							iuSignallingConnectionIdentifier := sigc_id
+						}
+					}, {
+						id := id_GlobalRNC_ID,
+						criticality := ignore,
+						value_ := {
+							globalRNC_ID := grnc_id
+						}
+					}
+				},
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+/*****************************************************************************************************
+ * Direct Transfer
+ *****************************************************************************************************/
+
+private function f_gen_ts_dt_ies(template (value) NAS_PDU nas,
+				 template (omit) SAPI sapi,
+				 template (value) DirectTransfer.protocolIEs opt_ies)
+return DirectTransfer.protocolIEs {
+	var DirectTransfer.protocolIEs ies := {
+		/* NAS PDU is mandatory */
+		{
+			id := id_NAS_PDU,
+			criticality := ignore,
+			value_ := {
+				nAS_PDU := valueof(nas)
+			}
+		}
+	};
+
+	/* Optional IEs, e.g. LAI, RAC, SAI */
+	ies := ies & valueof(opt_ies);
+
+	/* Optional SAPI is the last IE */
+	if (isvalue(sapi)) {
+		ies := ies & {{
+			id := id_SAPI,
+			criticality := ignore,
+			value_ := {
+				sAPI := valueof(sapi)
+			}
+		}};
+	}
+
+	return ies;
+}
+
+private function f_gen_tr_dt_ies(template NAS_PDU nas,
+				 template SAPI sapi,
+				 template DirectTransfer.protocolIEs opt_ies)
+return template DirectTransfer.protocolIEs {
+	var template DirectTransfer.protocolIEs ies := {
+		/* NAS PDU is mandatory */
+		{
+			id := id_NAS_PDU,
+			criticality := ignore,
+			value_ := {
+				nAS_PDU := nas
+			}
+		}
+	};
+
+	/* Optional IEs start from index 1 */
+	var integer idx := 1;
+
+	/* Optional IEs, e.g. LAI, RAC, SAI */
+	if (istemplatekind(opt_ies, "*")) {
+		ies[idx] := *;
+		idx := idx + 1;
+	} else if (not istemplatekind(opt_ies, "omit")) {
+		for (var integer i := 0; i < lengthof(opt_ies); i := i + 1) {
+			ies[idx] := opt_ies[idx];
+			idx := idx + 1;
+		}
+	}
+
+	/* Optional SAPI is the last IE */
+	if (istemplatekind(sapi, "*")) {
+		ies[idx] := *;
+	} else if (not istemplatekind(sapi, "omit")) {
+		ies[idx] := {
+			id := id_SAPI,
+			criticality := ignore,
+			value_ := {
+				sAPI := sapi
+			}
+		};
+	}
+
+	return ies;
+}
+
+template (value) RANAP_PDU
+ts_RANAP_DirectTransfer(template (value) NAS_PDU nas,
+			template (omit) SAPI sapi := omit,
+			template (value) DirectTransfer.protocolIEs ies := {},
+			template (omit) DirectTransfer.protocolExtensions exts := omit) := {
+	initiatingMessage := {
+		procedureCode := id_DirectTransfer,
+		criticality := ignore,
+		value_ := {
+			directTransfer := {
+				protocolIEs := f_gen_ts_dt_ies(nas, sapi, ies),
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+template RANAP_PDU
+tr_RANAP_DirectTransfer(template NAS_PDU nas,
+			template SAPI sapi := *,
+			template DirectTransfer.protocolIEs ies := *,
+			template DirectTransfer.protocolExtensions exts := *) := {
+	initiatingMessage := {
+		procedureCode := id_DirectTransfer,
+		criticality := ignore,
+		value_ := {
+			directTransfer := {
+				protocolIEs := f_gen_tr_dt_ies(nas, sapi, ies),
+				protocolExtensions := exts
+			}
+		}
+	}
+}
+
+
+/*****************************************************************************************************
+ * RAB Assignment Request
+ *****************************************************************************************************/
+
+template (value) RAB_Parameters ts_RabParams := {
+	trafficClass := conversational,
+	rAB_AsymmetryIndicator := symmetric_bidirectional,
+	maxBitrate := { 12200 },
+	guaranteedBitRate := { 12200 },
+	deliveryOrder := delivery_order_requested,
+	maxSDU_Size := 244,
+	sDU_Parameters := {
+		{
+			sDU_ErrorRatio := { mantissa := 1, exponent := 5, iE_Extensions := omit },
+			residualBitErrorRatio := { mantissa := 1, exponent := 6, iE_Extensions := omit },
+			deliveryOfErroneousSDU := yes,
+			sDU_FormatInformationParameters := {
+				{
+					subflowSDU_Size := 81,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}, {
+					subflowSDU_Size := 39,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}
+			},
+			iE_Extensions := omit
+		}, {
+			sDU_ErrorRatio := omit,
+			residualBitErrorRatio := { mantissa := 1, exponent := 3, iE_Extensions := omit },
+			deliveryOfErroneousSDU := no_error_detection_consideration,
+			sDU_FormatInformationParameters := {
+				{
+					subflowSDU_Size := 103,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}, {
+					subflowSDU_Size := 0,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}
+			},
+			iE_Extensions := omit
+		}, {
+			sDU_ErrorRatio := omit,
+			residualBitErrorRatio := { mantissa := 5, exponent := 3, iE_Extensions := omit },
+			deliveryOfErroneousSDU := no_error_detection_consideration,
+			sDU_FormatInformationParameters := {
+				{
+					subflowSDU_Size := 60,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}, {
+					subflowSDU_Size := 0,
+					rAB_SubflowCombinationBitRate := omit,
+					iE_Extensions := omit
+				}
+			},
+			iE_Extensions := omit
+		}
+	},
+	transferDelay := 80,
+	trafficHandlingPriority := omit,
+	allocationOrRetentionPriority := {
+		priorityLevel := 15,
+		pre_emptionCapability := shall_not_trigger_pre_emption,
+		pre_emptionVulnerability := pre_emptable,
+		queuingAllowed := queueing_not_allowed,
+		iE_Extensions := omit
+	},
+	sourceStatisticsDescriptor := omit,
+	relocationRequirement := omit,
+	iE_Extensions := omit
+}
+
+template (value) UserPlaneInformation ts_UserPlaneInfo := {
+	userPlaneMode := support_mode_for_predefined_SDU_sizes,
+	uP_ModeVersions := '0000000000000010'B,
+	iE_Extensions := omit
+}
+
+template (value) TransportLayerInformation ts_TLI(template (value) TransportLayerAddress tla,
+						  template (value) BindingID binding_id) := {
+	transportLayerAddress := tla,
+	iuTransportAssociation := {
+		bindingID := binding_id
+	},
+	iE_Extensions := omit
+}
+template TransportLayerInformation tr_TLI(template TransportLayerAddress tla,
+					  template BindingID binding_id) := {
+	transportLayerAddress := tla,
+	iuTransportAssociation := {
+		bindingID := binding_id
+	},
+	iE_Extensions := *
+}
+
+template (value) RAB_SetupOrModifyList ts_RAB_SML(template (value) RAB_ID rab_id,
+						  template (value) TransportLayerAddress tla,
+						  template (value) BindingID binding_id) := { {
+	{
+		id := id_RAB_SetupOrModifyItem,
+		firstCriticality := reject,
+		firstValue := {
+			rAB_SetupOrModifyItemFirst := {
+				rAB_ID := rab_id,
+				nAS_SynchronisationIndicator := omit,
+				rAB_Parameters := ts_RabParams,
+				userPlaneInformation := ts_UserPlaneInfo,
+				transportLayerInformation := ts_TLI(tla, binding_id),
+				service_Handover := omit,
+				iE_Extensions := omit
+			}
+		},
+		secondCriticality := ignore,
+		secondValue := {
+			rAB_SetupOrModifyItemSecond := {
+				pDP_TypeInformation := omit,
+				dataVolumeReportingIndication := omit,
+				dl_GTP_PDU_SequenceNumber := omit,
+				ul_GTP_PDU_SequenceNumber := omit,
+				dl_N_PDU_SequenceNumber := omit,
+				ul_N_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+template RAB_SetupOrModifyList tr_RAB_SML(template (present) RAB_ID rab_id,
+					  template TransportLayerAddress tla,
+					  template BindingID binding_id) := { {
+	{
+		id := id_RAB_SetupOrModifyItem,
+		firstCriticality := reject,
+		firstValue := {
+			rAB_SetupOrModifyItemFirst := {
+				rAB_ID := rab_id,
+				nAS_SynchronisationIndicator := *,
+				rAB_Parameters := ts_RabParams,
+				userPlaneInformation := ts_UserPlaneInfo,
+				transportLayerInformation := tr_TLI(tla, binding_id),
+				service_Handover := *,
+				iE_Extensions := *
+			}
+		},
+		secondCriticality := ignore,
+		secondValue := {
+			rAB_SetupOrModifyItemSecond := {
+				pDP_TypeInformation := omit,
+				dataVolumeReportingIndication := omit,
+				dl_GTP_PDU_SequenceNumber := omit,
+				ul_GTP_PDU_SequenceNumber := omit,
+				dl_N_PDU_SequenceNumber := omit,
+				ul_N_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+/* Like ts_RAB_SML(), but more control on presence/absence of individual IEs */
+template (value) RAB_SetupOrModifyList ts_RAB_SML2(
+		template (value) RAB_ID rab_id,
+		template (omit) RAB_Parameters rab_params,
+		template (omit) UserPlaneInformation user_plane_info,
+		template (omit) TransportLayerInformation transport_layer_info
+	) := { {
+	{
+		id := id_RAB_SetupOrModifyItem,
+		firstCriticality := reject,
+		firstValue := {
+			rAB_SetupOrModifyItemFirst := {
+				rAB_ID := rab_id,
+				nAS_SynchronisationIndicator := omit,
+				rAB_Parameters := rab_params,
+				userPlaneInformation := user_plane_info,
+				transportLayerInformation := transport_layer_info,
+				service_Handover := omit,
+				iE_Extensions := omit
+			}
+		},
+		secondCriticality := ignore,
+		secondValue := {
+			rAB_SetupOrModifyItemSecond := {
+				pDP_TypeInformation := omit,
+				dataVolumeReportingIndication := omit,
+				dl_GTP_PDU_SequenceNumber := omit,
+				ul_GTP_PDU_SequenceNumber := omit,
+				dl_N_PDU_SequenceNumber := omit,
+				ul_N_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template (value) TransportLayerInformation ts_TLI_ps(template (value) TransportLayerAddress tla,
+						     template (value) GTP_TEI gtp_tei) := {
+	transportLayerAddress := tla,
+	iuTransportAssociation := {
+		gTP_TEI := gtp_tei
+	},
+	iE_Extensions := omit
+}
+template TransportLayerInformation tr_TLI_ps(template TransportLayerAddress tla,
+					     template (value) GTP_TEI gtp_tei) := {
+	transportLayerAddress := tla,
+	iuTransportAssociation := {
+		gTP_TEI := gtp_tei
+	},
+	iE_Extensions := *
+}
+
+template (value) RAB_SetupOrModifyList ts_RAB_SML_ps(template (value) RAB_ID rab_id,
+						     template (value) TransportLayerAddress tla,
+						     template (value) GTP_TEI gtp_tei) := { {
+	{
+		id := id_RAB_SetupOrModifyItem,
+		firstCriticality := reject,
+		firstValue := {
+			rAB_SetupOrModifyItemFirst := {
+				rAB_ID := rab_id,
+				nAS_SynchronisationIndicator := omit,
+				rAB_Parameters := ts_RabParams,
+				userPlaneInformation := ts_UserPlaneInfo,
+				transportLayerInformation := ts_TLI_ps(tla, gtp_tei),
+				service_Handover := omit,
+				iE_Extensions := omit
+			}
+		},
+		secondCriticality := ignore,
+		secondValue := {
+			rAB_SetupOrModifyItemSecond := {
+				pDP_TypeInformation := omit,
+				dataVolumeReportingIndication := omit,
+				dl_GTP_PDU_SequenceNumber := omit,
+				ul_GTP_PDU_SequenceNumber := omit,
+				dl_N_PDU_SequenceNumber := omit,
+				ul_N_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+template RAB_SetupOrModifyList tr_RAB_SML_ps(template (present) RAB_ID rab_id,
+					     template TransportLayerAddress tla,
+					     template (value) GTP_TEI gtp_tei) := { {
+	{
+		id := id_RAB_SetupOrModifyItem,
+		firstCriticality := reject,
+		firstValue := {
+			rAB_SetupOrModifyItemFirst := {
+				rAB_ID := rab_id,
+				nAS_SynchronisationIndicator := *,
+				rAB_Parameters := ts_RabParams,
+				userPlaneInformation := ts_UserPlaneInfo,
+				transportLayerInformation := tr_TLI_ps(tla, gtp_tei),
+				service_Handover := *,
+				iE_Extensions := *
+			}
+		},
+		secondCriticality := ignore,
+		secondValue := {
+			rAB_SetupOrModifyItemSecond := {
+				pDP_TypeInformation := omit,
+				dataVolumeReportingIndication := omit,
+				dl_GTP_PDU_SequenceNumber := omit,
+				ul_GTP_PDU_SequenceNumber := omit,
+				dl_N_PDU_SequenceNumber := omit,
+				ul_N_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template (value) RAB_SetupOrModifiedList ts_RAB_SMdL(template (value) RAB_ID rab_id,
+						  template (value) TransportLayerAddress tla,
+						  template (value) BindingID binding_id) := { {
+	{
+		id := id_RAB_SetupOrModifiedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_SetupOrModifiedItem := {
+				rAB_ID := rab_id,
+				transportLayerAddress := tla,
+				iuTransportAssociation := {
+					bindingID := binding_id
+				},
+				dl_dataVolumes := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template (value) RAB_SetupOrModifiedList ts_RAB_SMdL_no_tla(template (value) RAB_ID rab_id) := { {
+	{
+		id := id_RAB_SetupOrModifiedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_SetupOrModifiedItem := {
+				rAB_ID := rab_id,
+				transportLayerAddress := omit,
+				iuTransportAssociation := omit,
+				dl_dataVolumes := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template (value) RAB_SetupOrModifiedList ts_RAB_SMdL_ps(template (value) RAB_ID rab_id,
+							template (value) TransportLayerAddress tla,
+							template (value) GTP_TEI gtp_tei) := { {
+	{
+		id := id_RAB_SetupOrModifiedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_SetupOrModifiedItem := {
+				rAB_ID := rab_id,
+				transportLayerAddress := tla,
+				iuTransportAssociation := {
+					gTP_TEI := gtp_tei
+				},
+				dl_dataVolumes := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template RAB_SetupOrModifiedList tr_RAB_SMdL(template (present) RAB_ID rab_id,
+					  template TransportLayerAddress tla,
+					  template BindingID binding_id) := { {
+	{
+		id := id_RAB_SetupOrModifiedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_SetupOrModifiedItem := {
+				rAB_ID := rab_id,
+				transportLayerAddress := tla,
+				iuTransportAssociation := {
+					bindingID := binding_id
+				},
+				dl_dataVolumes := *,
+				iE_Extensions := *
+			}
+		}
+	}
+} }
+
+template (value) RAB_FailedList ts_RAB_FL(template (value) RAB_ID rab_id,
+					  template (value) Cause cause) := { {
+	{
+		id := id_RAB_FailedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_FailedItem := {
+				rAB_ID := rab_id,
+				cause := cause,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template RAB_FailedList tr_RAB_FL(template RAB_ID rab_id,
+				  template Cause cause) := { {
+	{
+		id := id_RAB_FailedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_FailedItem := {
+				rAB_ID := rab_id,
+				cause := cause,
+				iE_Extensions := *
+			}
+		}
+	}
+} }
+
+template (value) RAB_ReleaseList ts_RAB_RL(template (value) RAB_ID rab_id,
+					   template (value) Cause cause) := { {
+	{
+		id := id_RAB_ReleaseItem,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleaseItem := {
+				rAB_ID := rab_id,
+				cause := cause,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template RAB_ReleaseList tr_RAB_RL(template (present) RAB_ID rab_id,
+				   template Cause cause := ?) := { {
+	{
+		id := id_RAB_ReleaseItem,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleaseItem := {
+				rAB_ID := rab_id,
+				cause := cause,
+				iE_Extensions := *
+			}
+		}
+	}
+} }
+
+template (value) RAB_ReleasedList ts_RAB_RLD(template (value) RAB_ID rab_id) := { {
+	{
+		id := id_RAB_ReleasedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleasedItem := {
+				rAB_ID := rab_id,
+				dl_dataVolumes := omit,
+				dL_GTP_PDU_SequenceNumber := omit,
+				uL_GTP_PDU_SequenceNumber := omit,
+				iE_Extensions := omit
+			}
+		}
+	}
+} }
+
+template RAB_ReleasedList tr_RAB_RLD(template (present) RAB_ID rab_id) := { {
+	{
+		id := id_RAB_ReleasedItem,
+		criticality := ignore,
+		value_ := {
+			rAB_ReleasedItem := {
+				rAB_ID := rab_id,
+				dl_dataVolumes := *,
+				dL_GTP_PDU_SequenceNumber := *,
+				uL_GTP_PDU_SequenceNumber := *,
+				iE_Extensions := *
+			}
+		}
+	}
+} }
+
+
+function
+ts_RANAP_RabAssReq(template (omit) RAB_SetupOrModifyList rab_sml := omit,
+		   template (omit) RAB_ReleaseList rab_rl := omit,
+		   template (omit) RAB_AssignmentRequest.protocolExtensions exts := omit) return template RANAP_PDU {
+	var template RANAP_PDU ret;
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs := {};
+	var integer ie_pos := 0;
+
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs_rab_sml;
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs_rab_rl;
+
+	/* RAB-SetupOrModifyList */
+	if (istemplatekind(rab_sml, "value")) {
+		protocolIEs_rab_sml := {
+			{
+				id := id_RAB_SetupOrModifyList,
+				criticality := ignore,
+				value_ := {
+					rAB_SetupOrModifyList := rab_sml
+				}
+			}
+		};
+		protocolIEs[ie_pos] := protocolIEs_rab_sml[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* RAB-ReleaseList */
+	if (istemplatekind(rab_rl, "value")) {
+		protocolIEs_rab_rl := {
+			{
+				id := id_RAB_ReleaseList,
+				criticality := ignore,
+				value_ := {
+					rAB_ReleaseList := rab_rl
+				}
+			}
+		};
+		protocolIEs[ie_pos] := protocolIEs_rab_rl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+
+	ret.initiatingMessage := {
+		procedureCode := id_RAB_Assignment,
+		criticality := reject,
+		value_ := {
+			rAB_AssignmentRequest := {
+				protocolIEs := protocolIEs,
+				protocolExtensions := exts
+			}
+		}
+	}
+
+	return ret;
+}
+
+function
+tr_RANAP_RabAssReq(template RAB_SetupOrModifyList rab_sml := omit,
+		   template RAB_ReleaseList rab_rl := omit,
+		   template RAB_AssignmentRequest.protocolExtensions exts := *) return template RANAP_PDU {
+	var template RANAP_PDU ret;
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs := {};
+	var integer ie_pos := 0;
+
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs_rab_sml;
+	var template RAB_AssignmentRequest.protocolIEs protocolIEs_rab_rl;
+
+	/* RAB-SetupOrModifyList */
+	if (not istemplatekind(rab_sml, "omit")) {
+		protocolIEs_rab_sml := {
+			{
+				id := id_RAB_SetupOrModifyList,
+				criticality := ignore,
+				value_ := {
+					rAB_SetupOrModifyList := rab_sml
+				}
+			}
+		};
+		protocolIEs[ie_pos] := protocolIEs_rab_sml[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* RAB-ReleaseList */
+	if (not istemplatekind(rab_rl, "omit")) {
+		protocolIEs_rab_rl := {
+			{
+				id := id_RAB_ReleaseList,
+				criticality := ignore,
+				value_ := {
+					rAB_ReleaseList := rab_rl
+				}
+			}
+		};
+		protocolIEs[ie_pos] := protocolIEs_rab_rl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+
+	ret.initiatingMessage := {
+		procedureCode := id_RAB_Assignment,
+		criticality := reject,
+		value_ := {
+			rAB_AssignmentRequest := {
+				protocolIEs := protocolIEs,
+				protocolExtensions := exts
+			}
+		}
+	}
+
+	return ret;
+}
+
+function
+ts_RANAP_RabAssResp(template (omit) RAB_SetupOrModifiedList rab_sml := omit,
+		    template (omit) RAB_ReleasedList rab_rl := omit,
+		    template (omit) RAB_FailedList rab_fl := omit,
+		    template (omit) RAB_AssignmentResponse.protocolExtensions exts := omit) return template RANAP_PDU {
+	var template RANAP_PDU ret;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs := {};
+	var integer ie_pos := 0;
+
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_sml;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_rl;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_fl;
+
+	/* RAB-SetupOrModifiedList */
+	if (istemplatekind(rab_sml, "value")) {
+		protocolIEs_rab_sml := {
+			{
+				id := id_RAB_SetupOrModifiedList,
+				criticality := ignore,
+				value_ := {
+					rAB_SetupOrModifiedList := rab_sml
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_sml[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* RAB-ReleasedList */
+	if (istemplatekind(rab_rl, "value")) {
+		protocolIEs_rab_rl := {
+			{
+				id := id_RAB_ReleasedList,
+				criticality := ignore,
+				value_ := {
+					rAB_ReleasedList := rab_rl
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_rl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* TODO: RAB-QueuedList */
+
+	/* RAB-FailedList */
+	if (istemplatekind(rab_fl, "value")) {
+		protocolIEs_rab_fl := {
+			{
+				id := id_RAB_FailedList,
+				criticality := ignore,
+				value_ := {
+					rAB_FailedList := rab_fl
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_fl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* TODO: RAB-ReleaseFailedList */
+
+	ret.outcome := {
+		procedureCode := id_RAB_Assignment,
+		criticality := reject,
+		value_ := {
+			rAB_AssignmentResponse := {
+				protocolIEs := protocolIEs,
+				protocolExtensions := exts
+			}
+		}
+	}
+
+	return ret;
+}
+
+function
+tr_RANAP_RabAssResp(template RAB_SetupOrModifiedList rab_sml := omit,
+		    template RAB_ReleasedList rab_rl := omit,
+		    template RAB_FailedList rab_fl := omit,
+		    template RAB_AssignmentResponse.protocolExtensions exts := *) return template RANAP_PDU {
+	var template RANAP_PDU ret;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs := {};
+	var integer ie_pos := 0;
+
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_sml;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_rl;
+	var template RAB_AssignmentResponse.protocolIEs protocolIEs_rab_fl;
+
+	/* RAB-SetupOrModifiedList */
+	if (not istemplatekind(rab_sml, "omit")) {
+		protocolIEs_rab_sml := {
+			{
+				id := id_RAB_SetupOrModifiedList,
+				criticality := ignore,
+				value_ := {
+					rAB_SetupOrModifiedList := rab_sml
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_sml[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* RAB-ReleasedList */
+	if (not istemplatekind(rab_rl, "omit")) {
+		protocolIEs_rab_rl := {
+			{
+				id := id_RAB_ReleasedList,
+				criticality := ignore,
+				value_ := {
+					rAB_ReleasedList := rab_rl
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_rl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* TODO: RAB-QueuedList */
+
+	/* RAB-FailedList */
+	if (not istemplatekind(rab_fl, "omit")) {
+		protocolIEs_rab_fl := {
+			{
+				id := id_RAB_FailedList,
+				criticality := ignore,
+				value_ := {
+					rAB_FailedList := rab_fl
+				}
+			}
+		}
+
+		protocolIEs[ie_pos] := protocolIEs_rab_fl[0];
+		ie_pos := ie_pos + 1;
+	}
+
+	/* TODO: RAB-ReleaseFailedList */
+
+	protocolIEs[ie_pos] := *;
+
+	ret.outcome := {
+		procedureCode := id_RAB_Assignment,
+		criticality := reject,
+		value_ := {
+			rAB_AssignmentResponse := {
+				protocolIEs := protocolIEs,
+				protocolExtensions := exts
+			}
+		}
+	}
+
+	return ret;
+}
+
+/*****************************************************************************************************
+ *
+ *****************************************************************************************************/
+
+/* extract the L3 (NAS) from a given RANAP message */
+function f_ranap_extract_l3(RANAP_PDU ranap) return template (omit) octetstring
+{
+	var integer i;
+
+	if (match(ranap, tr_RANAP_initialUE_CS(?, ?, ?, ?, ?)) or
+	    match(ranap, tr_RANAP_initialUE_PS(?, ?, ?, ?, ?, ?)) ) {
+		var InitialUE_Message.protocolIEs ies := ranap.initiatingMessage.value_.initialUE_Message.protocolIEs;
+		for (i := 0; i < lengthof(ies); i := i+1) {
+			if (ies[i].id == id_NAS_PDU) {
+				return ies[i].value_.nAS_PDU;
+			}
+		}
+	} else if (match(ranap, tr_RANAP_DirectTransfer(?))) {
+		var DirectTransfer.protocolIEs ies := ranap.initiatingMessage.value_.directTransfer.protocolIEs;
+		for (i := 0; i < lengthof(ies); i := i+1) {
+			if (ies[i].id == id_NAS_PDU) {
+				return ies[i].value_.nAS_PDU;
+			}
+		}
+	} else {
+		/* relocationInformation not supported yet*/
+	}
+	return omit;
+}
+
+function f_ranap_extract_sapi(RANAP_PDU ranap) return template (omit) SAPI
+{
+	var integer i;
+
+	/* InitialUE message has no SAPI */
+	if (match(ranap, tr_RANAP_DirectTransfer(?, omit))) {
+		var DirectTransfer.protocolIEs ies := ranap.initiatingMessage.value_.directTransfer.protocolIEs;
+		for (i := 0; i < lengthof(ies); i := i+1) {
+			if (ies[i].id == id_SAPI) {
+				return ies[i].value_.sAPI;
+			}
+		}
+	}
+	return omit;
+}
+
+function f_ranap_rab_ass_req_extract_rab_id(RANAP_PDU ranap) return RAB_ID
+{
+	var RAB_AssignmentRequest.protocolIEs ies := ranap.initiatingMessage.value_.rAB_AssignmentRequest.protocolIEs;
+	var RAB_ID rab_id := ies[0].value_.rAB_SetupOrModifyList[0][0].firstValue.rAB_SetupOrModifyItemFirst.rAB_ID;
+	return rab_id;
+}
+
+function f_ranap_rab_ass_req_extract_tli(RANAP_PDU ranap) return TransportLayerInformation
+{
+	var RAB_AssignmentRequest.protocolIEs ies := ranap.initiatingMessage.value_.rAB_AssignmentRequest.protocolIEs;
+	var TransportLayerInformation tli := ies[0].value_.rAB_SetupOrModifyList[0][0].firstValue.rAB_SetupOrModifyItemFirst.transportLayerInformation;
+	return tli;
+}
+
+
+}

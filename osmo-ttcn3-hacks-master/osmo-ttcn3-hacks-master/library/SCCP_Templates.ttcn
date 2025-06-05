@@ -1,0 +1,476 @@
+/* (C) 2018 by sysmocom s.f.m.c. GmbH <info@sysmocom.de>
+ * All Rights Reserved
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module SCCP_Templates {
+
+import from General_Types all;
+
+import from SCCP_Types all;
+import from SCCPasp_Types all;
+import from SCCP_Emulation all;
+
+const integer sccp_par_reason_end_user_originated := 0; /* End user originated */
+const integer sccp_par_reason_end_user_failure := 2; /* End user failure */
+
+/* construct a SCCP_PAR_Address with just SSN and no PC or GT */
+template (value) SCCP_PAR_Address ts_SccpAddr_SSN(integer ssn) := {
+	addressIndicator := {
+		pointCodeIndic := '0'B,
+		ssnIndicator := '1'B,
+		globalTitleIndic := '0000'B,
+		routingIndicator := '1'B
+	},
+	signPointCode := omit,
+	subsystemNumber := ssn,
+	globalTitle := omit
+}
+
+/* construct a SCCP_PAR_Address with just PC + SSN and no GT */
+template (value) SCCP_PAR_Address ts_SccpAddr_PC_SSN(integer pc, integer ssn, octetstring sio,
+							charstring sccp_srv_type) := {
+	addressIndicator := {
+		pointCodeIndic := '1'B,
+		ssnIndicator := '1'B,
+		globalTitleIndic := '0000'B,
+		routingIndicator := '1'B
+	},
+	signPointCode := SCCP_SPC_int2bit(pc, sccp_srv_type, sio),
+	subsystemNumber := ssn,
+	globalTitle := omit
+}
+
+/* construct a SCCP_PAR_Address with only GT */
+template (value) SCCP_PAR_Address ts_SccpAddr_GT(hexstring global_address) := {
+	addressIndicator := {
+		pointCodeIndic := '0'B,
+		ssnIndicator := '0'B,
+		globalTitleIndic := '0001'B, // NAI only
+		routingIndicator := cg_route_on_GT // route on GT
+	},
+	signPointCode := omit,
+	subsystemNumber := omit,
+	globalTitle := {
+		gti0001 := {
+			natureOfAddress := '0000011'B,
+			oddeven := '0'B,
+			globalTitleAddress := global_address
+		}
+	}
+}
+
+/* construct a SCCP_PAR_Address with PC + SSN and GT */
+template (value) SCCP_PAR_Address ts_SccpAddr_PC_GT(integer pc, octetstring sio,
+						    charstring sccp_srv_type, hexstring gt_addr) := {
+	addressIndicator := {
+		pointCodeIndic := '1'B,
+		ssnIndicator := '0'B,
+		globalTitleIndic := '0001'B, // NAI only
+		routingIndicator := cg_route_on_GT // route on GT
+	},
+	signPointCode := SCCP_SPC_int2bit(pc, sccp_srv_type, sio),
+	subsystemNumber := omit,
+	globalTitle := {
+		gti0001 := {
+			natureOfAddress := '0000011'B,
+			oddeven := '0'B,
+			globalTitleAddress := gt_addr
+		}
+	}
+}
+
+/* connection oriented SCCP */
+const SCCP_param_ProtocolClass c_class0 := { class:='0000'B, messageHandling:='0000'B };//class 0
+const SCCP_param_ProtocolClass c_class1 := { class:='0001'B, messageHandling:='0000'B };//class 1
+const SCCP_param_ProtocolClass c_class2 := { class:='0010'B, messageHandling:='0000'B };//class 2
+
+function ts_SCCP_CR(OCT3 source_lref, SCCP_PAR_Address calling, SCCP_PAR_Address called)
+return template (value) PDU_SCCP {
+	var SCCP_param_CPartyAddressEnc calling_enc := ConvertASPAddressToEncodedAddress_itu(calling);
+
+	var template (value) PDU_SCCP ret := {
+		connrequest := {
+			messageType := cr,
+			sourceLocRef := source_lref,
+			protClass := c_class2,
+			pointer1 := 2,
+			pointer2 := 0, /* overwritten */
+			calledPAddress := ConvertASPAddressToEncodedAddress_itu(called),
+			optionalPart := {
+				credit := omit,
+				callingPAddress := {
+					paramName := con_SCCP_cgPA,
+					paramLength := calling_enc.paramLength, /* overwritten */
+					addr := calling_enc.addr
+				},
+				data := omit,
+				hopCounter := omit,
+				importance := omit
+			},
+			eop := { paramName:= con_SCCP_eop }
+		}
+	}
+	return ret;
+}
+
+template (present) PDU_SCCP tr_SCCP_CR(template (present) OCT3 source_lref := ?,
+				       template (present) SCCP_PAR_Address called := ?,
+				       template (present) SCCP_PAR_Address calling := ?) := {
+	connrequest := {
+			messageType := cr,
+			sourceLocRef := source_lref,
+			protClass := c_class2,
+			pointer1 := ?,
+			pointer2 := ?,
+			calledPAddress := tr_Addr(called),
+			optionalPart := {
+				credit := omit,
+				callingPAddress := tr_Addr_opt(calling),
+				data := omit,
+				hopCounter := *,
+				importance := *
+			},
+			eop := *
+	}
+}
+
+template (value) PDU_SCCP ts_SCCP_CC(OCT3 source_lref, OCT3 dest_lref) := {
+	connconfirm := {
+		messageType := cc,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref,
+		protClass := c_class2,
+		pointer1 := 0, /* overwritten */
+		optionalPart := omit,
+		eop := { paramName:= con_SCCP_eop }
+	}
+}
+
+template (present) PDU_SCCP tr_SCCP_CC(template (present) OCT3 source_lref,
+				       template (present) OCT3 dest_lref) := {
+	connconfirm := {
+		messageType := cc,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref,
+		protClass := c_class2,
+		pointer1 := ?,
+		optionalPart := *,
+		eop := *
+	}
+}
+
+private function tr_Addr(template SCCP_PAR_Address addr := *)
+return template (present) SCCP_param_CPartyAddressEnc {
+	if (istemplatekind(addr, "?")) {
+		return ?;
+	} else {
+		return ConvertASPAddressToEncodedAddress_itu(valueof(addr));
+	}
+}
+
+private function tr_Addr_opt(template SCCP_PAR_Address addr := *)
+return template SCCP_param_CPartyAddressEnc_opt {
+	if (istemplatekind(addr, "omit")) {
+		return omit;
+	} else if (istemplatekind(addr, "*")) {
+		return *;
+	} else if (istemplatekind(addr, "?")) {
+		return ?;
+	} else {
+		var SCCP_param_CPartyAddressEnc enc := ConvertASPAddressToEncodedAddress_itu(valueof(addr));
+		var SCCP_param_CPartyAddressEnc_opt enc_opt := {
+			paramName := con_SCCP_cgPA,
+			paramLength := enc.paramLength, /* overwritten */
+			addr := enc.addr
+		};
+		return enc_opt;
+	}
+}
+
+template (value) PDU_SCCP ts_SCCP_UDT(SCCP_PAR_Address calling, SCCP_PAR_Address called,
+				      template (value) octetstring data,
+				      template (value) BIT4 msg_hdl := '0000'B) := {
+	unitdata := {
+		messageType := udt,
+		protClass := {'0000'B, msg_hdl},
+		pointer1 := 0,  /* overwritten */
+		pointer2 := 0,  /* overwritten */
+		pointer3 := 0,  /* overwritten */
+		calledPAddress := ConvertASPAddressToEncodedAddress_itu(called),
+		callingPAddress := ConvertASPAddressToEncodedAddress_itu(calling),
+		data := {
+			paramLength := 0,
+			data := data
+		}
+	}
+}
+
+template PDU_SCCP tr_SCCP_UDT(template (present) SCCP_PAR_Address calling, template (present) SCCP_PAR_Address called,
+			      template octetstring data := ?,
+			      template (present) SCCP_param_ProtocolClass protClass := (c_class0, c_class1)) := {
+	unitdata := {
+		messageType := udt,
+		protClass := protClass,
+		pointer1 := ?,
+		pointer2 := ?,
+		pointer3 := ?,
+		calledPAddress := tr_Addr(called),
+		callingPAddress := tr_Addr(calling),
+		data := {
+			paramLength := ?,
+			data := data
+		}
+	}
+}
+
+template (value) PDU_SCCP ts_SCCP_XUDT(SCCP_PAR_Address calling, SCCP_PAR_Address called,
+				      template (value) octetstring data,
+				      template (value) BIT4 msg_hdl := '0000'B,
+				      template (value) integer hop_ctr := 16) := {
+	extudata := {
+		messageType := xudt,
+		protClass := {'0000'B, msg_hdl},
+		hopCounter := hop_ctr,
+		pointer1 := 0,  /* overwritten */
+		pointer2 := 0,  /* overwritten */
+		pointer3 := 0,  /* overwritten */
+		pointer4 := 0,  /* overwritten */
+		calledPAddress := ConvertASPAddressToEncodedAddress_itu(called),
+		callingPAddress := ConvertASPAddressToEncodedAddress_itu(calling),
+		data := {
+			paramLength := 0,
+			data := data
+		},
+		optionalPart := omit,
+		eop := omit
+	}
+}
+
+template PDU_SCCP tr_SCCP_XUDT(template (present) SCCP_PAR_Address calling, template (present) SCCP_PAR_Address called,
+			      template octetstring data := ?,
+			      template (present) SCCP_param_ProtocolClass protClass := (c_class0, c_class1),
+			      template integer hop_ctr := ?) := {
+	extudata := {
+		messageType := xudt,
+		protClass := protClass,
+		hopCounter := hop_ctr,
+		pointer1 := ?,
+		pointer2 := ?,
+		pointer3 := ?,
+		pointer4 := ?,
+		calledPAddress := tr_Addr(called),
+		callingPAddress := tr_Addr(calling),
+		data := {
+			paramLength := ?,
+			data := data
+		},
+		optionalPart := { segmentation:= omit, importance := * } ifpresent,
+		eop := { paramName:= con_SCCP_eop } ifpresent
+	}
+}
+
+template (value) PDU_SCCP ts_SCCP_LUDT(SCCP_PAR_Address calling, SCCP_PAR_Address called,
+				      template (value) octetstring data,
+				      template (value) BIT4 msg_hdl := '0000'B,
+				      template (value) integer hop_ctr := 16) := {
+	longudata := {
+		messageType := ludt,
+		protClass := {'0000'B, msg_hdl},
+		hopCounter := hop_ctr,
+		pointer1 := 0,  /* overwritten */
+		pointer2 := 0,  /* overwritten */
+		pointer3 := 0,  /* overwritten */
+		pointer4 := 0,  /* overwritten */
+		calledPAddress := ConvertASPAddressToEncodedAddress_itu(called),
+		callingPAddress := ConvertASPAddressToEncodedAddress_itu(calling),
+		longData := {
+			paramLength := 0,
+			data := data
+		},
+		optionalPart := omit,
+		eop := omit
+	}
+}
+
+template PDU_SCCP tr_SCCP_LUDT(template (present) SCCP_PAR_Address calling, template (present) SCCP_PAR_Address called,
+			      template octetstring data := ?,
+			     template (present) SCCP_param_ProtocolClass protClass := (c_class0, c_class1),
+			      template integer hop_ctr := ?) := {
+	longudata := {
+		messageType := ludt,
+		protClass := protClass,
+		hopCounter := hop_ctr,
+		pointer1 := ?,
+		pointer2 := ?,
+		pointer3 := ?,
+		pointer4 := ?,
+		calledPAddress := tr_Addr(called),
+		callingPAddress := tr_Addr(calling),
+		longData := {
+			paramLength := ?,
+			data := data
+		},
+		optionalPart := { segmentation:= omit, importance := * } ifpresent,
+		eop := { paramName:= con_SCCP_eop } ifpresent
+	}
+}
+
+
+template PDU_SCCP tr_SCCP_IT(template (present) OCT3 source_lref := ?,
+			     template (present) OCT3 dest_lref := ?) := {
+	inacttest := {
+		messageType := it,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref,
+		protClass := c_class2,
+		sequencingSegmenting := {
+			reserved := ?,
+			p_s := ?,
+			more := ?,
+			pr := ?
+		},
+		credit := ?
+	}
+}
+
+template PDU_SCCP ts_SCCP_IT(template (present) OCT3 source_lref,
+			     template (present) OCT3 dest_lref) := {
+	inacttest := {
+		messageType := it,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref,
+		protClass := c_class2,
+		/* rfc3868 3.3.11: sequencing and credit are ignored with class2 */
+		sequencingSegmenting := {
+			reserved := '0'B,
+			p_s := '0000000'B,
+			more := '0'B,
+			pr := '0000000'B
+		},
+		credit := '00'O
+	}
+}
+
+template PDU_SCCP tr_SCCP_RLSD(template (present) OCT3 source_lref := ?,
+			       template (present) OCT3 dest_lref := ?,
+			       template (present) SCCP_param_ReleaseCause relcause := ?) := {
+	released := {
+		messageType := rlsd,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref,
+		releaseCause := relcause,
+		pointer1 := ?,
+		optionalPart := *,
+		eop := *
+	}
+}
+
+template PDU_SCCP ts_SCCP_RLC(OCT3 source_lref, OCT3 dest_lref) := {
+	relcomp := {
+		messageType := rlc,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref
+	}
+}
+
+template PDU_SCCP tr_SCCP_RLC(template (present) OCT3 source_lref := ?,
+			      template (present) OCT3 dest_lref := ?) := {
+	relcomp := {
+		messageType := rlc,
+		destLocRef := dest_lref,
+		sourceLocRef := source_lref
+	}
+}
+
+private function f_pc_int2bit(template (present) integer pc)
+return template SCMG_param_AffectedPointCode {
+	if (istemplatekind(pc, "?")) {
+		return ?;
+	} else {
+		return int2bit(valueof(pc), 16);
+	}
+}
+
+template (value) PDU_SCMG_message ts_SCMG_SSA(template (value) integer ssn,
+					      integer pc,
+					      template (value) BIT2 smi := '00'B) := {
+	messageType := sSAallowed,
+	affectedSSN := ssn,
+	affectedPC := int2bit(valueof(pc), 16),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+template (present) PDU_SCMG_message tr_SCMG_SSA(template (present) integer ssn := ?,
+						template (present) integer pc := ?,
+						template (present) BIT2 smi := ?) := {
+	messageType := sSAallowed,
+	affectedSSN := ssn,
+	affectedPC := f_pc_int2bit(pc),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+
+template (value) PDU_SCMG_message ts_SCMG_SSP(template (value) integer ssn,
+					      integer pc,
+					      template (value) BIT2 smi := '00'B) := {
+	messageType := sSPprohib,
+	affectedSSN := ssn,
+	affectedPC := int2bit(valueof(pc), 16),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+template (present) PDU_SCMG_message tr_SCMG_SSP(template (present) integer ssn := ?,
+						template (present) integer pc := ?,
+						template (present) BIT2 smi := ?) := {
+	messageType := sSPprohib,
+	affectedSSN := ssn,
+	affectedPC := f_pc_int2bit(pc),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+
+template (value) PDU_SCMG_message ts_SCMG_SST(template (value) integer ssn,
+					      integer pc,
+					      template (value) BIT2 smi := '00'B) := {
+	messageType := sSTstaTest,
+	affectedSSN := ssn,
+	affectedPC := int2bit(valueof(pc), 16),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+template (present) PDU_SCMG_message tr_SCMG_SST(template (present) integer ssn := ?,
+						template (present) integer pc := ?,
+						template (present) BIT2 smi := ?) := {
+	messageType := sSTstaTest,
+	affectedSSN := ssn,
+	affectedPC := f_pc_int2bit(pc),
+	smi := {
+		smi := smi,
+		reserved := '000000'B
+	},
+	congLevel := omit
+}
+
+
+
+}

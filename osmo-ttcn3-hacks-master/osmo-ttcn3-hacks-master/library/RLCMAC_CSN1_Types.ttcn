@@ -1,0 +1,1429 @@
+/* GPRS RLC/MAC Control Messages as per 3GPP TS 44.060 manually transcribed from the CSN.1 syntax, as no CSN.1
+ * tool for Eclipse TITAN could be found.  Implements only the minimum necessary messages for Osmocom teseting
+ * purposes. */
+
+/* (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module RLCMAC_CSN1_Types {
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from GSM_Types all;
+	import from MobileL3_GMM_SM_Types all;
+
+	/* TS 44.060 11.2.0.1 */
+	type enumerated RlcmacDlCtrlMsgType {
+		PACKET_ACCESS_REJECT		('100001'B),
+		PACKET_CELL_CHANGE_ORDER	('000001'B),
+		PACKET_DL_ASSIGNMENT		('000010'B),
+		PACKET_MEASUREMENT_ORDER	('000011'B),
+		PACKET_PAGING_REQUEST		('100010'B),
+		PACKET_PDCH_RELEASE		('100011'B),
+		PACKET_POLLING_REQUEST		('000100'B),
+		PACKET_PWR_CONTROL_TA		('000101'B),
+		/* TODO */
+		PACKET_TBF_RELEASE		('001000'B),
+		PACKET_UL_ACK_NACK		('001001'B),
+		PACKET_UL_ASSIGNMENT		('001010'B),
+		PACKET_CELL_CHANGE_CONTINUE	('001011'B),
+		PACKET_NEIGHBOUR_CELL_DATA	('001100'B),
+		PACKET_DL_DUMMY_CTRL		('100101'B)
+	} with { variant "FIELDLENGTH(6)" };
+
+	/* TS 44.060 11.2.0.2 */
+	type enumerated RlcmacUlCtrlMsgType {
+		PACKET_CELL_CHANGE_FEATURE	('000000'B),
+		PACKET_CONTROL_ACK		('000001'B),
+		PACKET_DL_ACK_NACK		('000010'B),
+		PACKET_UL_DUMMY_CTRL		('000011'B),
+		PACKET_MEASUREMENT_REPORT	('000100'B),
+		PACKET_ENH_MEASUREMENT_REPORT	('001010'B),
+		PACKET_RESOURCE_REQUEST		('000101'B),
+		PACKET_MOBILE_TBF_STATUS	('000110'B),
+		PACKET_PSI_STATUS		('000111'B),
+		PACKET_EGPRS_DL_ACK_NACK	('001000'B),
+		PACKET_PAUSE			('001001'B),
+		ADDITIONAL_MS_RA_CAPABILITIES	('001011'B),
+		PACKET_CELL_CHANGE_NOTIFICATION	('001100'B),
+		PACKET_SI_STATUS		('001101'B),
+		PACKET_CS_REQUEST		('001110'B),
+		MBMS_SERVICE_REQUEST		('001111'B),
+		MBMS_DL_ACK_NACK		('010000'B)
+	} with { variant "FIELDLENGTH(6)" };
+
+	type enumerated EgprsChCodingCommand {
+		CH_CODING_MCS1		('0000'B),
+		CH_CODING_MCS2		('0001'B),
+		CH_CODING_MCS3		('0010'B),
+		CH_CODING_MCS4		('0011'B),
+		CH_CODING_MCS5		('0100'B),
+		CH_CODING_MCS6		('0101'B),
+		CH_CODING_MCS7		('0110'B),
+		CH_CODING_MCS8		('0111'B),
+		CH_CODING_MCS9		('1000'B),
+		CH_CODING_MCS5_7	('1001'B),
+		CH_CODING_MCS6_9	('1010'B)
+	} with { variant "FIELDLENGTH(4)" };
+
+	/* TS 44.060 Table 12.5.2.1 */
+	type enumerated EgprsWindowSize { /* This probably needs to be moved to RLCMAC_CSN1_Types.ttcn */
+		EGPRS_WS_64		('00000'B),
+		EGPRS_WS_96		('00001'B),
+		EGPRS_WS_128		('00010'B),
+		EGPRS_WS_160		('00011'B),
+		EGPRS_WS_192		('00100'B),
+		EGPRS_WS_224		('00101'B),
+		EGPRS_WS_256		('00110'B),
+		EGPRS_WS_288		('00111'B),
+		EGPRS_WS_320		('01000'B),
+		EGPRS_WS_352		('01001'B),
+		EGPRS_WS_384		('01010'B),
+		EGPRS_WS_416		('01011'B),
+		EGPRS_WS_448		('01100'B),
+		EGPRS_WS_480		('01101'B),
+		EGPRS_WS_512		('01110'B),
+		EGPRS_WS_544		('01111'B),
+		EGPRS_WS_576		('10000'B),
+		EGPRS_WS_608		('10001'B),
+		EGPRS_WS_640		('10010'B),
+		EGPRS_WS_672		('10011'B),
+		EGPRS_WS_704		('10100'B),
+		EGPRS_WS_736		('10101'B),
+		EGPRS_WS_768		('10110'B),
+		EGPRS_WS_800		('10111'B),
+		EGPRS_WS_832		('11000'B),
+		EGPRS_WS_864		('11001'B),
+		EGPRS_WS_896		('11010'B),
+		EGPRS_WS_928		('11011'B),
+		EGPRS_WS_960		('11100'B),
+		EGPRS_WS_992		('11101'B),
+		EGPRS_WS_1024		('11110'B)
+	} with { variant "FIELDLENGTH(5)" };
+
+	type record NullGlobalTfi {
+		BIT1			presence ('0'B),
+		GlobalTfi		global_tfi
+	} with { variant "" };
+
+	type record TenTlli {
+		BIT2			presence ('10'B),
+		GprsTlli		tlli
+	} with { variant ""
+		variant (tlli) "BYTEORDER(first)"
+	};
+
+	type union GlobalTfiOrTlli {
+		NullGlobalTfi		global_tfi,
+		TenTlli			tlli
+	};
+
+	/* 11.2.7 Packet Downlink Assignment */
+	type record PacketDlAssignment {
+		PageMode		page_mode,
+		BIT1			pres1,
+		PersistenceLevels	persistence_levels optional,
+		GlobalTfiOrTlli		tfi_or_tlli,
+		BIT1			egprs2('0'B), /* TODO: implement union with egprs2 */
+		BIT2			mac_mode,
+		BIT1			rlc_mode,
+		BIT1			control_ack,
+		BIT8			timeslot_alloc,
+		PacketTimingAdvance	pkt_ta,
+		BIT1			p0_present,
+		uint4_t			p0 optional,
+		BIT1			reserved('0'B) optional,
+		BIT1			pr_mode optional,
+		BIT1			freq_par_present,
+		FrequencyParameters	freq_par optional,
+		BIT1			dl_tfi_ass_present,
+		uint5_t			dl_tfi_assignment optional,
+		BIT1			pwr_ctrl_present,
+		PowerControlParameters	pwr_ctrl optional,
+		BIT1			tbf_starting_time_present,
+		StartingFnDesc		tbf_starting_time optional,
+		/* The value '1' was allocated in an earlier version of the protocol */
+		BIT1			spare ('0'B),
+		/* Rel-{99,5,6,7,9,10,12,14} Additions (Matrioshka) */
+		PktDlAssRelAdditions	rel_additions optional
+	} with {
+		variant (persistence_levels) "PRESENCE(pres1 = '1'B)"
+		variant (p0) "PRESENCE(p0_present = '1'B)"
+		variant (reserved) "PRESENCE(p0_present = '1'B)"
+		variant (pr_mode) "PRESENCE(p0_present = '1'B)"
+		variant (freq_par) "PRESENCE(freq_par_present = '1'B)"
+		variant (dl_tfi_assignment) "PRESENCE(dl_tfi_ass_present = '1'B)"
+		variant (pwr_ctrl) "PRESENCE(pwr_ctrl_present = '1'B)"
+		variant (tbf_starting_time) "PRESENCE(tbf_starting_time_present = '1'B)"
+	};
+
+	/* 11.2.9b Packet Measurement Order */
+	type enumerated NetworkControlOrder {
+		NC_0		('00'B),
+		NC_1		('01'B),
+		NC_2		('10'B),
+		NC_RESET	('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+	type record CellSelection {
+		BIT1	cell_barr_access_2,
+		BIT1 	exc_acc,
+		BIT1	same_ra_as_serving_cell,
+		BIT1	gprs_rxlev_access_min_present ('0'B),
+		BIT1	gprs_temporary_offset_present ('0'B),
+		BIT1	gprs_reselct_offset_present ('0'B),
+		BIT1	hcs_params_present ('0'B),
+		BIT1	si13_pbcch_location_present ('0'B)
+		/* TODO: add optional parameters above^ */
+	};
+	type record AddFrequency {
+		uint10_t		start_frequency,
+		uint6_t			bsic,
+		BIT1			cell_sel_par_present,
+		CellSelection		cell_sel_par optional,
+		uint5_t			nr_of_frequencies,
+		uint3_t			freq_diff_length
+		/* TODO: support Frequency diff list */
+	} with {
+		variant (cell_sel_par) "PRESENCE(cell_sel_par_present = '1'B)"
+	};
+	type record RepeatedAddFrequencyItem {
+		BIT1			presence,
+		AddFrequency		item
+	} with { variant "PRESENCE(presence = '1'B)" };
+	type record of uint6_t FreqIndexList;
+	type record of RepeatedAddFrequencyItem RepeatedAddFrequencyItemList;
+	type record NCFrequencyList {
+		BIT1			removed_freq_present,
+		uint5_t			nr_of_removed_freq optional,
+		FreqIndexList		removed_freq_index optional,
+		RepeatedAddFrequencyItemList repeated_add_frequency optional,
+		BIT1			repeated_add_frequency_term ('0'B)
+	} with {
+		variant (nr_of_removed_freq) "PRESENCE(removed_freq_present = '1'B)"
+		variant (removed_freq_index) "PRESENCE(removed_freq_present = '1'B)"
+		variant (nr_of_removed_freq) "LENGTHTO(removed_freq_index)-1"
+		variant (nr_of_removed_freq) "UNIT(elements)"
+	};
+	type record NCMeasurementParameters {
+		NetworkControlOrder	nco,
+		BIT1			nc_period_present,
+		uint3_t			nc_non_drx_period optional,
+		uint3_t			nc_reporting_period_i optional,
+		uint3_t			nc_reporting_period_t optional,
+		BIT1			nc_freq_list_present,
+		NCFrequencyList		nc_freq_list optional
+	} with {
+		variant (nc_non_drx_period) "PRESENCE(nc_period_present = '1'B)"
+		variant (nc_reporting_period_i) "PRESENCE(nc_period_present = '1'B)"
+		variant (nc_reporting_period_t) "PRESENCE(nc_period_present = '1'B)"
+		variant (nc_freq_list) "PRESENCE(nc_freq_list_present = '1'B)"
+	};
+	type record PacketMeasOrder {
+		PageMode		page_mode,
+		GlobalTfiOrTlli		tfi_or_tlli,
+		uint3_t			pmo_index,
+		uint3_t			pmo_count,
+		BIT1			nc_meas_param_present,
+		NCMeasurementParameters nc_meas_param optional,
+		BIT1			zero('0'B) /*  The value '1' was allocated in an earlier version of the protocol and shall not be used.  */
+		/* TODO: support Additions 98 onwards */
+	} with {
+		variant (nc_meas_param) "PRESENCE(nc_meas_param_present = '1'B)"
+	};
+
+	private type record PktDlAssRelAdditions {
+		BIT1			rel99_presence, // 0/1
+		PktDlAssR99Additions	rel99 optional
+	} with {
+		variant (rel99) "PRESENCE(rel99_presence = '1'B)"
+	};
+
+	private type record PktDlAssR99Additions {
+		BIT1			egprs_present,
+		PktDlAssR99EGPRS	egprs optional,
+		BIT1			pkt_ext_ta_present,
+		BIT2			pkt_ext_ta optional,
+		BIT1			compact_reduced_ma_present,
+		COMPACTreducedMA	compact_reduced_ma optional
+		/* TODO: Additions for REL-5 */
+	} with {
+		variant (egprs) "PRESENCE(egprs_present = '1'B)"
+		variant (pkt_ext_ta) "PRESENCE(pkt_ext_ta_present = '1'B)"
+		variant (compact_reduced_ma) "PRESENCE(compact_reduced_ma_present = '1'B)"
+	};
+
+	private type record PktDlAssR99EGPRS {
+		EgprsWindowSize		window_size,
+		BIT2			link_quality_meas_mode,
+		BIT1			bep_period2_present,
+		BIT4			bep_period2 optional
+	} with {
+		variant (bep_period2) "PRESENCE(bep_period2_present = '1'B)"
+	};
+
+	/* 11.2.29 Packet Uplink Assignment */
+	type record O_Gtfi {
+		BIT1			presence ('0'B),
+		GlobalTfi		global_tfi
+	} with { variant "" };
+	type record IO_Tlli {
+		BIT2			presence ('10'B),
+		GprsTlli		tlli
+	} with { variant ""
+		variant (tlli) "BYTEORDER(first)"
+	};
+	type record IIO_Tqi {
+		BIT3			presence ('110'B),
+		PacketRequestReference	pkt_req_ref
+	} with { variant "" };
+	type union PktUlAssUnion {
+		O_Gtfi			global_tfi,
+		IO_Tlli			tlli,
+		IIO_Tqi			tqi
+	} with {
+		variant "TAG(global_tfi, presence = '0'B;
+			     tlli, presence = '10'B;
+			     tqi, presence = '110'B)"
+	};
+	type record DynamicAllocation {
+		BIT1			extd_dyn_alloc,
+		BIT1			p0_present,
+		uint4_t			p0 optional,
+		BIT1			pr_mode optional,
+		BIT1			usf_granularity,
+		BIT1			ul_tfi_ass_present,
+		uint5_t			ul_tfi_assignment optional,
+		BIT1			reserved ('0'B),
+		BIT1			tbf_starting_time_present,
+		StartingFnDesc		tbf_starting_time optional,
+		TsAllocationUnion	ts_allocation
+	} with {
+		variant (p0)		"PRESENCE(p0_present = '1'B)"
+		variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+		variant (ul_tfi_assignment) "PRESENCE(ul_tfi_ass_present = '1'B)"
+		variant (tbf_starting_time) "PRESENCE(tbf_starting_time_present = '1'B)"
+	};
+	type record TsAllocationTs {
+		BIT1			presence,
+		uint3_t			usf_tn optional
+	} with {
+		variant (usf_tn) "PRESENCE(presence = '1'B)"
+	};
+	type record length(8) of TsAllocationTs TsAllocationTsArr;
+	type record TnGamma {
+		BIT1			presence,
+		uint3_t			usf_tn optional,
+		uint5_t			gamma_tn optional
+	} with {
+		variant (usf_tn)	"PRESENCE(presence = '1'B)"
+		variant (gamma_tn)	"PRESENCE(presence = '1'B)"
+	};
+	type record length(8) of TnGamma TnGamma8;
+	type record TsAllocationPwr {
+		uint4_t			alpha,
+		TnGamma			tn_gamma
+	} with { variant "" };
+	type record TsAllocationUnion {
+		BIT1			presence,
+		TsAllocationTsArr	ts optional,
+		TsAllocationPwr	ts_with_pwr optional
+	} with {
+		variant (ts)		"PRESENCE(presence = '0'B)"
+		variant (ts_with_pwr)	"PRESENCE(presence = '1'B)"
+	};
+	type record SingleBlockAllocation {
+		uint3_t			timeslot_nr,
+		BIT1			alpha_present,
+		uint4_t			alpha optional,
+		uint5_t			gamma_tn,
+		BIT1			p0_present,
+		uint4_t			p0 optional,
+		BIT1			reserved ('0'B) optional,
+		BIT1			pr_mode optional,
+		StartingFnDesc		tbf_starting_time
+	} with {
+		variant (alpha)		"PRESENCE(alpha_present = '1'B)"
+		variant (p0)		"PRESENCE(p0_present = '1'B)"
+		variant (reserved)	"PRESENCE(p0_present = '1'B)"
+		variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+	};
+	type record PktUlAssGprs {
+		ChCodingCommand		ch_coding_cmd,
+		BIT1			tlli_block_chan_coding,
+		PacketTimingAdvance	pkt_ta,
+		BIT1			freq_par_present,
+		FrequencyParameters	freq_par optional,
+		BIT2			alloc_present,
+		DynamicAllocation	dyn_block_alloc optional,
+		SingleBlockAllocation	sgl_block_alloc optional
+	} with {
+		variant (freq_par) "PRESENCE(freq_par_present = '1'B)"
+		variant (dyn_block_alloc) "PRESENCE(alloc_present = '01'B)"
+		variant (sgl_block_alloc) "PRESENCE(alloc_present = '10'B)"
+	};
+	type record COMPACTreducedMA {
+		uint7_t		ma_bitmap_length,
+		bitstring	ma_bitmap,
+		BIT1		maio_2_present,
+		BIT6		maio_2 optional
+	} with {
+		variant (ma_bitmap_length) "LENGTHTO (ma_bitmap)"
+		variant (ma_bitmap_length) "UNIT(bits)"
+		variant (maio_2) "PRESENCE(maio_2_present = '1'B)"
+	};
+	type record of AccessTechnologiesRequest AccessTechnologiesRequestRepetition
+	with { variant "EXTENSION_BIT(reverse)" };
+	type record AccessTechnologiesRequest
+	{
+		BIT4	accessTechnType,
+		BIT1    extensionBit
+	} with { variant "FIELDORDER(msb)" };
+	type record MultiBlockAllocation {
+		uint3_t			timeslot_nr,
+		BIT1			alpha_gamma_present,
+		uint4_t			alpha optional,
+		uint5_t			gamma_tn optional,
+		BIT1			p0_present,
+		uint4_t			p0 optional,
+		BIT1			reserved ('0'B) optional,
+		BIT1			pr_mode optional,
+		StartingFnDesc		tbf_starting_time,
+		uint2_t			num_radio_blocks_alloc
+	} with {
+		variant (alpha)		"PRESENCE(alpha_gamma_present = '1'B)"
+		variant (gamma_tn)	"PRESENCE(alpha_gamma_present = '1'B)"
+		variant (p0)		"PRESENCE(p0_present = '1'B)"
+		variant (reserved)	"PRESENCE(p0_present = '1'B)"
+		variant (pr_mode)	"PRESENCE(p0_present = '1'B)"
+	};
+	type record PktUlAssEgprs {
+		BIT2			dual_carrier('00'B), /*TODO 01       -- Message escape for dual carrier, RTTI, BTTI with FANR activated, EGPRS2 */
+		BIT1			tlli_present,
+		GprsTlli		tlli optional,
+		BIT1			compact_reduced_ma_present,
+		COMPACTreducedMA	compact_reduced_ma optional,
+		EgprsChCodingCommand	chan_coding_cmd,
+		BIT1			resegment,
+		EgprsWindowSize		window_size,
+		BIT1			ats_present,
+		AccessTechnologiesRequestRepetition ats optional, /* ? */
+		BIT1			arac_retrans_req,
+		BIT1			tlli_block_chan_coding,
+		BIT1			bep_period2_present,
+		BIT4			bep_period2 optional,
+		PacketTimingAdvance	pkt_ta,
+		BIT1			pkt_ext_ta_present,
+		BIT2			pkt_ext_ta optional,
+		BIT1			freq_par_present,
+		FrequencyParameters	freq_par optional,
+		BIT2			alloc_present,
+		DynamicAllocation	dyn_block_alloc optional,
+		MultiBlockAllocation	multi_block_alloc optional
+		/* TODO: Additions for Rel-5  and more */
+	} with {
+		variant (tlli) "PRESENCE(tlli_present = '1'B)"
+		variant (compact_reduced_ma) "PRESENCE(compact_reduced_ma_present = '1'B)"
+		variant (ats) "PRESENCE(ats_present = '1'B)"
+		variant (bep_period2) "PRESENCE(bep_period2_present = '1'B)"
+		variant (pkt_ext_ta) "PRESENCE(pkt_ext_ta_present = '1'B)"
+		variant (freq_par) "PRESENCE(freq_par_present = '1'B)"
+		variant (dyn_block_alloc) "PRESENCE(alloc_present = '01'B)"
+		variant (multi_block_alloc) "PRESENCE(alloc_present = '10'B)"
+	};
+	type record PacketUlAssignment {
+		PageMode		page_mode,
+		BIT1			persistence_levels_present,
+		PersistenceLevels	persistence_levels optional,
+		PktUlAssUnion		identity,
+		BIT1			is_egprs,	/* msg escape */
+		PktUlAssGprs		gprs optional,
+		PktUlAssEgprs		egprs optional
+		/* TODO: Table 11.2.29.1: PACKET UPLINK ASSIGNMENT information elements
+			https://www.etsi.org/deliver/etsi_ts/144000_144099/144060/09.03.00_60/ts_144060v090300p.pdf */
+	} with {
+		variant (persistence_levels) "PRESENCE(persistence_levels_present = '1'B)"
+		variant (gprs) "PRESENCE(is_egprs = '0'B)"
+		variant (egprs) "PRESENCE(is_egprs = '1'B)"
+	};
+
+	/* 11.2.10 Packet Paging Request */
+	type record MobileIdentityLV_Paging {
+		/* Note that the size of 'len' differs from that of the Mobile Identify IE
+		 * as defined in 3GPP TS 24.008 10.5.1.4 "Mobile Identity"; Paging Requests
+		 * use only 4 bit to encode the length of a mobile identity, whereas the IE
+		 * uses a byte. */
+		uint4_t			len,
+		octetstring		mobile_id
+	} with {
+		variant (len) "LENGTHTO(mobile_id)"
+		variant (mobile_id) "BYTEORDER(first)"
+	};
+	type record PageInfoPs {
+		BIT1			presence ('0'B),
+		BIT1			ptmsi_or_mobile_id,
+		GsmTmsi			ptmsi optional,
+		MobileIdentityLV_Paging	mobile_identity optional
+	} with {
+		variant (ptmsi) "PRESENCE(ptmsi_or_mobile_id = '0'B)"
+		variant (mobile_identity) "PRESENCE(ptmsi_or_mobile_id = '1'B)"
+	};
+	type record PageInfoCs {
+		BIT1			presence ('1'B),
+		BIT1			tmsi_or_mobile_id,
+		GsmTmsi			tmsi optional,
+		MobileIdentityLV_Paging	mobile_identity optional,
+		ChannelNeeded		chan_needed,
+		BIT1			emlpp_prio_present,
+		uint3_t			emlpp_prio optional
+	} with {
+		variant (tmsi) "PRESENCE(tmsi_or_mobile_id = '0'B)"
+		variant (mobile_identity) "PRESENCE(tmsi_or_mobile_id = '1'B)"
+		variant (emlpp_prio) "PRESENCE(emlpp_prio_present = '1'B)"
+	};
+	type union PageInfo {
+		PageInfoPs		ps,
+		PageInfoCs		cs
+	} with {
+		variant "TAG(ps, presence = '0'B; cs, presence = '1'B)"
+	};
+	type record RepeatedPageInfoItem {
+		BIT1			presence,
+		PageInfo		item
+	} with { variant "PRESENCE(presence = '1'B)" };
+	type record of RepeatedPageInfoItem RepeatedPageInfo;
+	type record PacketPagingReq {
+		PageMode		page_mode,
+		BIT1			persistence_levels_present,
+		PersistenceLevels	persistence_levels optional,
+		BIT1			nln_present,
+		uint2_t			nln optional,
+		RepeatedPageInfo	repeated_pageinfo optional,
+		BIT1			repeated_pageinfo_term ('0'B)
+	} with {
+		variant (persistence_levels) "PRESENCE(persistence_levels_present = '1'B)"
+		variant (nln) "PRESENCE(nln_present = '1'B)"
+	};
+
+	/* 12.26 Extension Bits IE  */
+	type record ExtensionBits {
+		uint6_t		extension_length,
+		bitstring	spare_bits
+	} with {
+		variant (extension_length) "LENGTHTO(spare_bits) - 1"
+		variant (extension_length) "UNIT(bits)"
+	};
+
+	/* 11.2.28 Uplink Ack/Nack */
+	type enumerated ChCodingCommand {
+		CH_CODING_CS1		('00'B),
+		CH_CODING_CS2		('01'B),
+		CH_CODING_CS3		('10'B),
+		CH_CODING_CS4		('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+	type record UlAckNackGprsAdditionsRel99 {
+		BIT1			ext_pkt_ta_present,
+		BIT2			ext_pkt_ta optional,
+		boolean			tbf_est
+		/* TODO: Rel5 ,... */
+	} with {
+		variant (ext_pkt_ta)	"PRESENCE(ext_pkt_ta_present = '1'B)"
+		variant (tbf_est) 	"FIELDLENGTH(1)"
+	};
+	type record UlAckNackGprs {
+		ChCodingCommand		ch_coding_cmd,
+		AckNackDescription	ack_nack_desc,
+		BIT1			cont_res_tlli_present,
+		GprsTlli		cont_res_tlli optional,
+		BIT1			pkt_ta_present,
+		PacketTimingAdvance	pkt_ta optional,
+		BIT1			pwr_ctrl_present,
+		PowerControlParameters	pwr_ctrl optional,
+		BIT1			extension_bits_present,
+		ExtensionBits		extension_bits optional,
+		BIT1			not_used ('0'B),
+		BIT1				rel99_present,
+		UlAckNackGprsAdditionsRel99	rel99 optional
+	} with {
+		variant (cont_res_tlli)	"PRESENCE(cont_res_tlli_present = '1'B)"
+		variant (pkt_ta)	"PRESENCE(pkt_ta_present = '1'B)"
+		variant (pwr_ctrl)	"PRESENCE(pwr_ctrl_present = '1'B)"
+		variant (extension_bits) "PRESENCE(extension_bits_present = '1'B)"
+		variant (rel99)		"PRESENCE(rel99_present = '1'B)"
+		variant (cont_res_tlli) "BYTEORDER(first)"
+	};
+	type record UlAckNackEgprs {
+		BIT2			msg_excape ('00'B),
+		EgprsChCodingCommand	ch_coding_cmd,
+		BIT1			resegment,
+		BIT1			preemptive_tx,
+		BIT1			prr_retrans_req,
+		BIT1			arac_retrans_req,
+		BIT1			cont_res_tlli_present,
+		GprsTlli		cont_res_tlli optional,
+		BIT1			tbf_est,
+		BIT1			pkt_ta_present,
+		PacketTimingAdvance	pkt_ta optional,
+		BIT1			pkt_ext_ta_present,
+		BIT2			pkt_ext_ta optional,
+		BIT1			pwr_ctrl_present,
+		PowerControlParameters	pwr_ctrl optional
+		/* TODO: TS 44.060 12.3.1  EGPRS Ack/Nack Description */
+		/* EgprsAckNackDescription	ack_nack_desc, */
+		/* BIT1			not_used('0'B) */
+		/* TODO: Extension Bits, Rel5 ,... */
+	} with {
+		variant (cont_res_tlli)	"PRESENCE(cont_res_tlli_present = '1'B)"
+		variant (pkt_ta)	"PRESENCE(pkt_ta_present = '1'B)"
+		variant (pkt_ext_ta)	"PRESENCE(pkt_ext_ta_present = '1'B)"
+		variant (pwr_ctrl)	"PRESENCE(pwr_ctrl_present = '1'B)"
+		variant (cont_res_tlli) "BYTEORDER(first)"
+	};
+	type record PacketUlAckNack {
+		PageMode		page_mode,
+		BIT2			msg_excape ('00'B),
+		uint5_t			uplink_tfi,
+		BIT1			is_egprs,
+		UlAckNackGprs		gprs optional,
+		UlAckNackEgprs		egprs optional
+		/* TODO: EGPRS */
+	} with {
+		variant (gprs) "PRESENCE(is_egprs = '0'B)"
+		variant (egprs) "PRESENCE(is_egprs = '1'B)"
+	};
+
+	/* 11.2.8 Packet Downlink Dummy Control Block */
+	type record PacketDlDummy {
+		PageMode		page_mode,
+		BIT1			persistence_levels_present,
+		PersistenceLevels	persistence_levels optional
+	} with {
+		variant (persistence_levels) "PRESENCE(persistence_levels_present = '1'B)"
+	};
+
+	/* 11.9 Global Power Control Parameters */
+	type record GlobalPwrCtrlParams {
+		uint4_t			alpha,
+		uint5_t			t_avg_v,
+		uint5_t			t_avg_t,
+		uint4_t			pb,
+		BIT1			pc_meas_chan,
+		BIT1			spare ('0'B),
+		uint4_t			n_avg_i
+	};
+
+	/* 12.12a Global Packet Timing Advance */
+	type record TimingAdvanceIdxTN {
+		uint4_t			ta_idx,
+		uint3_t			ts_num
+	};
+	type record GlobalPacketTA {
+		BIT1			ta_val_presence,
+		uint4_t			ta_val optional,
+		BIT1			ul_presence,
+		TimingAdvanceIdxTN	ul optional,
+		BIT1			dl_presence,
+		TimingAdvanceIdxTN	dl optional
+	} with {
+		variant (ta_val) "PRESENCE(ta_val_presence = '1'B)"
+		variant (ul) "PRESENCE(ul_presence = '1'B)"
+		variant (dl) "PRESENCE(dl_presence = '1'B)"
+	};
+
+	/* 11.2.13 Packet Power Control/Timing Advance */
+	type record PacketPwrControlTAMsg {
+		BIT1			g_pwr_ctrl_presence,
+		GlobalPwrCtrlParams	g_pwr_ctrl optional,
+		BIT1			split,
+		BIT1			split_desc optional,
+		GlobalPacketTA		g_pkt_ta optional,
+		PowerControlParameters	pwr_ctrl optional
+		/* TODO: additions for R99, REL-7, REL-12 */
+	} with {
+		variant (g_pwr_ctrl) "PRESENCE(g_pwr_ctrl_presence = '1'B)"
+		variant (split_desc) "PRESENCE(split = '1'B)"
+		/* FIXME: Fancy coding: either both IEs together, or one of them */
+		variant (g_pkt_ta) "PRESENCE(split = '0'B, split_desc = '0'B)"
+		variant (pwr_ctrl) "PRESENCE(split = '0'B, split_desc = '1'B)"
+	};
+	type record PacketPwrControlTA {
+		PageMode		page_mode,
+		NullGlobalTfi		global_tfi,
+		/* See 11.1.3.3 'Message escape' error label
+		 * 0 < Message body > ! < Message escape : 1 bit (*) = <no string> > */
+		BIT1			msg_escape,
+		PacketPwrControlTAMsg	msg optional
+	} with {
+		variant (msg) "PRESENCE(msg_escape = '0'B)"
+	};
+
+	/* 11.2.2a Packet Cell Change Continue */
+	type record PacketCellChangeContinue {
+		PageMode	page_mode,
+		BIT1		zero ('0'B),
+		GlobalTfi	gtfi,
+		BIT1		arfcn_bsic_presence,
+		uint10_t	arfcn optional,
+		uint6_t		bsic optional,
+		uint2_t		container_id optional
+	} with {
+		variant (arfcn) "PRESENCE(arfcn_bsic_presence = '1'B)"
+		variant (bsic) "PRESENCE(arfcn_bsic_presence = '1'B)"
+		variant (container_id) "PRESENCE(arfcn_bsic_presence = '1'B)"
+	};
+
+	/* 11.2.9e Packet Neighbour Cell Data */
+	type record PacketNeighbourCellDataContainer {
+		BIT3	pd,
+		uint5_t	cd_length,
+		octetstring container_data
+	} with {
+		variant (cd_length) "LENGTHTO (container_data)"
+		variant (container_data) "BYTEORDER(first)"
+	};
+	type record of PacketNeighbourCellDataContainer PacketNeighbourCellDataContainerList
+	type record PacketNeighbourCellData {
+		PageMode	page_mode,
+		BIT1		zero ('0'B),
+		GlobalTfi	gtfi,
+		uint2_t		container_id,
+		BIT1		spare ('0'B),
+		uint5_t		container_index,
+		BIT1		arfcn_bsic_presence,
+		uint10_t	arfcn optional,
+		uint6_t		bsic optional,
+		PacketNeighbourCellDataContainerList container_list
+	} with {
+		variant (arfcn) "PRESENCE(arfcn_bsic_presence = '1'B)"
+		variant (bsic) "PRESENCE(arfcn_bsic_presence = '1'B)"
+	};
+
+	/* 11.2.0.1 */
+	type union RlcmacDlCtrlUnion {
+		PacketAccessReject	access_reject,
+		PacketDlAssignment	dl_assignment,
+		PacketMeasOrder		meas_order,
+		PacketUlAssignment	ul_assignment,
+		PacketPagingReq		paging,
+		PacketUlAckNack		ul_ack_nack,
+		PacketDlDummy		dl_dummy,
+		PacketPwrControlTA	pwr_ta,
+		PacketCellChangeContinue cell_chg_continue,
+		PacketNeighbourCellData neighbour_cell_data,
+		octetstring		other
+	} with { variant "" };
+
+	type record RlcmacDlCtrlMsg {
+		RlcmacDlCtrlMsgType	msg_type,
+		RlcmacDlCtrlUnion	u
+	} with {
+		variant (u) "CROSSTAG(access_reject,	msg_type = PACKET_ACCESS_REJECT;
+				      dl_assignment,	msg_type = PACKET_DL_ASSIGNMENT;
+				      meas_order,	msg_type = PACKET_MEASUREMENT_ORDER;
+				      ul_assignment,	msg_type = PACKET_UL_ASSIGNMENT;
+				      paging,		msg_type = PACKET_PAGING_REQUEST;
+				      ul_ack_nack,	msg_type = PACKET_UL_ACK_NACK;
+				      dl_dummy,		msg_type = PACKET_DL_DUMMY_CTRL;
+				      pwr_ta,		msg_type = PACKET_PWR_CONTROL_TA;
+				      cell_chg_continue,msg_type = PACKET_CELL_CHANGE_CONTINUE;
+				      neighbour_cell_data,msg_type = PACKET_NEIGHBOUR_CELL_DATA;
+				      other,		OTHERWISE
+			)"
+	};
+
+	external function enc_RlcmacDlCtrlMsg(in RlcmacDlCtrlMsg si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_RlcmacDlCtrlMsg(in octetstring stream) return RlcmacDlCtrlMsg
+		with { extension "prototype(convert) decode(RAW)" };
+
+	/* 11.2.1 Packet Access Reject */
+	type record PacketAccessRejectIDSub {
+		BIT1			id_type,
+		PacketRequestReference	req_ref optional,
+		GlobalTfi gtfi optional
+	} with { variant (req_ref) "PRESENCE(id_type = '0'B)"
+		 variant (gtfi) "PRESENCE(id_type = '1'B)"
+	};
+	type union PacketAccessRejectID {
+		GprsTlli tlli,
+		PacketAccessRejectIDSub id_sub
+	} with { variant (tlli) "BYTEORDER(first)" };
+	type record PacketAccessRejectStruct {
+		BIT1			id_type,
+		PacketAccessRejectID	id,
+		BIT1			wait_ind_presence,
+		uint8_t			wait_ind optional,
+		BIT1			wait_ind_size optional
+	} with { variant (id) "CROSSTAG(tlli, id_type = '0'B; id_sub, id_type = '1'B)"
+		 variant (wait_ind) "PRESENCE(wait_ind_presence = '1'B)"
+		 variant (wait_ind_size) "PRESENCE(wait_ind_presence = '1'B)"
+	};
+	type record PacketAccessReject {
+		PageMode		page_mode,
+		PacketAccessRejectStruct reject_struct
+		/* TODO: Additional Reject */
+		/* TODO: Rel5 additions */
+	} with { variant "" };
+
+
+	/* 11.2.6 Packet Downlink Ack/Nack */
+	type record ILevel {
+		BIT1	presence,
+		uint4_t	i_level optional
+	} with { variant (i_level) "PRESENCE(presence = '1'B)" };
+	type record length(8) of ILevel ILevels;
+	type record ChannelQualityReport {
+		uint6_t			c_value,
+		uint3_t			rxqual,
+		uint6_t			sign_var,
+		ILevels			i_levels
+	} with { variant "" };
+	type record PacketDlAckNack {
+		uint5_t			dl_tfi,
+		AckNackDescription	ack_nack_desc,
+		BIT1			chreq_desc_presence,
+		ChannelReqDescription	chreq_desc optional,
+		ChannelQualityReport	ch_qual_rep
+	} with { variant (chreq_desc) "PRESENCE(chreq_desc_presence = '1'B)" };
+
+	/* 11.2.6a Egprs Packet Downlink Ack/Nack */
+	type record EgprsBEPLinkQualityMeasurements {
+		BIT1	gmsk_presence,
+		BIT5	gmsk_mean_bep optional,
+		BIT3	gmsk_cv_bep optional,
+		BIT1	psk8_presence,
+		BIT5	psk8_mean_bep optional,
+		BIT3	psk8_cv_bep optional
+	} with { variant (gmsk_mean_bep) "PRESENCE(gmsk_presence = '1'B)"
+ 		 variant (gmsk_cv_bep) "PRESENCE(gmsk_presence = '1'B)"
+		 variant (psk8_mean_bep) "PRESENCE(psk8_presence = '1'B)"
+		 variant (psk8_cv_bep) "PRESENCE(psk8_presence = '1'B)"
+	};
+	/* 12.5.4 EGPRS Timeslot Link Quality Measurements IE */
+	type record BEPMeas {
+		BIT1	presence,
+		BIT1	is_8psk optional,
+		uint4_t	bep_meas optional
+	} with { variant (is_8psk) "PRESENCE(presence = '1'B)"
+		 variant (bep_meas) "PRESENCE(presence = '1'B)"
+	};
+	type record length(8) of BEPMeas BEPMeasLi;
+	type record EgprsTimeslotLinkQualityMeasurements {
+		BIT1	bep_measurements_presence,
+		BEPMeasLi bep_meas optional,
+		BIT1	i_measurements_presence,
+		ILevels i_meas optional
+	} with { variant (bep_meas) "PRESENCE(bep_measurements_presence = '1'B)"
+ 		 variant (i_meas) "PRESENCE(i_measurements_presence = '1'B)"
+	};
+	/* Table 12.5.1.1 : EGPRS Channel Quality Report Information elements */
+	type record EgprsChannelQualityReport {
+		EgprsBEPLinkQualityMeasurements bep_link_qual_meas,
+		uint6_t			c_value,
+		EgprsTimeslotLinkQualityMeasurements ts_link_qual_meas
+	} with { variant "" };
+	type record EgprsPacketDlAckNack {
+		uint5_t				dl_tfi,
+		BIT1				ms_oom,
+		BIT1				egprs_ch_qual_rep_presence,
+		EgprsChannelQualityReport 	egprs_ch_qual_rep optional,
+		BIT1				chreq_desc_presence,
+		ChannelReqDescription		chreq_desc optional,
+		BIT1				pfi_presence,
+		BIT7				pfi optional,
+		BIT1				epdan_presence('0'B),
+		/* TODO: Implement EPD A/N */
+		EgprsAckNackDescriptionIE ack_nack_desc_ie
+	} with { variant (chreq_desc) "PRESENCE(chreq_desc_presence = '1'B)"
+ 		 variant (egprs_ch_qual_rep) "PRESENCE(egprs_ch_qual_rep_presence = '1'B)"
+		 variant (pfi) "PRESENCE(pfi_presence = '1'B)"
+	};
+
+	/* 11.2.2 Packet Control Acknowledgement */
+	type enumerated CtrlAck {
+		MS_RCVD_TWO_RLC_SAME_RTI_DIFF_RBSN_NEW_TFI	('00'B),
+		MS_RCVD_RBSN1_NO_RBSN0				('01'B),
+		MS_RCVD_RBSN0_NO_RBSN1				('10'B),
+		MS_RCVD_TWO_RLC_SAME_RTI_DIFF_RBSN		('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+	type record PacketCtrlAck {
+		GprsTlli		tlli,
+		CtrlAck			ctrl_ack
+		/* TODO: Rel5 additions */
+	} with { variant ""
+		variant (tlli) "BYTEORDER(first)"
+	};
+
+	/* 1.2.8b Packet Uplink Dummy Control Block */
+	type record PacketUlDummy {
+		GprsTlli		tlli
+	} with { variant ""
+		variant (tlli) "BYTEORDER(first)"
+	};
+
+	/* 11.2.9 Packet Measurement Report */
+	type record NCMeasurement {
+		uint6_t frequency_n,
+		BIT1 bsic_n_presence,
+		BIT6 bsic_n optional,
+		uint6_t rxlev_n
+	} with {
+		variant (bsic_n) "PRESENCE(bsic_n_presence = '1'B)"
+	};
+	type record of NCMeasurement NCMeasurementList;
+	type record NCMeasurementReport {
+		BIT1	nc_mode,
+		uint6_t	rxlev_serving_cell,
+		BIT1 zero ('0'B), /*The value '1' was allocated in an earlier version of the protocol and shall not be used.*/
+		uint3_t	num_nc_measurements,
+		NCMeasurementList nm_measurements
+	} with {
+		variant (num_nc_measurements) "LENGTHTO(nm_measurements)"
+		variant (num_nc_measurements) "UNIT(elements)"
+	};
+	type record PacketMeasReport {
+		GprsTlli		tlli,
+		BIT1	psi5_change_mark_presence,
+		BIT2	psi5_change_mark optional,
+		BIT1	additions_99 ('0'B), /* TODO: 1 -> support Additions 99 onwards */
+		NCMeasurementReport nc_meas_report optional
+	} with {
+		variant (tlli) "BYTEORDER(first)"
+		variant (psi5_change_mark) "PRESENCE(psi5_change_mark_presence = '1'B)"
+		variant (nc_meas_report) "PRESENCE(additions_99 = '0'B)"
+	};
+
+	/* TS 44.060 sec 12.30 MS Radio Access Capability 2
+	 * (for value part, see 3GPP TS 24.008 sec 10.5.5.12a and table 10.5.146) */
+	type union MSRadioAccCap2 {
+		MSRadioAccessCapabilityV     msRadioAccessCapabilityV
+	};
+
+	/* Table 11.2.16.2 Access Type */
+	type enumerated RlcAccessType {
+		RLC_ACC_TYPE_TWO_PHASE		('00'B),
+		RLC_ACC_TYPE_PAG_RESPONSE	('01'B),
+		RLC_ACC_TYPE_CELL_UPDATE	('10'B),
+		RLC_ACC_TYPE_MM			('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+
+	type union PacketResourceReqID {
+		GlobalTfi gtfi,
+		GprsTlli tlli
+	} with { variant (tlli) "BYTEORDER(first)" };
+
+	/* 11.2.16 Packet Resource Request */
+	type record PacketResourceReq {
+		BIT1			acc_type_presence,
+		RlcAccessType		acc_type optional,
+		BIT1			id_type,
+		PacketResourceReqID	id,
+		BIT1			ms_rac2_presence,
+		MSRadioAccCap2		ms_rac2 optional,
+		ChannelReqDescription	ch_req_desc,
+		BIT1			change_mark_presence,
+		BIT2			change_mark optional,
+		BIT6			C_val,
+		BIT1			sign_var_presence,
+		BIT6			sign_var optional,
+		ILevels			I_levels
+		/* TODO: additional contents for further Releases (starting from 1999) */
+	} with {
+		variant (acc_type) "PRESENCE(acc_type_presence = '1'B)"
+		variant (id) "CROSSTAG(gtfi, id_type = '0'B; tlli, id_type = '1'B)"
+		variant (ms_rac2) "PRESENCE(ms_rac2_presence = '1'B)"
+		variant (change_mark) "PRESENCE(change_mark_presence = '1'B)"
+		variant (sign_var) "PRESENCE(sign_var_presence = '1'B)"
+	};
+
+	/* 11.2.3a Packet Cell Change Notification, 3G Target Cell Struct (Rel-6 extension) */
+	type record UtranTargetCellFdd {
+		uint14_t	arfcn,
+		BIT1		bandwidth_presence,
+		uint3_t		bandwidth optional,
+		uint10_t	scrambling_code
+	} with {
+		variant (bandwidth) "PRESENCE(bandwidth_presence = '1'B)"
+	};
+	type record UtranTargetCellTdd {
+		uint14_t	arfcn,
+		BIT1		bandwidth_presence,
+		uint3_t		bandwidth optional,
+		uint7_t		cell_parameter,
+		BIT1		sync_case
+	} with {
+		variant (bandwidth) "PRESENCE(bandwidth_presence = '1'B)"
+	};
+	type record UtranTargetCell {
+		BIT1			fdd_presence,
+		UtranTargetCellFdd	fdd optional,
+		BIT1			tdd_presence,
+		UtranTargetCellTdd	tdd optional,
+		uint6_t		reporting_quantity
+	} with {
+		variant (fdd) "PRESENCE(fdd_presence = '1'B)"
+		variant (tdd) "PRESENCE(tdd_presence = '1'B)"
+	};
+
+	/* 11.2.3a Packet Cell Change Notification, Eutran Target Cell Struct (Rel-8 extension) */
+	type record EutranTargetCell {
+		uint16_t	earfcn,
+		BIT1		meas_bandwidth_presence,
+		uint3_t		meas_bandwidth optional,
+		uint9_t		phys_layer_cell_id,
+		uint6_t		reporting_quantity
+	} with {
+		variant (meas_bandwidth) "PRESENCE(meas_bandwidth_presence = '1'B)"
+	};
+
+	/* 11.2.3a Packet Cell Change Notification, 3G CCN Measurement Report Struct (Rel-6 extension) */
+	type record of UtranCCNMeasReportItem UtranReportingQuantityList;
+	type record UtranCCNMeasReportItem {
+		uint7_t			cell_list_index,
+		uint6_t			reporting_quantity
+	} with { variant "" };
+	type record UtranCCNMeasReport {
+		uint3_t			     n_3g,
+		UtranReportingQuantityList   cells
+	} with {
+		variant (n_3g) "LENGTHTO(cells) - 1"
+		variant (n_3g) "UNIT(elements)"
+	};
+
+	/* 11.2.3a Packet Cell Change Notification, E-UTRAN CCN Measurement Report Struct (Rel-8 extension) */
+	type record length(1..4) of EutranCCNMeasReportItem EutranReportingQuantityList;
+	type record EutranCCNMeasReportItem {
+		uint3_t			frequency_list_index,
+		uint9_t			cell_identity,
+		uint6_t			reporting_quantity
+	} with { variant "" };
+	type record EutranCCNMeasReport {
+		uint1_t				utran_ba_used,
+		uint2_t				n_eutran,
+		EutranReportingQuantityList	cells
+	} with {
+		variant (n_eutran) "LENGTHTO(cells) - 1"
+		variant (n_eutran) "UNIT(elements)"
+	};
+
+	type record NCMeasurementItem {
+		uint6_t freq,
+		BIT1	bsic_presence,
+		uint6_t	bsic optional,
+		uint6_t rxlev
+	} with {
+		variant (bsic) "PRESENCE(bsic_presence = '1'B)"
+	};
+	type record of NCMeasurementItem NCMeasurements;
+	type record CCNMeasReport {
+		uint6_t 	rxlev_servig_cell,
+		BIT1		zero ('0'B),
+		uint3_t		num_meas,
+		NCMeasurements	meas
+	} with { variant "" };
+
+	/* 11.2.3a Packet Cell Change Notification, Rel-Additions (Matrioshka) */
+	private type record PktCellChgNotifAdditions {
+		BIT1	    			rel6_presence,
+		PktCellChgNotifR6Additions	rel6 optional
+	} with {
+		variant (rel6) "PRESENCE(rel6_presence = '1'B)"
+	};
+	private type record PktCellChgNotifR6Additions {
+		BIT1				utran_ba_used_presence,
+		uint1_t				utran_ba_used optional,
+		UtranCCNMeasReport		utran_ccn_meas_rep
+	} with {
+		variant (utran_ba_used) "PRESENCE(utran_ba_used_presence = '1'B)"
+	};
+
+	private type record PktCellChgNotifyU0 {
+		BIT1			tag ('0'B),
+		uint10_t		arfcn,
+		uint6_t			bsic
+	} with { variant "" };
+	private type record PktCellChgNotifyU10 {
+		BIT2			tag ('10'B),
+		UtranTargetCell		utran_target_cell
+	} with { variant "" };
+	private type record PktCellChgNotifyU110 {
+		BIT3			tag ('110'B),
+		BIT1			arfcn_bsic_presence,
+		uint10_t		arfcn optional,
+		uint6_t			bsic optional,
+		BIT1			utran_target_cell_presence,
+		UtranTargetCell		utran_target_cell optional,
+		BIT1			eutran_target_cell_presence,
+		EutranTargetCell	eutran_target_cell optional,
+		BIT1			eutran_ccn_meas_rep_presence,
+		EutranCCNMeasReport 	eutran_ccn_meas_rep optional
+	} with {
+		variant (arfcn) "PRESENCE(arfcn_bsic_presence = '1'B)"
+		variant (bsic) "PRESENCE(arfcn_bsic_presence = '1'B)"
+		variant (utran_target_cell) "PRESENCE(utran_target_cell_presence = '1'B)"
+		variant (eutran_target_cell) "PRESENCE(eutran_target_cell_presence = '1'B)"
+		variant (eutran_ccn_meas_rep) "PRESENCE(eutran_ccn_meas_rep_presence = '1'B)"
+	};
+	private type union PktCellChgNotifyUnion {
+		PktCellChgNotifyU0	u0,
+		PktCellChgNotifyU10	u10,	/* Rel-6 additions */
+		PktCellChgNotifyU110	u110	/* Rel-8 additions */
+		/* TODO: PktCellChgNotifyU1110     Rel-9 additions */
+		/* TODO: Message escape : { 1111 } bit (*) = <no string> > */
+	} with {
+		variant "TAG(u0, tag = '0'B;
+			     u10, tag = '10'B;
+			     u110, tag = '110'B)"
+	};
+
+	/* 11.2.3a Packet Cell Change Notification, message body */
+	type record PacketCellChangeNotification {
+		GlobalTfi 		gtfi,
+		PktCellChgNotifyUnion	u,
+		BIT1			ba_psi3_presence,
+		BIT1			ba_used optional,
+		BIT2			psi3_change_mark optional,
+		BIT1			pmo_used,
+		BIT1			pccn_sending,
+		CCNMeasReport		ccn_meas_rep,
+		/* Rel-Additions (Matrioshka) */
+		PktCellChgNotifAdditions rel_additions optional
+	} with {
+		variant (ba_used) "PRESENCE(ba_psi3_presence = '0'B)"
+		variant (psi3_change_mark) "PRESENCE(ba_psi3_presence = '1'B)"
+	};
+
+	/* 11.2.0.2 */
+	type union RlcmacUlCtrlUnion {
+		PacketCtrlAck			ctrl_ack,
+		PacketDlAckNack			dl_ack_nack,
+		EgprsPacketDlAckNack		dl_ack_nack_egprs,
+		PacketUlDummy			ul_dummy,
+		PacketMeasReport		meas_report,
+		PacketResourceReq		resource_req,
+		PacketCellChangeNotification	cell_chg_notif,
+		octetstring			other
+	} with { variant "" };
+
+	type record RlcmacUlCtrlMsg {
+		RlcmacUlCtrlMsgType	msg_type,
+		RlcmacUlCtrlUnion	u
+	} with {
+		variant (u) "CROSSTAG(ctrl_ack,		msg_type = PACKET_CONTROL_ACK;
+				      dl_ack_nack,	msg_type = PACKET_DL_ACK_NACK;
+				      dl_ack_nack_egprs, msg_type = PACKET_EGPRS_DL_ACK_NACK;
+				      ul_dummy,		msg_type = PACKET_UL_DUMMY_CTRL;
+				      meas_report,	msg_type = PACKET_MEASUREMENT_REPORT;
+				      resource_req,	msg_type = PACKET_RESOURCE_REQUEST;
+				      cell_chg_notif,	msg_type = PACKET_CELL_CHANGE_NOTIFICATION;
+				      other,		OTHERWISE
+			)"
+	};
+
+	external function enc_RlcmacUlCtrlMsg(in RlcmacUlCtrlMsg si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_RlcmacUlCtrlMsg(in octetstring stream) return RlcmacUlCtrlMsg
+		with { extension "prototype(convert) decode(RAW)" };
+
+	type bitstring ReceivedBlockBitmap length(64) with { variant "BYTEORDER(last)" };
+
+	/* 12.3 Ack/Nack Description */
+	type record AckNackDescription {
+		BIT1			final_ack,
+		uint7_t			starting_seq_nr,
+		ReceivedBlockBitmap	receive_block_bitmap
+	} with { variant "" };
+
+	/* 12.3.1 Egprs Ack/Nack Description */
+	type bitstring UncompressedReceivedBlockBitmap length(64) with { variant "BYTEORDER(last)" };
+	type record EgprsAckNackDescription {
+		BIT1			final_ack,
+		BIT1			begin_window,
+		BIT1			end_window,
+		uint11_t		starting_seq_nr,
+		BIT1			compressed,
+		/* TODO: CompressedReceivedBlockBitmap	urbb optional, */
+		UncompressedReceivedBlockBitmap	urbb optional
+	} with {  variant (urbb) "PRESENCE(compressed = '0'B)" };
+	type record EgprsAckNackDescriptionIE {
+		BIT1			len_present,
+		uint8_t			len optional,
+		EgprsAckNackDescription	acknack_desc
+	} with { variant (len) "PRESENCE(len_present = '1'B)"
+		 variant (len) "LENGTHTO(acknack_desc)"
+		 variant (len) "UNIT(bits)"
+	};
+
+
+	/* 12.7 Channel Request Description */
+	type enumerated RlcMode {
+		RLC_MODE_ACKNOWLEDGED	(0),
+		RLC_MODE_UNACKNOWLEDGED	(1)
+	} with { variant "FIELDLENGTH(1)" };
+	type enumerated LlcPduType {
+		LLC_PDU_IS_SACK_OR_ACK	(0),
+		LLC_PDU_IS_NOT_SACK_OR_ACK (1)
+	} with { variant "FIELDLENGTH(1)" };
+	type record ChannelReqDescription {
+		uint4_t			peak_tput_class,
+		uint2_t			priority,
+		RlcMode			rlc_mode,
+		LlcPduType		llc_pdu_type,
+		uint16_t		RlcOctetCount
+	} with { variant "" };
+
+	/* 12.8 Frequency Parameters */
+	type record FreqIndirect {
+		uint6_t			maio,
+		uint4_t			ma_number,
+		BIT1			change_mark1_present,
+		uint2_t			change_mark1 optional,
+		BIT1			change_mark2_present,
+		uint2_t			change_mark2 optional
+	} with {
+		variant (change_mark1) "PRESENCE(change_mark1_present = '1'B)"
+		variant (change_mark2) "PRESENCE(change_mark2_present = '1'B)"
+	};
+	type record FreqDirect1 {
+		uint6_t			maio,
+		GprsMobileAllocation	mobile_allocation
+	}
+	type record FreqDirect2 {
+		uint6_t			maio,
+		uint6_t			hsn,
+		uint4_t			ma_freq_len,
+		octetstring		m1_freq_list
+	} with {
+		variant (ma_freq_len) "LENGTHTO(m1_freq_list)+3"
+	};
+	type record FrequencyParameters {
+		uint3_t			tsc,
+		BIT2			presence,
+		uint10_t		arfcn optional,
+		FreqIndirect		indirect optional,
+		FreqDirect1		direct1 optional,
+		FreqDirect2		direct2 optional
+	} with {
+		variant (arfcn) "PRESENCE(presence = '00'B)"
+		variant (indirect) "PRESENCE(presence = '01'B)"
+		variant (direct1) "PRESENCE(presence = '10'B)"
+		variant (direct2) "PRESENCE(presence = '11'B)"
+	};
+
+	/* 12.9a GPRS Power Control Parameters */
+	type record GprsPowerControlParameters {
+		uint4_t			alpha,
+		BIT5			t_avg_w,
+		BIT5			t_avg_t,
+		BIT1			pc_meas_chan,
+		BIT4			n_avg_i
+	};
+
+	/* 12.10 Global TFI */
+	type record GlobalTfi {
+		boolean			is_dl_tfi,
+		uint5_t			tfi
+	} with { variant (is_dl_tfi) "FIELDLENGTH(1)" };
+
+	/* 12.10a GPRS Mobile Allocation */
+	type record RflNumberList {
+		uint4_t			rfl_number,
+		BIT1			presence,
+		RflNumberList		rfl_number_list optional
+	} with {
+		variant (rfl_number_list) "PRESENCE(presence = '1'B)"
+	};
+	type record GprsMobileAllocation {
+		uint6_t			hsn,
+		BIT1			rfl_number_list_present,
+		RflNumberList		rfl_number_list optional,
+		BIT1			ma_present,
+		uint6_t			ma_length optional,
+		bitstring		ma_bitmap length(1..64) optional
+		/* TODO: ARFCN index list */
+	} with {
+		variant (rfl_number_list) "PRESENCE(rfl_number_list_present = '1'B)"
+		variant (ma_length) "PRESENCE(ma_present = '0'B)"
+		variant (ma_bitmap) "PRESENCE(ma_present = '0'B)"
+		variant (ma_length) "LENGTHTO(ma_bitmap)-1, UNIT(bits)"
+		variant (ma_bitmap) "BYTEORDER(first), BITORDER(msb)"
+	};
+
+	/* 12.11 Packet Request Reference */
+	type record PacketRequestReference {
+		uint11_t		ra_info,
+		uint16_t		frame_nr
+	} with { variant "" };
+
+	/* 12.12 Packet Timing Advance */
+	type record PacketTimingAdvance {
+		BIT1		val_present,
+		uint6_t		val optional,
+		BIT1		idx_present,
+		uint4_t		idx optional,
+		uint3_t		timeslot_nr optional
+	} with {
+		variant (val) "PRESENCE(val_present = '1'B)"
+		variant (idx) "PRESENCE(idx_present = '1'B)"
+		variant (timeslot_nr) "PRESENCE(idx_present = '1'B)"
+	};
+
+	/* 12.13 Power Control Parameters */
+	type record ZeroOneGamma {
+		BIT1		gamma_present,
+		uint5_t		gamma optional
+	} with {
+		variant (gamma) "PRESENCE (gamma_present = '1'B)"
+	};
+	type record length(8) of ZeroOneGamma ZeroOneGammas;
+	type record PowerControlParameters {
+		uint4_t		alpha,
+		ZeroOneGammas	gamma
+	} with { variant "" };
+
+	/* 12.14 Persistence Level */
+	type record length(4) of uint4_t PersistenceLevels;
+
+	/* 12.20 Page Mode */
+	type enumerated PageMode {
+		PAGE_MODE_NORMAL	('00'B),
+		PAGE_MODE_EXTENDED	('01'B),
+		PAGE_MODE_REORG		('10'B),
+		PAGE_MODE_SAME		('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+
+	/* 12.21 Starting Frame Number */
+	type record StartingFnDesc {
+		BIT1		presence,
+		uint16_t	absolute_starting_time optional,
+		uint13_t	relative_k optional
+	} with {
+		variant (absolute_starting_time) "PRESENCE(presence = '0'B)"
+		variant (relative_k) "PRESENCE(presence = '1'B)"
+	};
+
+	/* 12.24 GPRS Cell Options */
+	type record ExtensionInformation {
+		BIT1		egprs_supported,
+		BIT1		egprs_pkt_channel_req optional,
+		BIT4		bep_period optional,
+		BIT1		pfc_feature_mode,
+		BIT1		dtm_support,
+		BIT1		bss_paging_coordination,
+		/* REL-4 extension */
+		BIT1		ccn_active optional,
+		BIT1		nw_ext_utbf optional
+		/* TODO: REL-6 extension */
+		/* TODO: REL-7 extension */
+		/* TODO: REL-10 extension */
+	} with {
+		variant (egprs_pkt_channel_req) "PRESENCE(egprs_supported = '1'B)"
+		variant (bep_period) "PRESENCE(egprs_supported = '1'B)"
+	};
+	type record GprsCellOptions {
+		BIT2		nmo,
+		BIT3		t3168,
+		BIT3		t3192,
+		BIT3		drx_timer_max,
+		BIT1		access_burst_type,
+		BIT1		control_ack_type,
+		uint4_t		bs_cv_max,
+		BIT1		pan_presence,
+		uint3_t		pan_dec optional,
+		uint3_t		pan_inc optional,
+		BIT3		pan_max optional,
+		BIT1		ext_info_presence,
+		BIT6		ext_info_length optional,
+		ExtensionInformation ext_info optional
+	} with {
+		variant (pan_dec) "PRESENCE(pan_presence = '1'B)"
+		variant (pan_inc) "PRESENCE(pan_presence = '1'B)"
+		variant (pan_max) "PRESENCE(pan_presence = '1'B)"
+		variant (ext_info_length) "PRESENCE(ext_info_presence = '1'B)"
+		variant (ext_info) "PRESENCE(ext_info_presence = '1'B)"
+		/* TODO: mark REL-4 and upwards in ext_info as omit based on ext_info_length ? */
+	};
+
+	/* 3GPP TS 44.060, table 11.2.5a.2 "EGPRS PACKET CHANNEL REQUEST" */
+	type union EGPRSPktChRequest {
+		EGPRSPktChRequest_MC5P2RB3		one_phase,
+		EGPRSPktChRequest_NOB3P2RB3		short, // deprecated
+		EGPRSPktChRequest_MCG3P2RB3		one_phase_red,
+		EGPRSPktChRequest_P2RB3			two_phase,
+		EGPRSPktChRequest_RB5			signalling,
+		EGPRSPktChRequest_RB5			one_phase_unack,
+		EGPRSPktChRequest_RB5			dedicated,
+		EGPRSPktChRequest_RB5			emergency,
+		EGPRSPktChRequest_P2RB3			two_phase_ipa,
+		EGPRSPktChRequest_RB5			signalling_ipa
+	} with {
+		variant "TAG (
+			one_phase,		tag = '0'B;
+			short,			tag = '100'B;
+			one_phase_red,		tag = '101'B;
+			two_phase,		tag = '110000'B;
+			signalling,		tag = '110011'B;
+			one_phase_unack,	tag = '110101'B;
+			dedicated,		tag = '110110'B;
+			emergency,		tag = '110111'B;
+			two_phase_ipa,		tag = '111000'B;
+			signalling_ipa,		tag = '111001'B;
+		)"
+	};
+
+	private type record EGPRSPktChRequest_MC5P2RB3 {
+		BIT1		tag,
+		BIT5		multislot_class,
+		BIT2		priority,
+		BIT3		random_bits
+	};
+
+	private type record EGPRSPktChRequest_NOB3P2RB3 {
+		BIT3		tag,
+		BIT3		nr_of_blocks,
+		BIT2		priority,
+		BIT3		random_bits
+	};
+
+	private type record EGPRSPktChRequest_MCG3P2RB3 {
+		BIT3		tag,
+		BIT3		multislot_class_group,
+		BIT2		priority,
+		BIT3		random_bits
+	};
+
+	private type record EGPRSPktChRequest_P2RB3 {
+		BIT6		tag,
+		BIT2		priority,
+		BIT3		random_bits
+	};
+
+	private type record EGPRSPktChRequest_RB5 {
+		BIT6		tag,
+		BIT5		random_bits
+	};
+
+	/* TITAN violates length restrictions on returned type, so we cannot do '... return BIT11'.
+	 * Keep this function private as it returns octet-aligned bitstring (+5 padding bits). */
+	private external function enc_EGPRSPktChRequestInternal(in EGPRSPktChRequest req) return bitstring
+		with { extension "prototype(convert) encode(RAW)" };
+
+	function enc_EGPRSPktChRequest2bits(in EGPRSPktChRequest req) return BIT11
+	{
+		var bitstring ra11_pad := enc_EGPRSPktChRequestInternal(req);
+		return substr(ra11_pad, 0, 11); /* TITAN adds 5 padding bits */
+	}
+
+	function enc_EGPRSPktChRequest2uint(in EGPRSPktChRequest req) return uint16_t
+	{
+		var BIT11 ra11 := enc_EGPRSPktChRequest2bits(req);
+		return bit2int(ra11);
+	}
+
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" variant "BYTEORDER(last)" };

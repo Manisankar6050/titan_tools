@@ -1,0 +1,471 @@
+module HNB_Tests {
+
+/* Integration Tests for OsmoHNodeB
+ * (C) 2021 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This test suite tests OsmoHNodB while emulating both multiple UE as
+ * well as the HNBGW. See README for more details.
+ *
+ * There are test cases that run in so-called 'handler mode' and test cases
+ * that run directly on top of the BSSAP and RSL CodecPorts.  The "handler mode"
+ * tests abstract the multiplexing/demultiplexing of multiple SCCP connections
+ * and/or RSL channels and are hence suitable for higher-level test cases, while
+ * the "raw" tests directly on top of the CodecPorts are more suitable for lower-
+ * level testing.
+ */
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from Osmocom_Types all;
+import from IPL4asp_Types all;
+import from Native_Functions all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+import from Osmocom_CTRL_Adapter all;
+
+import from StatsD_Types all;
+import from StatsD_CodecPort all;
+import from StatsD_CodecPort_CtrlFunct all;
+import from StatsD_Checker all;
+
+import from Osmocom_VTY_Functions all;
+import from TELNETasp_PortType all;
+
+import from HNBAP_Templates all;
+import from RUA_IEs all;
+import from RUA_Templates all;
+
+import from HNBGW_ConnectionHandler all;
+import from Iuh_Emulation all;
+
+import from RTP_Types all;
+import from RTP_Emulation all;
+
+import from HNBLLIF_CodecPort all;
+import from HNBLLIF_Types all;
+import from HNBLLIF_Templates all;
+
+import from GTPU_Types all;
+import from GTPv1U_Templates all;
+import from GTP_Emulation all;
+
+import from IuUP_Types all;
+
+modulepar {
+	/* IP address at which the HNodeB can be reached */
+	charstring mp_hnodeb_ip := "127.0.0.1";
+
+	/* IP address at which the test binds */
+	charstring mp_hnbgw_iuh_ip := "127.0.0.1";
+	integer mp_hnbgw_iuh_port := 29169;
+
+	charstring mp_hnbllif_sk_path := HNBLL_SOCK_DEFAULT;
+}
+
+const hexstring ranap_cm_service_req := '001340400000060003400100000f40060000f11028b6003a40080000f110ffffffff0010400e0d052411035758a605f44e9d4aef004f400300001c0056400500f1100017'H;
+const hexstring ranap_auth_req := '00144032000002001040262505120217dc146aeac56cb5ff6d5fb51f47f19220108ca5a6d0c8110000b9e9272498872764003b400100'H;
+const hexstring ranap_auth_resp := '001440140000010010400d0c0554ccbdd0302104002f3ae4'H;
+const hexstring ranap_paging := '000e401e0000030003400100001740095000010100000000f10040400500b6cf4773'H;
+const hexstring ranap_rab_ass_req := '0000005900000100364052000001003500487824cd80102fa7201a2c0000f44c080a028000514000272028140067400000222814003c40000000503d02000227c03500010a0901a200000000000000000000000000401f4a0000400100'H;
+const hexstring iu_release_compl := '20010003000000'H;
+
+type component test_CT extends CTRL_Adapter_CT {
+	port TELNETasp_PT HNBVTY;
+
+	/* HNBLLIF Interface of HNodeB */
+	port HNBLLIF_CODEC_PT LLSK;
+	var integer g_llsk_conn_id;
+
+	/* global test case guard timer (actual timeout value is set in f_init()) */
+	timer T_guard := 30.0;
+}
+
+/* global altstep for global guard timer; */
+altstep as_Tguard() runs on test_CT {
+	[] T_guard.timeout {
+			setverdict(fail, "Timeout of T_guard");
+			mtc.stop;
+		}
+}
+
+function f_init_vty(charstring id := "foo") runs on test_CT {
+	if (HNBVTY.checkstate("Mapped")) {
+		/* skip initialization if already executed once */
+		return;
+	}
+	map(self:HNBVTY, system:HNBVTY);
+	f_vty_set_prompts(HNBVTY);
+	f_vty_transceive(HNBVTY, "enable");
+}
+
+private function f_init_hnbllif(TestHdlrParams pars) runs on test_CT {
+	map(self:LLSK, system:LLSK);
+	f_start_hnbllif(LLSK, testcasename(), pars, g_llsk_conn_id);
+}
+
+/* global initialization function */
+function f_init(float guard_timeout := 30.0) runs on test_CT {
+	var integer bssap_idx;
+
+	T_guard.start(guard_timeout);
+	activate(as_Tguard());
+
+	f_init_vty("VirtHNBGW");
+}
+
+friend function f_shutdown_helper() runs on test_CT {
+	all component.stop;
+	setverdict(pass);
+	mtc.stop;
+}
+
+private function f_gen_test_hdlr_pars() runs on test_CT return TestHdlrParams {
+
+	var TestHdlrParams pars := valueof(t_def_TestHdlrPars);
+	pars.hnbllif_sk_path := mp_hnbllif_sk_path;
+	pars.hnodeb_addr := mp_hnodeb_ip;
+	pars.hnbgw_addr := mp_hnbgw_iuh_ip;
+	pars.hnbgw_port := mp_hnbgw_iuh_port;
+	return pars;
+}
+
+type function void_fn(charstring id) runs on HNBGW_ConnHdlr;
+
+/* helper function to create and connect a HNBGW_ConnHdlr component */
+private function f_connect_handler(inout HNBGW_ConnHdlr vc_conn, TestHdlrParams pars) runs on test_CT {
+	if (pars.hnbllif_sk_path != "") {
+		map(vc_conn:LLSK, system:LLSK);
+	}
+}
+
+function f_start_handler_create(TestHdlrParams pars)
+runs on test_CT return HNBGW_ConnHdlr {
+	var charstring id := testcasename();
+	var HNBGW_ConnHdlr vc_conn;
+	vc_conn := HNBGW_ConnHdlr.create(id) alive;
+	f_connect_handler(vc_conn, pars);
+	return vc_conn;
+}
+
+function f_start_handler_run(HNBGW_ConnHdlr vc_conn, void_fn fn, TestHdlrParams pars)
+runs on test_CT return HNBGW_ConnHdlr {
+	var charstring id := testcasename();
+	/* Emit a marker to appear in the SUT's own logging output */
+	f_logp(HNBVTY, id & "() start");
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+function f_start_handler(void_fn fn, template (omit) TestHdlrParams pars_tmpl := omit)
+runs on test_CT return HNBGW_ConnHdlr {
+	var TestHdlrParams pars;
+	if (istemplatekind(pars_tmpl, "omit")) {
+		pars := valueof(f_gen_test_hdlr_pars());
+	} else {
+		pars := valueof(pars_tmpl);
+	}
+	return f_start_handler_run(f_start_handler_create(pars), fn, pars);
+}
+
+/* first function inside ConnHdlr component; sets g_pars + starts function */
+private function f_handler_init(void_fn fn, charstring id, TestHdlrParams pars)
+runs on HNBGW_ConnHdlr {
+	f_HNBGW_ConnHdlr_init(id, pars);
+	HNBAP.receive(IUHEM_Event:{up_down:=IUHEM_EVENT_UP}); /* Wait for HNB to connect to us */
+	fn.apply(id);
+}
+
+private function f_tc_hnb_register_request_accept(charstring id) runs on HNBGW_ConnHdlr {
+	f_handle_hnbap_hnb_register_req();
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONFIGURE_IND(g_pars.mcc, g_pars.mnc, g_pars.cell_identity,
+						  g_pars.lac, g_pars.rac, g_pars.sac, g_pars.rnc_id)));
+	f_sleep(1.0);
+}
+testcase TC_hnb_register_request_accept() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_hnb_register_request_accept));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+private function f_tc_hnb_register_reject(charstring id) runs on HNBGW_ConnHdlr {
+	HNBAP.receive(tr_HNBAP_HNBRegisterRequest(char2oct(g_pars.hNB_Identity_Info),
+						  f_enc_mcc_mnc(g_pars.mcc, g_pars.mnc),
+						  int2bit(g_pars.cell_identity, 28),
+						  int2oct(g_pars.lac, 2),
+						  int2oct(g_pars.rac, 1),
+						  int2oct(g_pars.sac, 2)
+						 ));
+	HNBAP.send(ts_HNBAP_HNBRegisterReject(ts_HnbapCause(overload)));
+	f_sleep(1.0);
+}
+testcase TC_hnb_register_request_reject() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_hnb_register_reject));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+private function f_tc_mo_conn(charstring id) runs on HNBGW_ConnHdlr {
+	const integer context_id := 30;
+	const bitstring context_id_bstr := '000000000000000000011110'B; /* encoded context_id */
+	const Establishment_Cause est_cause := normal_call;
+	f_handle_hnbap_hnb_register_req();
+
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONFIGURE_IND(g_pars.mcc, g_pars.mnc, g_pars.cell_identity,
+						  g_pars.lac, g_pars.rac, g_pars.sac, g_pars.rnc_id)));
+
+	/* Now an UE attempts CM Service Request: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_ESTABLISH_REQ(context_id, 1, enum2int(est_cause), hex2oct(ranap_cm_service_req))));
+	/* The related RUA Connect + RANAP message is received on Iuh: */
+	RUA.receive(tr_RUA_Connect(ps_domain, context_id_bstr, est_cause, hex2oct(ranap_cm_service_req)));
+
+	/* Now HNBGW answers with RUA-DirectTransfer(RANAP-AuthenticationRequest) */
+	RUA.send(ts_RUA_DirectTransfer(ps_domain, context_id_bstr, hex2oct(ranap_auth_req)));
+
+	/* Now on LLSK first the Conn establishment is confirmed and then we receive data */
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_ESTABLISH_CNF(context_id, 1, 0)));
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_DATA_IND(context_id, 1, hex2oct(ranap_auth_req))));
+
+	/* UE answers with RANAPAuthenticationResponse: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_DATA_REQ(context_id, 1, hex2oct(ranap_auth_resp))));
+	RUA.receive(tr_RUA_DirectTransfer(ps_domain, context_id_bstr, hex2oct(ranap_auth_resp)));
+
+	/* UE sends Iu Release Complete to release the conn */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_RELEASE_REQ(context_id, 1, 0, 0, hex2oct(iu_release_compl))));
+	RUA.receive(tr_RUA_Disconnect(ps_domain, context_id_bstr, ts_RUA_Cause(normal), hex2oct(iu_release_compl)));
+}
+testcase TC_mo_conn() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_mo_conn));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+
+private function f_tc_paging(charstring id) runs on HNBGW_ConnHdlr {
+	const integer context_id := 30;
+	const bitstring context_id_bstr := '000000000000000000011110'B; /* encoded context_id */
+	f_handle_hnbap_hnb_register_req();
+
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONFIGURE_IND(g_pars.mcc, g_pars.mnc, g_pars.cell_identity,
+						  g_pars.lac, g_pars.rac, g_pars.sac, g_pars.rnc_id)));
+
+	/* HNBGW sends RUA-ConnectionlessTransfer(RANAP-Paging) */
+	RUA.send(ts_RUA_ConnectionlessTransfer(hex2oct(ranap_paging)));
+
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_UNITDATA_IND(hex2oct(ranap_paging))));
+
+	/* Here it would continue with UE-side answers with RUA-Connect(RANAP-PagingResponse) */
+}
+testcase TC_paging() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_paging));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+private function f_tc_cs_mo_call(charstring id) runs on HNBGW_ConnHdlr {
+	const integer context_id := 30;
+	const bitstring context_id_bstr := '000000000000000000011110'B; /* encoded context_id */
+	const Establishment_Cause est_cause := normal_call;
+	var HNBLLIF_send_data sd;
+	var PDU_RTP rtp_pdu;
+	var octetstring rtp_payload;
+	var HostName hnodeb_rtp_addr;
+	var PortNumber hnodeb_rtp_port;
+	timer Tu;
+	var uint32_t audio_conn_id;
+	var IuUP_FQC fqc := IuUP_FQC_GOOD;
+	var template (omit) HNBLLIF_AUDIO_RFCIs rfcis_tpl := omit;
+
+	if (g_pars.hnbllif_sapi_audio_version >= 1) {
+		var HNBLLIF_AUDIO_RFCIs rfcis;
+		/* generate some unordered RFCI list of 3 elements (the default): */
+		rfcis[0] := 1; rfcis[1] := 2; rfcis[2] := 0;
+		for (var integer i := 3; i < HNBLLIF_MAX_RFCIS; i := i + 1) {
+			rfcis[i] := 0;
+		}
+		rfcis_tpl := rfcis;
+	}
+
+	rtp_payload := f_rnd_octstring(6);
+	f_HNBGW_rtpem_activate(rtp_payload);
+
+	f_handle_hnbap_hnb_register_req();
+
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONFIGURE_IND(g_pars.mcc, g_pars.mnc, g_pars.cell_identity,
+						  g_pars.lac, g_pars.rac, g_pars.sac, g_pars.rnc_id)));
+
+	/* Now an UE attempts CM Service Request: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_ESTABLISH_REQ(context_id, 0, enum2int(est_cause), hex2oct(ranap_cm_service_req))));
+	/* The related RUA Connect + RANAP message is received on Iuh: */
+	RUA.receive(tr_RUA_Connect(cs_domain, context_id_bstr, est_cause, hex2oct(ranap_cm_service_req)));
+
+	/* Now HNBGW answers with RUA-DirectTransfer(RANAP-RabASsReq) */
+	RUA.send(ts_RUA_DirectTransfer(cs_domain, context_id_bstr, hex2oct(ranap_rab_ass_req)));
+
+	/* Now on LLSK first the Conn establishment is confirmed and then we receive data */
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_ESTABLISH_CNF(context_id, 0, 0)));
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_DATA_IND(context_id, 0, hex2oct(ranap_rab_ass_req))));
+
+	/* Now LLSK provides the remote TransportLayerAddress from RabAssReq and asks SUT to provide a local address: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_AUDIO_CONN_ESTABLISH_REQ(context_id, g_pars.hnbgw_rtp_port, HNBLL_IF_ADDR_TYPE_IPV4,
+								f_HNBLLIF_Addr(HNBLL_IF_ADDR_TYPE_IPV4, g_pars.hnbgw_addr),
+								rfci := rfcis_tpl)));
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_AUDIO_CONN_ESTABLISH_CNF(context_id, ?, 0, ?, HNBLL_IF_ADDR_TYPE_IPV4, ?))) -> value sd;
+
+	audio_conn_id := sd.data.u.audio.u.conn_establish.u.cnf.audio_conn_id;
+	hnodeb_rtp_addr := f_inet_ntoa(sd.data.u.audio.u.conn_establish.u.cnf.local_addr);
+	if (not match(g_pars.hnodeb_addr, hnodeb_rtp_addr)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "hnodeb RTP local address " & hnodeb_rtp_addr
+			& " doesn't match expectation: " & g_pars.hnodeb_addr);
+	}
+	hnodeb_rtp_port := sd.data.u.audio.u.conn_establish.u.cnf.local_rtp_port;
+	f_HNBGW_rtpem_connect(hnodeb_rtp_addr, hnodeb_rtp_port);
+
+	/* We should eventually receive some RTP/IUUP from the HNBGW once Init phase goes on: */
+	Tu.start(2.0);
+	alt {
+	[] LLSK.receive(f_llsk_rx(tr_HNBLLIF_AUDIO_CONN_DATA_IND(audio_conn_id, ?, enum2int(fqc), ?, rtp_payload)));
+	[] Tu.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Timeout waiting for Downlink speech frames");
+		}
+	}
+	Tu.stop;
+	f_rtpem_mode(RTPEM_CTRL, RTPEM_MODE_RXONLY);
+
+	/* Make sure that Uplink frames are received at the HNBGW */
+	RTPEM_DATA.clear;
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_AUDIO_CONN_DATA_REQ(audio_conn_id, 1, enum2int(fqc), 0, rtp_payload)));
+	Tu.start(2.0);
+	alt {
+	[] RTPEM_DATA.receive(PDU_RTP:?) -> value rtp_pdu {
+		if (rtp_pdu.data != rtp_payload) {
+				log("Unexpected RTP payload received!");
+				repeat;
+			}
+		}
+	[] RTPEM_DATA.receive { repeat; }
+	[] Tu.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Timeout waiting for Uplink speech frames");
+		}
+	}
+	Tu.stop;
+
+	f_rtpem_mode(RTPEM_CTRL, RTPEM_MODE_NONE);
+	f_sleep(0.5); /* give some time to RTP_Emu to stop sending RTP packets... */
+
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_AUDIO_CONN_RELEASE_REQ(audio_conn_id)));
+
+	/* UE sends Iu Release Complete to release the conn */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_RELEASE_REQ(context_id, 0, 0, 0, hex2oct(iu_release_compl))));
+	RUA.receive(tr_RUA_Disconnect(cs_domain, context_id_bstr, ts_RUA_Cause(normal), hex2oct(iu_release_compl)));
+}
+testcase TC_cs_mo_call() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_cs_mo_call));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+/* Same as TC_cs_mo_call, but using AUDIO SAPI version 0 (no rfci param
+ * in HNBLLIF_AUDIO_conn_establish_req) */
+testcase TC_cs_mo_call_audio_v0() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+	var TestHdlrParams pars;
+
+	f_init();
+	pars := valueof(f_gen_test_hdlr_pars());
+	pars.hnbllif_sapi_audio_version := 0;
+	vc_conn := f_start_handler(refers(f_tc_cs_mo_call), pars);
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+private function f_tc_ps_mo_gtp_ping_pong(charstring id) runs on HNBGW_ConnHdlr {
+	const integer context_id := 30;
+	const bitstring context_id_bstr := '000000000000000000011110'B; /* encoded context_id */
+	const Establishment_Cause est_cause := normal_call;
+	var uint32_t remote_tei := 8888;
+	var uint32_t local_tei;
+	var octetstring gtp_payload := f_rnd_octstring(40);
+	var HNBLLIF_send_data sd;
+	var uint32_t gtp_conn_id;
+
+	f_gtp_register_teid(int2oct(remote_tei, 4));
+
+	f_handle_hnbap_hnb_register_req();
+
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONFIGURE_IND(g_pars.mcc, g_pars.mnc, g_pars.cell_identity,
+						  g_pars.lac, g_pars.rac, g_pars.sac, g_pars.rnc_id)));
+
+	/* Now an UE attempts CM Service Request: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_ESTABLISH_REQ(context_id, 1, enum2int(est_cause), hex2oct(ranap_cm_service_req))));
+	/* The related RUA Connect + RANAP message is received on Iuh: */
+	RUA.receive(tr_RUA_Connect(ps_domain, context_id_bstr, est_cause, hex2oct(ranap_cm_service_req)));
+
+	/* Now HNBGW answers with RUA-DirectTransfer(RANAP-RabASsReq) */
+	RUA.send(ts_RUA_DirectTransfer(ps_domain, context_id_bstr, hex2oct(ranap_rab_ass_req)));
+
+	/* Now on LLSK first the Conn establishment is confirmed and then we receive data */
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_ESTABLISH_CNF(context_id, 1, 0)));
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_IUH_CONN_DATA_IND(context_id, 1, hex2oct(ranap_rab_ass_req))));
+
+	/* Now LLSK provides the remote TransportLayerAddress from RabAssReq and asks SUT to provide a local address: */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_GTP_CONN_ESTABLISH_REQ(context_id, remote_tei, HNBLL_IF_ADDR_TYPE_IPV4,
+							      f_HNBLLIF_Addr(HNBLL_IF_ADDR_TYPE_IPV4, g_pars.hnbgw_addr))));
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_GTP_CONN_ESTABLISH_CNF(context_id, ?, ?, 0,
+								 HNBLL_IF_ADDR_TYPE_IPV4, ?))) -> value sd;
+	gtp_conn_id := sd.data.u.gtp.u.conn_establish.u.cnf.gtp_conn_id;
+	local_tei := sd.data.u.gtp.u.conn_establish.u.cnf.local_tei;
+
+	/* Forward GTP data in both directions */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_GTP_CONN_DATA_REQ(gtp_conn_id, gtp_payload)));
+	GTP[0].receive(tr_GTPU_GPDU(ts_GtpPeerU(g_pars.hnodeb_addr), int2oct(remote_tei, 4), gtp_payload));
+	f_gtpu_send(local_tei, gtp_payload);
+	LLSK.receive(f_llsk_rx(tr_HNBLLIF_GTP_CONN_DATA_IND(gtp_conn_id, gtp_payload)));
+
+	/* Done, release GTP conn */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_GTP_CONN_RELEASE_REQ(gtp_conn_id)));
+
+	/* UE sends Iu Release Complete to release the conn */
+	LLSK.send(f_llsk_tx(ts_HNBLLIF_IUH_CONN_RELEASE_REQ(context_id, 1, 0, 0, hex2oct(iu_release_compl))));
+	RUA.receive(tr_RUA_Disconnect(ps_domain, context_id_bstr, ts_RUA_Cause(normal), hex2oct(iu_release_compl)));
+}
+testcase TC_ps_mo_gtp_ping_pong() runs on test_CT {
+	var HNBGW_ConnHdlr vc_conn;
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_tc_ps_mo_gtp_ping_pong));
+	vc_conn.done;
+	f_shutdown_helper();
+}
+
+control {
+	execute( TC_hnb_register_request_accept() );
+	execute( TC_hnb_register_request_reject() );
+	execute( TC_mo_conn() );
+	execute( TC_paging() );
+	execute( TC_cs_mo_call_audio_v0() );
+	execute( TC_cs_mo_call() );
+	execute( TC_ps_mo_gtp_ping_pong() );
+}
+
+}

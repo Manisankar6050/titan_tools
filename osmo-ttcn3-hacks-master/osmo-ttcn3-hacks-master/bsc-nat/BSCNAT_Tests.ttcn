@@ -1,0 +1,242 @@
+module BSCNAT_Tests {
+
+/* osmo-bsc_nat test suite in TTCN-3
+ * (C) 2018-2019 sysmocom - s.f.m.c. GmbH
+ * Author: Daniel Willmann
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+
+import from IPL4asp_Types all;
+
+import from IPA_Emulation all;
+import from RAN_Emulation all;
+
+import from MTP3asp_Types all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+import from Osmocom_CTRL_Adapter all;
+
+import from SCCP_Types all;
+import from SCCPasp_Types all;
+import from SCCP_Emulation all;
+
+import from MSC_Simulation all;
+import from MSC_ConnectionHandler all;
+import from BSC_MS_Simulation all;
+import from BSC_MS_ConnectionHandler all;
+
+import from Osmocom_VTY_Functions all;
+import from TELNETasp_PortType all;
+
+const integer NUM_MSC := 1;
+const integer NUM_BSC := 1;
+
+type record BscState {
+	BSC_CT BSC,
+	MSC_SCCP_MTP3_parameters sccp_pars,
+	SCCP_PAR_Address sccp_addr_own,
+	SCCP_PAR_Address sccp_addr_peer
+}
+
+type record MscState {
+	MSC_CT MSC,
+	MSC_SCCP_MTP3_parameters sccp_pars,
+	SCCP_PAR_Address sccp_addr_own
+}
+
+type component test_CT extends CTRL_Adapter_CT {
+	var MscState msc[NUM_MSC];
+	var BscState bsc[NUM_BSC];
+
+	port TELNETasp_PT BSCNATVTY;
+
+	var boolean g_initialized := false;
+	var octetstring g_sio := '83'O;
+}
+
+modulepar {
+	PortNumber mp_bsc_port := 49999;
+	charstring mp_bsc_ip := "127.0.0.1";
+
+	PortNumber mp_msc_port := 5000;
+	charstring mp_msc_ip := "127.0.0.1";
+
+	/* port number to which to establish the IPA CTRL connection */
+	integer mp_nat_ctrl_port := 4250;
+	/* port number to which to establish the SCCPLite connection */
+	PortNumber mp_nat_port := 5000;
+	charstring mp_nat_ip := "127.0.0.1";
+
+	charstring mp_sccp_service_type := "mtp3_itu";
+
+	integer mp_bsc_pc := 196;
+	integer mp_bsc_ssn := 254;
+
+	integer mp_msc_pc := 185;	/* 0.23.1 */
+	integer mp_msc_ssn := 254;
+}
+
+/* construct a SCCP_PAR_Address with just PC + SSN and no GT */
+template (value) SCCP_PAR_Address ts_SccpAddr_PC_SSN(integer pc, integer ssn) := {
+	addressIndicator := {
+		pointCodeIndic := '1'B,
+		ssnIndicator := '1'B,
+		globalTitleIndic := '0000'B,
+		routingIndicator := '1'B
+	},
+	signPointCode := SCCP_SPC_int2bit(pc, mp_sccp_service_type, '83'O),
+	//signPointCode := SCCP_SPC_int2bit(pc, mp_sccp_service_type, g_sio),
+	subsystemNumber := ssn,
+	globalTitle := omit
+}
+
+template MTP3_Field_sio ts_sio(octetstring sio_in) := {
+	ni := substr(oct2bit(sio_in),0,2),
+	prio := substr(oct2bit(sio_in),2,2),
+	si := substr(oct2bit(sio_in),4,4)
+}
+
+template MSC_SCCP_MTP3_parameters ts_SCCP_Pars(octetstring sio, integer opc, integer dpc,
+						integer local_ssn) := {
+	sio := ts_sio(sio),
+	opc := opc,
+	dpc := dpc,
+	sls := 0,
+	sccp_serviceType := mp_sccp_service_type,
+	ssn := local_ssn
+};
+
+function f_init_BscState(inout BscState bsc_st, integer opc, integer dpc, integer local_ssn, integer remote_ssn)
+runs on test_CT {
+	bsc_st.sccp_pars := valueof(ts_SCCP_Pars(g_sio, opc, dpc, local_ssn));
+	bsc_st.sccp_addr_own := valueof(ts_SccpAddr_PC_SSN(opc, local_ssn));
+	bsc_st.sccp_addr_peer := valueof(ts_SccpAddr_PC_SSN(dpc, remote_ssn));
+}
+
+function f_init_MscState(inout MscState msc_st, integer opc, integer dpc, integer local_ssn, integer remote_ssn)
+runs on test_CT {
+	msc_st.sccp_pars := valueof(ts_SCCP_Pars(g_sio, opc, dpc, local_ssn));
+	msc_st.sccp_addr_own := valueof(ts_SccpAddr_PC_SSN(opc, local_ssn));
+}
+
+function f_vty_allow_osmux(boolean allow) runs on test_CT {
+	if (allow) {
+		f_vty_config(BSCNATVTY, "mgcp", "osmux on");
+	} else {
+		f_vty_config(BSCNATVTY, "mgcp", "osmux off");
+	}
+}
+
+function f_init_vty(charstring id := "foo") runs on test_CT {
+	if (BSCNATVTY.checkstate("Mapped")) {
+		/* skip initialization if already executed once */
+		return;
+	}
+	map(self:BSCNATVTY, system:BSCNATVTY);
+	f_vty_set_prompts(BSCNATVTY);
+	f_vty_transceive(BSCNATVTY, "enable");
+}
+
+function f_init(void_fn_bsc_ms fn_bsc_ms, void_fn_bsc fn_bsc, BssmapCreateCallback cb_msc, boolean use_osmux) runs on test_CT {
+	var integer i;
+	var charstring id;
+
+	f_init_vty("VirtBSCNAT");
+	f_vty_allow_osmux(use_osmux);
+	f_ipa_ctrl_start_client(mp_nat_ip, mp_nat_ctrl_port);
+
+	for (i := 0; i < NUM_MSC; i := i+1) {
+		f_init_MscState(msc[i], mp_msc_pc +i, mp_bsc_pc, mp_msc_ssn, mp_bsc_ssn);
+		id := "MSC" & int2str(i);
+		msc[i].MSC := MSC_CT.create(id);
+		msc[i].MSC.start(MSC_Simulation.main(mp_msc_ip, mp_msc_port + i,
+						     msc[i].sccp_pars, msc[i].sccp_addr_own,
+						     cb_msc, id));
+	}
+
+	/* Wait for bsc_nat to attach to MSC. Before that all BSC connections will be dropped */
+	f_sleep(5.0);
+
+	for (i := 0; i < NUM_BSC; i := i+1) {
+		f_init_BscState(bsc[i], mp_bsc_pc +i, mp_msc_pc, mp_bsc_ssn, mp_msc_ssn);
+		id := "BSC" & int2str(i);
+		bsc[i].BSC := BSC_CT.create(id);
+		var BSC_MS_TestHdlrParams pars;
+		pars.sccp_addr_own := bsc[i].sccp_addr_own;
+		pars.sccp_addr_remote := bsc[i].sccp_addr_peer;
+		pars.use_osmux := use_osmux;
+		bsc[i].BSC.start(BSC_MS_Simulation.main(mp_nat_ip, mp_nat_port, mp_bsc_ip, mp_bsc_port+i,
+							bsc[i].sccp_pars, pars, fn_bsc_ms, fn_bsc, id));
+	}
+
+}
+
+function f_wait_finish(timer T) runs on test_CT {
+	var integer i;
+	alt {
+		/* wait for BSC to stop. The idea is that the BSC components terminate first */
+		[] bsc[0].BSC.done { }
+		[] T.timeout { setverdict(fail); }
+	}
+
+	all component.stop;
+	/* terminate the MSCs */
+	for (i := 0; i < NUM_MSC; i := i+1) {
+		msc[i].MSC.stop;
+	}
+	setverdict(pass);
+}
+
+
+function f_TC_recv_dump(boolean use_osmux := false) runs on test_CT {
+	timer T := 30.0;
+	T.start;
+
+	f_init(refers(bsc_ms_establish_fully),
+	       refers(bsc_do_nothing),
+	       refers(CreateCallback_establish_fully),
+	       use_osmux);
+
+	f_wait_finish(T);
+}
+
+testcase TC_recv_dump() runs on test_CT {
+	f_TC_recv_dump();
+}
+
+testcase TC_recv_dump_osmux() runs on test_CT {
+	f_TC_recv_dump(true);
+}
+
+testcase TC_ctrl_location() runs on test_CT {
+	timer T := 30.0;
+	T.start;
+
+	f_init(refers(bsc_ms_do_nothing),
+	       refers(bsc_ctrl_location),
+	       refers(CreateCallback_establish_fully),
+	       false);
+
+	f_ctrl_exp_trap(IPA_CTRL, "net.0.bsc.0.bts.0.location-state",
+			"1234567,fix3d,0.340000,0.560000,0.780000,operational,unlocked,on,001,01",
+			10.0);
+	f_ctrl_set(IPA_CTRL, "net.0.bsc.0.rf_locked", "1");
+
+	f_wait_finish(T);
+}
+
+control {
+	execute( TC_recv_dump() );
+	execute( TC_recv_dump_osmux() );
+	execute( TC_ctrl_location() );
+}
+
+}

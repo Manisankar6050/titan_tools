@@ -1,0 +1,1341 @@
+module Asterisk_Tests {
+
+/* Asterisk test suite in TTCN-3
+ * (C) 2024 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ * Author: Pau Espin Pedrol <pespin@sysmocom.de>
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from TCCOpenSecurity_Functions all;
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+import from Misc_Helpers all;
+import from TELNETasp_PortType all;
+import from AMI_Functions all;
+
+import from SDP_Types all;
+import from SDP_Templates all;
+
+import from SIP_Emulation all;
+import from SIPmsg_Types all;
+import from SIP_Templates all;
+
+import from SIP_ConnectionHandler all;
+import from IMS_ConnectionHandler all;
+
+modulepar {
+	charstring mp_local_sip_host := "127.0.0.2";
+	integer mp_local_sip_port := 5060;
+	charstring mp_remote_sip_host := "127.0.0.1";
+	integer mp_remote_sip_port := 5060;
+
+	charstring mp_local_ims_host := "127.0.0.3";
+	integer mp_local_ims_port := 5060;
+	charstring mp_ims_domain := "ims.mnc001.mcc238.3gppnetwork.org"
+	charstring mp_ims_imsi := "238010000090828";
+	charstring mp_ims_imei := "35876110-027790-0";
+
+	/* Asterisk AMI: */
+	charstring mp_ami_remote_host := "127.0.0.1";
+	integer mp_ami_remote_port := 5038;
+	charstring mp_ami_local_host := "0.0.0.0";
+	integer mp_ami_local_port := 0;
+	charstring mp_ami_user := "test_user";
+	charstring mp_ami_secret := "1234";
+	charstring mp_volte_ims_outbound_registration := "volte_ims";
+	/* Current default by pjproject (timeout_timer_val) is 	set to 32s, and not changed by Asterisk */
+	integer mp_volte_ims_outbound_register_timeout := 32;
+	/* It can sometimes take up to ~30s for Asterisk to finish startup and sending the FullyBooted event... */
+	float mp_ami_ev_fullybooted_timeout := 30.0;
+}
+
+type component test_CT {
+	/* Manages all local VoIP users Asterisk is serving: */
+	var SIP_Emulation_CT vc_SIP;
+	/* Manages the IMS server Asterisk connects to: */
+	var SIP_Emulation_CT vc_IMS;
+
+	/* Connection towards Asterisk AMI iface: */
+	var AMI_Adapter_CT vc_AMI;
+	port AMI_Msg_PT AMI_CLIENT;
+
+	port Coord_PT COORD;
+	port IMSCoord_PT IMS_COORD;
+
+	/* Store Channel name obtained from Newchannel AMI event: */
+	var charstring g_asterisk_chan_name;
+}
+
+const charstring broadcast_sip_extension := "0500";
+
+
+function f_init_ConnHdlrPars(integer idx := 1) runs on test_CT return SIPConnHdlrPars {
+	var template (value) CallPars cp := t_CallPars(mp_local_sip_host, 1234 + 2*idx);
+	var template (value) SIPConnHdlrPars pars := t_Pars(mp_local_sip_host,
+							    mp_local_sip_port,
+							    mp_remote_sip_host,
+							    mp_remote_sip_port,
+							    "0" & int2str(str2int(broadcast_sip_extension) + idx),
+							    cp := cp);
+	return valueof(pars);
+}
+
+function f_init_IMS_ConnHdlrPars(integer idx := 1) runs on test_CT return IMS_ConnHdlrPars {
+	var template (value) IMS_CallPars cp := t_IMS_CallPars(mp_local_ims_host, 1234 + 2*idx);
+	var template (value) IMS_ConnHdlrPars pars := t_IMS_Pars(mp_local_ims_host,
+								 mp_local_ims_port,
+								 mp_ims_domain,
+								 mp_ims_imsi,
+								 mp_ims_imei,
+								 cp := cp);
+	return valueof(pars);
+}
+
+/* Initialize connection towards Asterisk AMI */
+private function f_init_ami() runs on test_CT {
+	var charstring id := "Asterisk_Tests_AMI_EMU";
+	vc_AMI := AMI_Adapter_CT.create(id) alive;
+	connect(self:AMI_CLIENT, vc_AMI:CLIENT);
+
+	var AMI_Adapter_Parameters ami_pars := {
+		remote_host := mp_ami_remote_host,
+		remote_port := mp_ami_remote_port,
+		local_host := mp_ami_local_host,
+		local_port := mp_ami_local_port,
+		welcome_str := c_default_AMI_Adapter_pars.welcome_str
+	};
+	vc_AMI.start(f_AMI_Adapter_main(ami_pars));
+
+	f_ami_action_login(AMI_CLIENT, mp_ami_user, mp_ami_secret);
+
+	timer tReady;
+	tReady.start(mp_ami_ev_fullybooted_timeout);
+	alt {
+	[] AMI_CLIENT.receive(tr_AMI_Event_FullyBooted);
+	[] as_ami_rx_ignore(AMI_CLIENT);
+	[] tReady.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("AMI FullyBooted timeout: "));
+		}
+	}
+}
+
+/* Local SIP UAs */
+private function f_init_sip_local() runs on test_CT {
+	var charstring id := "Asterisk_Tests_LOCAL_SIP_EMU";
+	f_init_sip(vc_SIP, id);
+}
+
+/* IMS Server connection */
+private function f_init_sip_ims() runs on test_CT {
+	var charstring id := "Asterisk_Tests_IMS_SIP_EMU";
+	f_init_sip(vc_IMS, id);
+}
+
+function f_init() runs on test_CT {
+	var charstring id;
+
+	f_init_ami();
+	f_init_sip_local();
+	f_init_sip_ims();
+	log("end of f_init");
+}
+
+function f_shutdown() runs on test_CT {
+	/* Tear down AMI Adapter to avoid it keep receiving data from Asterisk
+	 * and sending it to us after we stopped, causing error (Broken Pipe): */
+	vc_AMI.stop;
+	vc_AMI.done;
+	log("end of ", testcasename());
+	setverdict(pass);
+}
+
+function f_start_handler(void_fn fn, SIPConnHdlrPars pars)
+runs on test_CT return SIPConnHdlr {
+	var SIPConnHdlr vc_conn;
+	var charstring id := testcasename() & "-ConnHdlr-" & pars.user;
+
+	vc_conn := SIPConnHdlr.create(id) alive;
+
+	connect(vc_conn:SIP, vc_SIP:CLIENT);
+	connect(vc_conn:SIP_PROC, vc_SIP:CLIENT_PROC);
+
+	connect(vc_conn:COORD, self:COORD);
+
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+function f_start_handler_IMS(ims_void_fn fn, IMS_ConnHdlrPars pars)
+runs on test_CT return IMS_ConnHdlr {
+	var IMS_ConnHdlr vc_conn;
+	var charstring id := testcasename() & "-IMS_ConnHdlr-" & pars.subscr.imsi;
+
+	vc_conn := IMS_ConnHdlr.create(id) alive;
+
+	connect(vc_conn:SIP, vc_IMS:CLIENT);
+	connect(vc_conn:SIP_PROC, vc_IMS:CLIENT_PROC);
+
+	connect(vc_conn:COORD, self:IMS_COORD);
+
+	vc_conn.start(f_ims_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+/* Test SIP registration of local clients */
+private function f_TC_internal_registration(charstring id) runs on SIPConnHdlr {
+
+	f_SIP_register();
+	/* Trigger unregistration: */
+	f_sleep(1.0);
+	f_SIP_unregister();
+	setverdict(pass);
+}
+testcase TC_internal_registration() runs on test_CT {
+	var SIPConnHdlrPars pars;
+	var SIPConnHdlr vc_conn;
+	f_init();
+	pars := f_init_ConnHdlrPars();
+	vc_conn := f_start_handler(refers(f_TC_internal_registration), pars);
+	vc_conn.done;
+	f_shutdown();
+}
+
+/* Successful SIP MO-MT Call between local clients: */
+private function f_TC_internal_register_establish_call_mo() runs on SIPConnHdlr {
+	f_SIP_register();
+	COORD.send(COORD_CMD_REGISTERED);
+
+	COORD.receive(COORD_CMD_START);
+	f_SIP_mo_call_setup(exp_update_to_direct_rtp := g_pars.cp.exp_update_to_direct_rtp);
+	COORD.send(COORD_CMD_CALL_ESTABLISHED);
+}
+private function f_TC_internal_hangup_call_mo_unregister() runs on SIPConnHdlr {
+	COORD.receive(COORD_CMD_HANGUP);
+	f_SIP_do_call_hangup();
+
+	COORD.receive(COORD_CMD_UNREGISTER);
+	f_SIP_unregister();
+}
+private function f_TC_internal_call_mo(charstring id) runs on SIPConnHdlr {
+	f_TC_internal_register_establish_call_mo();
+	f_TC_internal_hangup_call_mo_unregister();
+	setverdict(pass);
+}
+private function f_TC_internal_call_mo_with_holdresume(charstring id) runs on SIPConnHdlr {
+	f_TC_internal_register_establish_call_mo();
+	f_sleep(1.0);
+	f_SIP_do_call_hold();
+	f_sleep(1.0);
+	f_SIP_do_call_resume();
+	f_TC_internal_hangup_call_mo_unregister();
+	setverdict(pass);
+}
+private function f_TC_internal_call_mo_with_holdswitchresume(charstring id) runs on SIPConnHdlr {
+	var CallPars cp0;
+	f_TC_internal_register_establish_call_mo();
+	f_sleep(1.0);
+	f_SIP_do_call_hold();
+
+	/* Backup state of 1st call params: */
+	cp0 := g_pars.cp;
+	g_pars.cp.called := valueof(ts_SipAddr(ts_HostPort(g_pars.remote_sip_host),
+					       ts_UserInfo("123456")));
+	COORD.receive(COORD_CMD_START);
+	f_SIP_mo_call_setup(exp_update_to_direct_rtp := false);
+	log ("SIP: 2nd call ongoing");
+	COORD.send(COORD_CMD_CALL_ESTABLISHED);
+	COORD.receive(COORD_CMD_HANGUP);
+	f_SIP_do_call_hangup();
+
+	/* Restore 1s call metadata before hanging it up here: */
+	g_pars.cp := cp0;
+	f_SIP_do_call_resume();
+	f_TC_internal_hangup_call_mo_unregister();
+	setverdict(pass);
+}
+private function f_TC_internal_call_mo_rejected(charstring id) runs on SIPConnHdlr {
+	f_SIP_register();
+	COORD.send(COORD_CMD_REGISTERED);
+
+	COORD.receive(COORD_CMD_START);
+	f_SIP_mo_call_setup(503, "Service Unavailable");
+	COORD.send(COORD_CMD_CALL_FINISHED);
+
+	COORD.receive(COORD_CMD_UNREGISTER);
+	f_SIP_unregister();
+	setverdict(pass);
+}
+
+private function f_TC_internal_call_mt(charstring id) runs on SIPConnHdlr {
+
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.cp.called.addr)));
+
+	f_SIP_register();
+	COORD.send(COORD_CMD_REGISTERED);
+
+	if (g_pars.cp.mt.exp_cancel) {
+		as_SIP_mt_call_cancelled();
+		COORD.send(COORD_CMD_CALL_CANCELLED);
+		COORD.receive(COORD_CMD_UNREGISTER);
+		f_SIP_unregister();
+		setverdict(pass);
+		return;
+	}
+
+	as_SIP_mt_call_accept(exp_update_to_direct_rtp := g_pars.cp.exp_update_to_direct_rtp);
+	COORD.send(COORD_CMD_CALL_ESTABLISHED);
+
+	if (g_pars.cp.exp_update_to_direct_rtp) {
+		/* Once MO hangs up, Asterisk updates us to point RTP to it: */
+		as_SIP_exp_mt_call_update(g_pars.cp.sip_seq_nr + 1);
+	}
+	as_SIP_exp_call_hangup(g_pars.cp.sip_seq_nr + 1);
+
+	COORD.send(COORD_CMD_CALL_FINISHED);
+	COORD.receive(COORD_CMD_UNREGISTER);
+	f_SIP_unregister();
+
+	setverdict(pass);
+}
+testcase TC_internal_call_momt() runs on test_CT {
+	var SIPConnHdlrPars pars[2];
+	var SIPConnHdlr vc_conn[2];
+
+	f_init();
+
+	pars[0] := f_init_ConnHdlrPars(idx := 1);
+	pars[1] := f_init_ConnHdlrPars(idx := 2);
+
+	pars[0].cp.calling := pars[0].registrar_sip_record;
+	pars[0].cp.called := pars[1].registrar_sip_record;
+
+	pars[1].cp.calling := pars[0].registrar_sip_record;
+	pars[1].cp.called := pars[1].local_sip_record;
+
+	vc_conn[0] := f_start_handler(refers(f_TC_internal_call_mo), pars[0]);
+	vc_conn[1] := f_start_handler(refers(f_TC_internal_call_mt), pars[1]);
+
+	interleave {
+	[] COORD.receive(COORD_CMD_REGISTERED) from vc_conn[0];
+	[] COORD.receive(COORD_CMD_REGISTERED) from vc_conn[1];
+	}
+
+	COORD.send(COORD_CMD_START) to vc_conn[0];
+
+	interleave {
+	[] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn[0];
+	[] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn[1];
+	}
+
+	/* Call on-going */
+	f_sleep(1.0);
+
+	COORD.send(COORD_CMD_HANGUP) to vc_conn[0];
+	COORD.receive(COORD_CMD_CALL_FINISHED) from vc_conn[1];
+
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn[0];
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn[1];
+
+	vc_conn[0].done;
+	vc_conn[1].done;
+	f_shutdown();
+}
+
+/* One of the users calls (INVITE) shared extension, which makes all other user
+ * equipments ring (INVITE). The first one to pick up the call (OK 200) gets the
+ * call established (ACK), others get a CANCEL event. */
+private function TC_internal_call_all_Nregistered(integer num_conns := 2) runs on test_CT {
+	var SIPConnHdlrList vc_conn_list := {};
+	const integer vc_conn_mo_idx := 0; /* Index of MO leg in vc_conn_list */
+	const integer vc_conn_mt_idx := 1; /* Index of MT leg in vc_conn_list, peer picking up first the call */
+	var SipAddr broadcast_sip_record;
+	var SIPConnHdlrPars pars_mo;
+
+	f_init();
+
+	broadcast_sip_record := valueof(ts_SipAddr(ts_HostPort(mp_local_sip_host),
+					ts_UserInfo(broadcast_sip_extension)));
+
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		var SIPConnHdlrPars pars;
+		var SIPConnHdlr vc_conn;
+		pars := f_init_ConnHdlrPars(idx := i + 1);
+		if (i == vc_conn_mo_idx) { /* MO */
+			pars.cp.calling := pars.registrar_sip_record;
+			pars.cp.called := broadcast_sip_record;
+			vc_conn := f_start_handler(refers(f_TC_internal_call_mo), pars);
+			pars_mo := pars;
+		} else { /* MT */
+			pars.cp.calling := pars_mo.registrar_sip_record;
+			pars.cp.called := pars.local_sip_record;
+			pars.cp.mt.wait_coord_cmd_pickup := true;
+			if (i != vc_conn_mt_idx) {
+				/* Only first MT picking up (OK 200 INVITE) will be ACKed, others CANCELed: */
+				pars.cp.mt.exp_cancel := true;
+			}
+			vc_conn := f_start_handler(refers(f_TC_internal_call_mt), pars);
+		}
+		vc_conn_list := vc_conn_list & { vc_conn };
+	}
+
+	/* Wait all users are registered: */
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		/* Note: "from vc_conn_list[i]" can't be used since they may arrive from components in any order: */
+		COORD.receive(COORD_CMD_REGISTERED);
+	}
+
+	/* Ask MO user to start the call: */
+	COORD.send(COORD_CMD_START) to vc_conn_list[vc_conn_mo_idx];
+
+	/* Make sure the desired MT is the one picking up first the call: */
+	COORD.send(COORD_CMD_PICKUP) to vc_conn_list[vc_conn_mt_idx];
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		if (i != vc_conn_mo_idx and i != vc_conn_mt_idx) {
+			COORD.send(COORD_CMD_PICKUP) to vc_conn_list[i];
+		}
+	}
+
+	/* Pick up from other phone calls and expect CANCEL: */
+	var boolean wait_mo := true, wait_mt := true;
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		alt {
+		[wait_mo] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_list[vc_conn_mo_idx] { wait_mo := false };
+		[wait_mt] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_list[vc_conn_mt_idx] { wait_mt := false };
+		[] COORD.receive(COORD_CMD_CALL_CANCELLED);
+		}
+	}
+
+	/* Call on-going */
+	f_sleep(1.0);
+
+	COORD.send(COORD_CMD_HANGUP) to vc_conn_list[vc_conn_mo_idx];
+
+	COORD.receive(COORD_CMD_CALL_FINISHED) from vc_conn_list[vc_conn_mt_idx];
+
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		COORD.send(COORD_CMD_UNREGISTER) to vc_conn_list[i];
+	}
+
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		vc_conn_list[i].done;
+	}
+	f_shutdown();
+}
+testcase TC_internal_call_all_2registered() runs on test_CT {
+	TC_internal_call_all_Nregistered(2);
+}
+testcase TC_internal_call_all_3registered() runs on test_CT {
+	TC_internal_call_all_Nregistered(3);
+}
+testcase TC_internal_call_all_4registered() runs on test_CT {
+	TC_internal_call_all_Nregistered(4);
+}
+
+testcase TC_selftest() runs on test_CT {
+	f_ami_selftest();
+	f_sip_digest_selftest();
+	setverdict(pass);
+}
+
+private function f_AMI_IMS_start_register(IMS_ConnHdlrPars pars) runs on test_CT
+{
+	/* Give some time for IMS_ConnHdlr to register SIP expect. This could be done through IMS_COORD. */
+	f_sleep(1.0);
+	/* Clear events: */
+	AMI_CLIENT.clear;
+
+	/* Announce network information, this should usually happen when UE
+	 * becomes attached to network and before IMS APN is set up: */
+	f_ami_action_PJSIPAccessNetworkInfo(AMI_CLIENT, mp_volte_ims_outbound_registration,
+					    f_ami_gen_PJSIPAccessNetworkInfo_Info_EUTRAN(pars.subscr.uli_str));
+
+	/* Trigger registration: */
+	f_ami_action_PJSIPRegister(AMI_CLIENT, mp_volte_ims_outbound_registration);
+}
+
+private altstep as_AMI_IMS_register_Auth(IMS_ConnHdlrPars pars,
+					 boolean resync := false,
+					 boolean exp_ami_ev_registered := true) runs on test_CT
+{
+	var charstring rand_str := oct2str(pars.subscr.auth.rand);
+	var charstring autn_str := oct2str(pars.subscr.auth.autn);
+	[not resync] AMI_CLIENT.receive(tr_AMI_Event_AuthRequest(mp_volte_ims_outbound_registration,
+						    rand := pattern @nocase rand_str,
+						    autn := pattern @nocase autn_str)) {
+		f_ami_action_AuthResponse_RES(AMI_CLIENT,
+					mp_volte_ims_outbound_registration,
+					f_str_tolower(oct2str(pars.subscr.auth.res)),
+					f_str_tolower(oct2str(pars.subscr.auth.ck)),
+					f_str_tolower(oct2str(pars.subscr.auth.ik)));
+
+		if (exp_ami_ev_registered) {
+			var AMI_Msg ami_msg_rx;
+			var template (present) AMI_Msg ami_msg_exp :=
+				tr_AMI_Event_Registry(f_sip_SipAddr_to_str(pars.subscr.local_sip_record),
+						      "sip:" & mp_ims_domain,
+						      "Registered");
+			alt {
+			[] AMI_CLIENT.receive(ami_msg_exp);
+			[] AMI_CLIENT.receive(AMI_Msg:?) -> value ami_msg_rx {
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Unexpected AMI msg: ", ami_msg_rx, " vs exp: ", ami_msg_exp));
+				}
+			}
+		}
+	}
+	[resync] AMI_CLIENT.receive(tr_AMI_Event_AuthRequest(mp_volte_ims_outbound_registration,
+						    rand := pattern @nocase rand_str,
+						    autn := pattern @nocase autn_str)) {
+		f_ami_action_AuthResponse_AUTS(AMI_CLIENT,
+				mp_volte_ims_outbound_registration,
+				f_str_tolower(oct2str(pars.subscr.auth.auts)));
+	}
+}
+
+private function f_AMI_IMS_register(IMS_ConnHdlrPars pars, boolean resync := false) runs on test_CT
+{
+	f_AMI_IMS_start_register(pars);
+	as_AMI_IMS_register_Auth(pars, resync := resync);
+}
+
+private function f_AMI_IMS_unregister(IMS_ConnHdlrPars pars) runs on test_CT
+{
+	f_ami_action_PJSIPUnregister(AMI_CLIENT, mp_volte_ims_outbound_registration, fail_others := false);
+	var template (present) AMI_Msg msg_expect :=
+		tr_AMI_Event_Registry(f_sip_SipAddr_to_str(pars.subscr.local_sip_record),
+				      "sip:" & mp_ims_domain,
+				      "Unregistered");
+	f_ami_wait_rx_msg(AMI_CLIENT, msg_expect, fail_others := false);
+}
+
+/* Test IMS registration of VoLTE UE */
+private function f_TC_ims_registration(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	as_IMS_register();
+	as_IMS_unregister();
+	setverdict(pass);
+}
+testcase TC_ims_registration() runs on test_CT {
+	var IMS_ConnHdlrPars pars;
+	var IMS_ConnHdlr vc_conn;
+	f_init();
+	pars := f_init_IMS_ConnHdlrPars();
+	vc_conn := f_start_handler_IMS(refers(f_TC_ims_registration), pars);
+
+	f_AMI_IMS_register(pars);
+
+	/* Stay registered for one second */
+	f_sleep(1.0);
+
+	/* Trigger unregistration: */
+	f_AMI_IMS_unregister(pars);
+
+	vc_conn.done;
+	f_shutdown();
+}
+
+/* Test IMS registration of VoLTE UE. ISIM Resync case. */
+private function f_TC_ims_registration_resync(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	as_IMS_register(exp_auth_resync := true);
+	as_IMS_unregister();
+	setverdict(pass);
+}
+testcase TC_ims_registration_resync() runs on test_CT {
+	var IMS_ConnHdlrPars pars;
+	var IMS_ConnHdlr vc_conn;
+	f_init();
+	pars := f_init_IMS_ConnHdlrPars();
+	vc_conn := f_start_handler_IMS(refers(f_TC_ims_registration_resync), pars);
+
+	/* Emulate first Auth sync failure: */
+	f_AMI_IMS_register(pars, resync := true);
+	/* Second auth goes well: */
+	as_AMI_IMS_register_Auth(pars, resync := false);
+	/* Stay registered for one second */
+	f_sleep(1.0);
+
+	/* Trigger unregistration: */
+	f_AMI_IMS_unregister(pars);
+
+	vc_conn.done;
+	f_shutdown();
+}
+
+private function f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_register_early_return early_ret, boolean exp_auth_resync := false) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+
+	as_IMS_register(exp_auth_resync := exp_auth_resync, early_ret := early_ret);
+
+	timer Tout;
+	/* 1.0: Give some margin. */
+	Tout.start(int2float(mp_volte_ims_outbound_register_timeout) + 1.0);
+	/* Make sure no new REGISTER is attempted unless directed by AMI: */
+	alt {
+	[] as_SIP_fail_req("nothing");
+	[] as_SIP_fail_resp("nothing");
+	[] Tout.timeout { /* Done */ }
+	}
+	setverdict(pass);
+}
+/* Test initial REGISTER against IMS core timing out. */
+private function f_TC_ims_registration_timeout_initial_100Trying(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_REG_EARLY_RET_BEFORE_Initial_100Trying);
+}
+private function f_TC_ims_registration_timeout_initial_401Unauthorized(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_REG_EARLY_RET_BEFORE_Initial_401Unauthorized);
+}
+private function f_TC_ims_registration_timeout_resync_401Unauthorized(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_REG_EARLY_RET_BEFORE_Resync_401Unauthorized, exp_auth_resync := true);
+}
+private function f_TC_ims_registration_timeout_protected_100Trying(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_REG_EARLY_RET_BEFORE_Protected_100Trying);
+}
+private function f_TC_ims_registration_timeout_protected_200OK(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_registration_timeout_IMS_ConnHdlr(IMS_REG_EARLY_RET_BEFORE_Protected_200OK);
+}
+private function f_TC_ims_registration_timeout_initial(ims_void_fn fn,
+						       boolean answer_register := false,
+						       boolean resync := false) runs on test_CT {
+	var IMS_ConnHdlrPars pars;
+	var IMS_ConnHdlr vc_conn;
+	f_init();
+	pars := f_init_IMS_ConnHdlrPars();
+	vc_conn := f_start_handler_IMS(fn, pars);
+
+	f_AMI_IMS_start_register(pars);
+
+	if (answer_register) {
+		as_AMI_IMS_register_Auth(pars, resync := resync, exp_ami_ev_registered := false);
+	}
+
+	AMI_CLIENT.receive(tr_AMI_Event_Registry(f_sip_SipAddr_to_str(pars.subscr.local_sip_record),
+						 "sip:" & mp_ims_domain,
+						 "Rejected"));
+
+	vc_conn.done;
+	f_shutdown();
+}
+testcase TC_ims_registration_timeout_initial_100Trying() runs on test_CT {
+	f_TC_ims_registration_timeout_initial(refers(f_TC_ims_registration_timeout_initial_100Trying));
+}
+testcase TC_ims_registration_timeout_initial_401Unauthorized() runs on test_CT {
+	f_TC_ims_registration_timeout_initial(refers(f_TC_ims_registration_timeout_initial_401Unauthorized));
+}
+testcase TC_ims_registration_timeout_resync_401Unauthorized() runs on test_CT {
+	f_TC_ims_registration_timeout_initial(refers(f_TC_ims_registration_timeout_resync_401Unauthorized),
+					      true, true);
+}
+testcase TC_ims_registration_timeout_protected_100Trying() runs on test_CT {
+	f_TC_ims_registration_timeout_initial(refers(f_TC_ims_registration_timeout_protected_100Trying),
+					      true, false);
+}
+testcase TC_ims_registration_timeout_protected_200OK() runs on test_CT {
+	f_TC_ims_registration_timeout_initial(refers(f_TC_ims_registration_timeout_protected_200OK),
+					      true, false);
+}
+
+/* Test IMS re-registration based on Expires (TS 24.229 5.1.1.4.1, RFC 3261 10.3)*/
+private function f_TC_ims_registration_423_interval_too_brief(charstring id) runs on IMS_ConnHdlr {
+	var template (value) To to_addr;
+
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+
+	var template (present) PDU_SIP_Request exp_req :=
+		tr_SIP_REGISTER(g_pars.registrar_sip_req_uri,
+				?,
+				tr_From(),
+				tr_To(),
+				tr_Via_from(?),
+				expires := tr_Expires(int2str(g_pars.subscr.registrar_expires)));
+	SIP.receive(exp_req) -> value g_rx_sip_req;
+
+	to_addr := g_rx_sip_req.msgHeader.toField;
+	to_addr.toParams := f_sip_param_set(to_addr.toParams, "tag", f_sip_rand_tag());
+
+	/* Double it and expect UAC to use it. */
+	g_pars.subscr.registrar_expires := g_pars.subscr.registrar_expires * 2;
+
+	/* Tx 423 Interval Too Brief */
+	var template (value) PDU_SIP_Response tx_resp;
+	tx_resp := ts_SIP_Response_423_Interval_Too_Brief(
+				g_rx_sip_req.msgHeader.callId.callid,
+				g_rx_sip_req.msgHeader.fromField,
+				to_addr,
+				g_rx_sip_req.msgHeader.via,
+				g_rx_sip_req.msgHeader.cSeq.seqNumber,
+				minExpires := ts_MinExpires(int2str(g_pars.subscr.registrar_expires)),
+				server := g_pars.server_name,
+				userAgent := omit);
+	SIP.send(tx_resp);
+
+	g_pars.subscr.exp_uac_expires := g_pars.subscr.registrar_expires;
+	as_IMS_register();
+
+	as_IMS_unregister();
+	setverdict(pass);
+}
+testcase TC_ims_registration_423_interval_too_brief() runs on test_CT {
+	var IMS_ConnHdlrPars pars;
+	var IMS_ConnHdlr vc_conn;
+	f_init();
+	pars := f_init_IMS_ConnHdlrPars();
+	vc_conn := f_start_handler_IMS(refers(f_TC_ims_registration_423_interval_too_brief), pars);
+
+	f_AMI_IMS_register(pars);
+
+	/* Stay registered for one second */
+	f_sleep(1.0);
+
+	/* Trigger unregistration: */
+	f_AMI_IMS_unregister(pars);
+
+	vc_conn.done;
+	f_shutdown();
+}
+
+/* Test IMS re-registration based on Expires (TS 24.229 5.1.1.4.1, RFC 3261 10.3)*/
+private function f_TC_ims_reregistration(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	as_IMS_register();
+
+	timer Trereg;
+	Trereg.start(int2float(g_pars.subscr.registrar_expires) - 5.0);
+	g_pars.subscr.registrar_expires := c_def_expires;
+	alt {
+	[] as_IMS_2nd_register();
+	[] Trereg.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str(g_name & ": Timeout waiting for re-registration"));
+	}
+	}
+	Trereg.stop;
+
+	as_IMS_unregister();
+	setverdict(pass);
+}
+testcase TC_ims_reregistration() runs on test_CT {
+	var IMS_ConnHdlrPars pars;
+	var IMS_ConnHdlr vc_conn;
+	f_init();
+	pars := f_init_IMS_ConnHdlrPars();
+	pars.subscr.registrar_expires := 30;
+	vc_conn := f_start_handler_IMS(refers(f_TC_ims_reregistration), pars);
+
+	f_AMI_IMS_register(pars);
+
+	/* Wait for Asterisk to re-register and IMS_ConnHdlr to handle it... */
+	f_sleep(int2float(pars.subscr.registrar_expires));
+
+	/* Trigger unregistration: */
+	f_AMI_IMS_unregister(pars);
+
+	vc_conn.done;
+	f_shutdown();
+}
+
+private function f_ims_call_mo_configure(inout SIPConnHdlrPars sip_pars, inout IMS_ConnHdlrPars ims_pars,
+					 charstring tgt_ext_msisdn := "90829") runs on test_CT  {
+	sip_pars.cp.exp_update_to_direct_rtp := false;
+	sip_pars.cp.calling := sip_pars.registrar_sip_record;
+	sip_pars.cp.called := valueof(ts_SipAddr(ts_HostPort(sip_pars.remote_sip_host),
+						 ts_UserInfo(tgt_ext_msisdn)));
+	ims_pars.subscr.cp.calling := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							 ts_UserInfo(ims_pars.subscr.msisdn)));
+	ims_pars.subscr.cp.called := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							ts_UserInfo(tgt_ext_msisdn)));
+}
+
+private function f_ims_call_mo_establish(inout SIPConnHdlr vc_conn_sip, inout IMS_ConnHdlr vc_conn_ims) runs on test_CT  {
+	var AMI_Msg ami_msg;
+
+	COORD.send(COORD_CMD_START) to vc_conn_sip;
+
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_TRYING) from vc_conn_ims;
+	ami_msg := f_ami_wait_rx_msg(AMI_CLIENT,
+				     tr_AMI_Event_Newchannel(mp_volte_ims_outbound_registration),
+				     fail_others := false);
+	g_asterisk_chan_name := valueof(f_ami_msg_get_value(ami_msg, AMI_FIELD_CHANNEL));
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Up", fail_others := false);
+
+	COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_sip;
+	IMS_COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_ims;
+}
+
+private function f_TC_ims_call_mo_IMS_ConnHdlr_register_establish_call() runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	if (ispresent(g_pars.subscr.cp.called)) {
+		f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.cp.called.addr)));
+	}
+	as_IMS_register();
+	setverdict(pass);
+	as_IMS_mo_call_accept();
+	setverdict(pass);
+	COORD.send(COORD_CMD_CALL_ESTABLISHED);
+}
+
+private function f_TC_ims_call_mo_IMS_ConnHdlr_hangup_call_unregister() runs on IMS_ConnHdlr {
+	as_IMS_exp_call_hangup(g_pars.subscr.cp.sip_seq_nr + 1);
+	COORD.send(IMS_COORD_CMD_CALL_FINISHED);
+	setverdict(pass);
+	as_IMS_unregister();
+}
+private function f_TC_ims_call_mo_IMS_ConnHdlr(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_call_mo_IMS_ConnHdlr_register_establish_call();
+	if (g_pars.subscr.cp.mo.support_timer_session_expires > 0) {
+		timer Trefresh;
+		Trefresh.start(int2float(g_pars.subscr.cp.mo.support_timer_session_expires));
+		alt {
+		[] as_IMS_exp_call_refresh();
+		[] Trefresh.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str(g_name & ": Timeout waiting for Session Refresh"));
+			}
+		}
+		Trefresh.stop;
+		/* Sleep to make sure response arrives to the peer */
+		f_sleep(1.0);
+		COORD.send(IMS_COORD_CMD_CALL_SESSION_REFRESH);
+	}
+	f_TC_ims_call_mo_IMS_ConnHdlr_hangup_call_unregister();
+}
+
+private function f_TC_ims_call_mo_IMS_ConnHdlr_with_holdresume(charstring id) runs on IMS_ConnHdlr {
+	f_TC_ims_call_mo_IMS_ConnHdlr_register_establish_call();
+	as_IMS_exp_call_hold();
+	f_sleep(1.0);
+	as_IMS_exp_call_resume();
+	f_TC_ims_call_mo_IMS_ConnHdlr_hangup_call_unregister();
+}
+private function f_TC_ims_call_mo_IMS_ConnHdlr_with_holdswitchresume(charstring id) runs on IMS_ConnHdlr {
+	var IMS_ConnHdlrSubscrPars subscr0;
+	var Addr_Union called_addr;
+
+	f_TC_ims_call_mo_IMS_ConnHdlr_register_establish_call();
+
+	called_addr := g_pars.subscr.cp.called.addr;
+	called_addr.nameAddr.addrSpec.userInfo := valueof(ts_UserInfo("123456"));
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(called_addr)));
+
+	as_IMS_exp_call_hold();
+
+	/* Backup state of 1st call subscriber: */
+	subscr0 := g_pars.subscr;
+	g_pars.subscr.cp.called.addr := called_addr;
+	as_IMS_mo_call_accept();
+	COORD.send(COORD_CMD_CALL_ESTABLISHED);
+	log ("IMS: 2nd call ongoing");
+
+	as_IMS_exp_call_hangup(g_pars.subscr.cp.sip_seq_nr + 1);
+	COORD.send(IMS_COORD_CMD_CALL_FINISHED);
+	/* Restore 1s call metadata before hanging it up here: */
+	g_pars.subscr := subscr0;
+
+	as_IMS_exp_call_resume();
+	f_TC_ims_call_mo_IMS_ConnHdlr_hangup_call_unregister();
+}
+private function f_TC_ims_call_mo_IMS_ConnHdlr_2nd_mt_rejected(charstring id) runs on IMS_ConnHdlr {
+	var IMS_ConnHdlrSubscrPars subscr0;
+	var default d_trying, d_ringing, d_sessprog;
+	var Via via;
+
+	/* Establish 1st (MO) call */
+	f_TC_ims_call_mo_IMS_ConnHdlr_register_establish_call();
+
+	/* Backup state of 1st call subscriber: */
+	subscr0 := g_pars.subscr;
+	/* Initiate second (MT) call: */
+	f_IMS_mt_call_rejected(486, "Busy Here");
+	/* Leave some time for last ACK from IMS to arrive to Asterisk */
+	f_sleep(1.0);
+	/* Restore 1s call metadata before hanging it up here: */
+	g_pars.subscr := subscr0;
+	COORD.send(IMS_COORD_CMD_CALL_REJECTED);
+
+	f_TC_ims_call_mo_IMS_ConnHdlr_hangup_call_unregister();
+}
+
+type function call_established_fn(SIPConnHdlrPars sip_pars, IMS_ConnHdlrPars ims_pars) runs on test_CT;
+private function call_established_fn_sleep1(SIPConnHdlrPars sip_pars, IMS_ConnHdlrPars ims_pars) runs on test_CT {
+	f_sleep(1.0);
+}
+private function call_established_fn_wait_ims_coord_cmd_call_rejected(SIPConnHdlrPars sip_pars, IMS_ConnHdlrPars ims_pars) runs on test_CT {
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_REJECTED);
+}
+
+private function f_TC_ims_call_mo(boolean use_precondition_ext := true,
+				  boolean use_session_timer := false,
+				  call_established_fn call_established_cb := refers(call_established_fn_sleep1),
+				  void_fn sip_fn := refers(f_TC_internal_call_mo),
+				  ims_void_fn ims_fn := refers(f_TC_ims_call_mo_IMS_ConnHdlr)) runs on test_CT {
+	var SIPConnHdlrPars sip_pars;
+	var IMS_ConnHdlrPars ims_pars;
+	var SIPConnHdlr vc_conn_sip;
+	var IMS_ConnHdlr vc_conn_ims;
+
+	f_init();
+
+	sip_pars := f_init_ConnHdlrPars(idx := 1);
+	ims_pars := f_init_IMS_ConnHdlrPars();
+
+	f_ims_call_mo_configure(sip_pars, ims_pars);
+	ims_pars.subscr.cp.support_precondition_ext := use_precondition_ext;
+	ims_pars.subscr.cp.require_precondition_ext := use_precondition_ext;
+	ims_pars.subscr.cp.mo.tx_coord_cmd_invite_trying := true;
+	ims_pars.subscr.cp.mo.support_timer_enable := use_session_timer;
+	if (use_session_timer) {
+		sip_pars.t_guard := 120.0;
+		ims_pars.t_guard := 120.0;
+		ims_pars.subscr.cp.mo.support_timer_exp_min_se := 90;
+		ims_pars.subscr.cp.mo.support_timer_session_expires := 90;
+
+	}
+
+	vc_conn_ims := f_start_handler_IMS(ims_fn, ims_pars);
+	vc_conn_sip := f_start_handler(sip_fn, sip_pars);
+
+	COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip;
+
+	f_AMI_IMS_register(ims_pars);
+
+	f_ims_call_mo_establish(vc_conn_sip, vc_conn_ims);
+
+	/* Call on-going */
+	if (use_session_timer) {
+		IMS_COORD.receive(IMS_COORD_CMD_CALL_SESSION_REFRESH);
+	}
+	call_established_cb.apply(sip_pars, ims_pars);
+
+	COORD.send(COORD_CMD_HANGUP) to vc_conn_sip;
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_FINISHED) from vc_conn_ims;
+
+	/* Notify network released dedicated bearer: */
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+
+	/* Trigger unregistration: */
+	f_sleep(1.0);
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip;
+	AMI_CLIENT.clear;
+	f_AMI_IMS_unregister(ims_pars);
+
+	vc_conn_sip.done;
+	vc_conn_ims.done;
+	f_shutdown();
+}
+testcase TC_ims_call_mo() runs on test_CT {
+	f_TC_ims_call_mo();
+}
+testcase TC_ims_call_mo_session_timer() runs on test_CT {
+	f_TC_ims_call_mo(use_session_timer := true);
+}
+testcase TC_ims_call_mo_noprecondition() runs on test_CT {
+	f_TC_ims_call_mo(use_precondition_ext := false);
+}
+testcase TC_ims_call_mo_holdresume_mo() runs on test_CT {
+	f_TC_ims_call_mo(sip_fn := refers(f_TC_internal_call_mo_with_holdresume),
+			 ims_fn := refers(f_TC_ims_call_mo_IMS_ConnHdlr_with_holdresume));
+}
+
+/* Test a 2nd call initiated from a local SIP UA towards IMS after having HOLD the 1st one. */
+private function call_established_fn_holdswitchresume(SIPConnHdlrPars sip_pars, IMS_ConnHdlrPars ims_pars) runs on test_CT {
+	var AMI_Msg ami_msg;
+	var charstring old_asterisk_chan_name := g_asterisk_chan_name; /* backup */
+	COORD.send(COORD_CMD_START);
+
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_TRYING);
+	ami_msg := f_ami_wait_rx_msg(AMI_CLIENT,
+				     tr_AMI_Event_Newchannel(mp_volte_ims_outbound_registration),
+				     fail_others := false);
+	g_asterisk_chan_name := valueof(f_ami_msg_get_value(ami_msg, AMI_FIELD_CHANNEL));
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Up", fail_others := false);
+
+	COORD.receive(COORD_CMD_CALL_ESTABLISHED);
+	IMS_COORD.receive(COORD_CMD_CALL_ESTABLISHED);
+	/* 2nd call ongoing */
+	log ("test_CT: 2nd call ongoing");
+	f_sleep(1.0);
+	/* Tear down 2nd call: */
+	COORD.send(COORD_CMD_HANGUP);
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_FINISHED);
+
+	/* Notify network released 2nd dedicated bearer: */
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+
+	g_asterisk_chan_name := old_asterisk_chan_name; /* restore */
+}
+testcase TC_ims_call_mo_holdswitchresume_mo() runs on test_CT {
+	f_TC_ims_call_mo(call_established_cb := refers(call_established_fn_holdswitchresume),
+			 sip_fn := refers(f_TC_internal_call_mo_with_holdswitchresume),
+			 ims_fn := refers(f_TC_ims_call_mo_IMS_ConnHdlr_with_holdswitchresume));
+}
+
+/* Test a 2nd call initiated from a local SIP UA towards IMS is rejected with
+ * 503 Service Unavailable if IMS endpoint is already busy in a call. */
+private function call_established_fn_2ndrejected(SIPConnHdlrPars sip_pars, IMS_ConnHdlrPars ims_pars) runs on test_CT {
+	var SIPConnHdlrPars sip_pars2;
+	var SIPConnHdlr vc_conn_sip2;
+	sip_pars2 := f_init_ConnHdlrPars(idx := 2);
+	f_ims_call_mo_configure(sip_pars2, ims_pars, tgt_ext_msisdn := "88888888");
+	vc_conn_sip2 := f_start_handler(refers(f_TC_internal_call_mo_rejected), sip_pars2);
+
+	COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip2;
+	COORD.send(COORD_CMD_START) to vc_conn_sip2;
+	COORD.receive(COORD_CMD_CALL_FINISHED) from vc_conn_sip2;
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip2;
+	vc_conn_sip2.done;
+}
+testcase TC_ims_call_mo_2nd_mo_rejected() runs on test_CT {
+	f_TC_ims_call_mo(call_established_cb := refers(call_established_fn_2ndrejected));
+}
+
+/* Test a 2nd call initiated from IMS towards Astierisk is rejected with
+ * 486 Busy Here if IMS endpoint is already busy in a call. */
+testcase TC_ims_call_mo_2nd_mt_rejected() runs on test_CT {
+	f_TC_ims_call_mo(call_established_cb := refers(call_established_fn_wait_ims_coord_cmd_call_rejected),
+			 ims_fn := refers(f_TC_ims_call_mo_IMS_ConnHdlr_2nd_mt_rejected));
+}
+
+/* TC_ims_call_mo, but IMS server closes the TCP conn used during 2nd register after ACKing it.
+ * Asterisk should then re-connect and re-register before placing a call towards IMS. */
+private function f_TC_ims_call_mo_after_tcp_conn_closed_IMS_ConnHdlr(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	/* First full register at the IMS: */
+	as_IMS_register();
+	f_sleep(1.0);
+	/* IMS closes TCP conn (TCP FIN/ACK): */
+	f_IMS_tcp_close();
+	/* Proceed similar to TC_ims_call_mo: expect new full register + MO call: */
+	f_TC_ims_call_mo_IMS_ConnHdlr(id);
+}
+testcase TC_ims_call_mo_after_tcp_conn_closed() runs on test_CT {
+	var SIPConnHdlrPars sip_pars;
+	var IMS_ConnHdlrPars ims_pars;
+	var SIPConnHdlr vc_conn_sip;
+	var IMS_ConnHdlr vc_conn_ims;
+
+	f_init();
+
+	sip_pars := f_init_ConnHdlrPars(idx := 1);
+	ims_pars := f_init_IMS_ConnHdlrPars();
+
+	f_ims_call_mo_configure(sip_pars, ims_pars);
+	ims_pars.subscr.cp.support_precondition_ext := true;
+	ims_pars.subscr.cp.require_precondition_ext := true;
+	ims_pars.subscr.cp.mo.tx_coord_cmd_invite_trying := true;
+	ims_pars.subscr.cp.mo.support_timer_enable := false;
+
+	vc_conn_ims := f_start_handler_IMS(refers(f_TC_ims_call_mo_after_tcp_conn_closed_IMS_ConnHdlr), ims_pars);
+	vc_conn_sip := f_start_handler(refers(f_TC_internal_call_mo), sip_pars);
+
+	COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip;
+
+	f_AMI_IMS_register(ims_pars);
+	/* Here IMS_ConnHdlr will have dropped the TCP conn from IMS. */
+	as_AMI_IMS_register_Auth(ims_pars);
+
+	f_ims_call_mo_establish(vc_conn_sip, vc_conn_ims);
+
+	/* Call on-going */
+	var call_established_fn call_established_cb := refers(call_established_fn_sleep1);
+	call_established_cb.apply(sip_pars, ims_pars);
+
+	COORD.send(COORD_CMD_HANGUP) to vc_conn_sip;
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_FINISHED) from vc_conn_ims;
+
+	/* Notify network released dedicated bearer: */
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+
+	/* Trigger unregistration: */
+	f_sleep(1.0);
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip;
+	AMI_CLIENT.clear;
+	f_AMI_IMS_unregister(ims_pars);
+
+	vc_conn_sip.done;
+	vc_conn_ims.done;
+	f_shutdown();
+}
+
+/* Test MT call initiated by IMS */
+private function f_TC_ims_call_mt_IMS_ConnHdlr(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	as_IMS_register();
+	COORD.send(IMS_COORD_CMD_REGISTERED);
+	setverdict(pass);
+
+	COORD.receive(IMS_COORD_CMD_START);
+	f_IMS_mt_call_setup();
+	setverdict(pass);
+	COORD.send(IMS_COORD_CMD_CALL_ESTABLISHED);
+
+	COORD.receive(IMS_COORD_CMD_HANGUP);
+	f_IMS_do_call_hangup();
+	setverdict(pass);
+	COORD.send(IMS_COORD_CMD_CALL_FINISHED);
+
+	as_IMS_unregister();
+}
+private function f_TC_ims_call_mt(boolean use_precondition_ext) runs on test_CT {
+	var SIPConnHdlrPars sip_pars;
+	var IMS_ConnHdlrPars ims_pars;
+	var SIPConnHdlr vc_conn_sip;
+	var IMS_ConnHdlr vc_conn_ims;
+	var AMI_Msg ami_msg;
+	const charstring c_ext_msisdn := "90829";
+
+	f_init();
+
+	sip_pars := f_init_ConnHdlrPars(idx := 1);
+	ims_pars := f_init_IMS_ConnHdlrPars();
+
+	sip_pars.cp.exp_update_to_direct_rtp := false;
+	sip_pars.cp.calling := valueof(ts_SipAddr(ts_HostPort(sip_pars.remote_sip_host),
+						 ts_UserInfo(c_ext_msisdn)));
+	sip_pars.cp.called := sip_pars.local_sip_record;
+	ims_pars.subscr.cp.calling := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							ts_UserInfo(c_ext_msisdn)));
+	ims_pars.subscr.cp.called := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							 ts_UserInfo(ims_pars.subscr.msisdn)));
+	ims_pars.subscr.cp.support_precondition_ext := use_precondition_ext;
+	ims_pars.subscr.cp.require_precondition_ext := use_precondition_ext;
+	ims_pars.subscr.cp.mt.tx_coord_cmd_session_progress := use_precondition_ext;
+
+	vc_conn_ims := f_start_handler_IMS(refers(f_TC_ims_call_mt_IMS_ConnHdlr), ims_pars);
+	vc_conn_sip := f_start_handler(refers(f_TC_internal_call_mt), sip_pars);
+
+	COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip;
+
+	f_AMI_IMS_register(ims_pars);
+	IMS_COORD.receive(IMS_COORD_CMD_REGISTERED) from vc_conn_ims;
+
+	IMS_COORD.send(IMS_COORD_CMD_START) to vc_conn_ims;
+
+	ami_msg := f_ami_wait_rx_msg(AMI_CLIENT,
+				     tr_AMI_Event_Newchannel(mp_volte_ims_outbound_registration),
+				     fail_others := false);
+	g_asterisk_chan_name := valueof(f_ami_msg_get_value(ami_msg, AMI_FIELD_CHANNEL));
+	if (ims_pars.subscr.cp.mt.tx_coord_cmd_session_progress) {
+		IMS_COORD.receive(IMS_COORD_CMD_CALL_SESSION_PROGRESS) from vc_conn_ims;
+	}
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Up", fail_others := false);
+
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_ESTABLISHED) from vc_conn_ims;
+	COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_sip;
+
+	/* Call on-going */
+	f_sleep(1.0);
+
+	IMS_COORD.send(IMS_COORD_CMD_HANGUP) to vc_conn_ims;
+
+	/* Notify network released dedicated bearer: */
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_FINISHED) from vc_conn_ims;
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+	COORD.receive(COORD_CMD_CALL_FINISHED) from vc_conn_sip;
+
+	/* Trigger unregistration: */
+	f_sleep(1.0);
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip;
+	AMI_CLIENT.clear;
+	f_AMI_IMS_unregister(ims_pars);
+
+	vc_conn_sip.done;
+	vc_conn_ims.done;
+	f_shutdown();
+}
+testcase TC_ims_call_mt() runs on test_CT {
+	f_TC_ims_call_mt(true);
+}
+testcase TC_ims_call_mt_noprecondition() runs on test_CT {
+	f_TC_ims_call_mt(false);
+}
+
+/* Validate incoming IMS MT call is rejected if no UAs are registered, hence not available. */
+private function f_TC_ims_call_mt_IMS_ConnHdlr_603_Decline(charstring id) runs on IMS_ConnHdlr {
+	f_create_sip_expect(valueof(ts_SipUrl_from_Addr_Union(g_pars.subscr.registrar_sip_record.addr)));
+	as_IMS_register();
+	COORD.send(IMS_COORD_CMD_REGISTERED);
+	setverdict(pass);
+
+	COORD.receive(IMS_COORD_CMD_START);
+	f_IMS_mt_call_rejected(603, "Decline");
+	setverdict(pass);
+	COORD.send(IMS_COORD_CMD_CALL_REJECTED);
+
+	as_IMS_unregister();
+}
+testcase TC_ims_call_mt_no_local_uas_registered() runs on test_CT {
+	var IMS_ConnHdlrPars ims_pars;
+	var IMS_ConnHdlr vc_conn_ims;
+	var AMI_Msg ami_msg;
+	const charstring c_ext_msisdn := "90829";
+
+	f_init();
+
+	ims_pars := f_init_IMS_ConnHdlrPars();
+
+	ims_pars.subscr.cp.calling := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							ts_UserInfo(c_ext_msisdn)));
+	ims_pars.subscr.cp.called := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							 ts_UserInfo(ims_pars.subscr.msisdn)));
+
+	vc_conn_ims := f_start_handler_IMS(refers(f_TC_ims_call_mt_IMS_ConnHdlr_603_Decline), ims_pars);
+
+	f_AMI_IMS_register(ims_pars);
+	IMS_COORD.receive(IMS_COORD_CMD_REGISTERED) from vc_conn_ims;
+
+	IMS_COORD.send(IMS_COORD_CMD_START) to vc_conn_ims;
+
+	ami_msg := f_ami_wait_rx_msg(AMI_CLIENT,
+				     tr_AMI_Event_Newchannel(mp_volte_ims_outbound_registration),
+				     fail_others := false);
+	g_asterisk_chan_name := valueof(f_ami_msg_get_value(ami_msg, AMI_FIELD_CHANNEL));
+
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Up", fail_others := false);
+
+	/* Notify network released dedicated bearer: */
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_REJECTED) from vc_conn_ims;
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+
+	/* Trigger unregistration: */
+	f_sleep(1.0);
+	AMI_CLIENT.clear;
+	f_AMI_IMS_unregister(ims_pars);
+
+	vc_conn_ims.done;
+	f_shutdown();
+}
+
+/* Validate incoming IMS MT call is rejected if no UAs are available due to being busy in an internall call. */
+testcase TC_ims_call_mt_local_uas_inacall() runs on test_CT {
+	var SIPConnHdlrPars sip_pars[2];
+	var IMS_ConnHdlrPars ims_pars;
+	var SIPConnHdlr vc_conn_sip[2];
+	var IMS_ConnHdlr vc_conn_ims;
+	var AMI_Msg ami_msg;
+	const charstring c_ext_msisdn := "90829";
+
+	f_init();
+
+	sip_pars[0] := f_init_ConnHdlrPars(idx := 1);
+	sip_pars[1] := f_init_ConnHdlrPars(idx := 2);
+	ims_pars := f_init_IMS_ConnHdlrPars();
+
+	sip_pars[0].cp.calling := sip_pars[0].registrar_sip_record;
+	sip_pars[0].cp.called := sip_pars[1].registrar_sip_record;
+
+	sip_pars[1].cp.calling := sip_pars[0].registrar_sip_record;
+	sip_pars[1].cp.called := sip_pars[1].local_sip_record;
+
+	ims_pars.subscr.cp.calling := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							ts_UserInfo(c_ext_msisdn)));
+	ims_pars.subscr.cp.called := valueof(ts_SipAddr(ts_HostPort(ims_pars.realm),
+							 ts_UserInfo(ims_pars.subscr.msisdn)));
+
+	vc_conn_sip[0] := f_start_handler(refers(f_TC_internal_call_mo), sip_pars[0]);
+	vc_conn_sip[1] := f_start_handler(refers(f_TC_internal_call_mt), sip_pars[1]);
+
+	vc_conn_ims := f_start_handler_IMS(refers(f_TC_ims_call_mt_IMS_ConnHdlr_603_Decline), ims_pars);
+	f_AMI_IMS_register(ims_pars);
+
+	interleave {
+	[] COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip[0];
+	[] COORD.receive(COORD_CMD_REGISTERED) from vc_conn_sip[1];
+	[] IMS_COORD.receive(IMS_COORD_CMD_REGISTERED) from vc_conn_ims;
+	}
+
+	COORD.send(COORD_CMD_START) to vc_conn_sip[0];
+
+	interleave {
+	[] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_sip[0];
+	[] COORD.receive(COORD_CMD_CALL_ESTABLISHED) from vc_conn_sip[1];
+	}
+
+	/* Call on-going, now IMS MT call is attempted: */
+	f_sleep(1.0);
+	IMS_COORD.send(IMS_COORD_CMD_START) to vc_conn_ims;
+	ami_msg := f_ami_wait_rx_msg(AMI_CLIENT,
+				     tr_AMI_Event_Newchannel(mp_volte_ims_outbound_registration),
+				     fail_others := false);
+	g_asterisk_chan_name := valueof(f_ami_msg_get_value(ami_msg, AMI_FIELD_CHANNEL));
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Up", fail_others := false);
+	IMS_COORD.receive(IMS_COORD_CMD_CALL_REJECTED) from vc_conn_ims;
+	AMI_CLIENT.clear;
+	f_ami_action_DedicatedBearerStatus(AMI_CLIENT,
+					   g_asterisk_chan_name,
+					   "Down", fail_others := false);
+
+
+	COORD.send(COORD_CMD_HANGUP) to vc_conn_sip[0];
+	COORD.receive(COORD_CMD_CALL_FINISHED) from vc_conn_sip[1];
+
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip[0];
+	COORD.send(COORD_CMD_UNREGISTER) to vc_conn_sip[1];
+	AMI_CLIENT.clear;
+	f_AMI_IMS_unregister(ims_pars);
+
+	vc_conn_sip[0].done;
+	vc_conn_sip[1].done;
+	vc_conn_ims.done;
+	f_shutdown();
+}
+
+control {
+	execute( TC_internal_registration() );
+	execute( TC_internal_call_momt() );
+	execute( TC_internal_call_all_2registered() );
+	execute( TC_internal_call_all_3registered() );
+	execute( TC_internal_call_all_4registered() );
+	execute( TC_ims_registration() );
+	execute( TC_ims_registration_resync() );
+	execute( TC_ims_registration_timeout_initial_100Trying() );
+	execute( TC_ims_registration_timeout_initial_401Unauthorized() );
+	execute( TC_ims_registration_timeout_resync_401Unauthorized() );
+	execute( TC_ims_registration_timeout_protected_100Trying() );
+	execute( TC_ims_registration_timeout_protected_200OK() );
+	execute( TC_ims_registration_423_interval_too_brief() );
+	execute( TC_ims_reregistration() );
+	execute( TC_ims_call_mo() );
+	execute( TC_ims_call_mo_session_timer() );
+	execute( TC_ims_call_mo_noprecondition() );
+	execute( TC_ims_call_mo_holdresume_mo() );
+	execute( TC_ims_call_mo_holdswitchresume_mo() );
+	execute( TC_ims_call_mo_2nd_mo_rejected() );
+	execute( TC_ims_call_mo_2nd_mt_rejected() );
+	execute( TC_ims_call_mo_after_tcp_conn_closed() );
+	execute( TC_ims_call_mt() );
+	execute( TC_ims_call_mt_noprecondition() );
+	execute( TC_ims_call_mt_no_local_uas_registered() );
+	execute( TC_ims_call_mt_local_uas_inacall() );
+}
+
+}

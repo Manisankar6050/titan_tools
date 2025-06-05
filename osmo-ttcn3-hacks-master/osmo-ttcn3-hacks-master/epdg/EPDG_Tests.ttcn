@@ -1,0 +1,1352 @@
+module EPDG_Tests {
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from Native_Functions all;
+import from Osmocom_Types all;
+import from L3_Common all;
+import from DNS_Helpers all;
+import from IP_Types all;
+import from ICMP_Types all;
+import from ICMP_Templates all;
+
+import from IPA_Emulation all;
+import from PCO_Types all;
+import from GSUP_Types all;
+import from GSUP_Templates all;
+import from GSUP_Emulation all;
+
+import from DIAMETER_Types all;
+import from DIAMETER_Templates all;
+import from DIAMETER_rfc4004_Templates all;
+import from DIAMETER_ts29_229_Templates all;
+import from DIAMETER_ts29_272_Templates all;
+import from DIAMETER_ts29_273_Templates all;
+import from DIAMETER_Emulation all;
+
+import from GTPv1U_CodecPort all;
+import from GTPU_Types all;
+import from GTPv1U_Templates all;
+
+import from GTPv2_Types all;
+import from GTPv2_Templates all;
+import from GTPv2_Emulation all;
+
+modulepar {
+	/* our emulated GSUP strongswan (CEAI iface) */
+	charstring mp_gsup_local_ip := "127.0.0.100";
+	integer mp_gsup_local_port := 0;
+	charstring mp_gsup_remote_ip := "127.0.0.1";
+	integer mp_gsup_remote_port := 4222;
+
+	/* our emulated HSS */
+	charstring mp_swx_local_ip := "127.0.0.100";
+	integer mp_swx_local_port := 3868;
+
+	/* our emulated PGW (Diameter S6b) */
+	charstring mp_s6b_local_ip := "127.0.0.100";
+	integer mp_s6b_local_port := 3869;
+	charstring mp_s6b_remote_ip := "127.0.0.1";
+	integer mp_s6b_remote_port := 3869;
+	/* 3GPP TS 23.003 clause 19: "nai.epc.mnc<MNC>.mcc<MCC>.3gppnetwork.org" */
+	charstring mp_s6b_nai_realm := "nai.epc.mnc001.mcc01.3gppnetwork.org";
+
+	/* our emulated PGW (GTPv2C S2b) */
+	charstring mp_s2b_local_ip := "127.0.0.100";
+	integer mp_s2b_local_port := GTP2C_PORT;
+	charstring mp_s2b_remote_ip := "127.0.0.1";
+	integer mp_s2b_remote_port := GTP2C_PORT;
+	charstring mp_s2b_dns_ipv4 := "1.2.3.4";
+	charstring mp_s2b_dns_ipv6 := "::1";
+	charstring mp_s2b_pcscf_ipv4 := "5.6.7.8";
+	charstring mp_s2b_pcscf_ipv6 := "::2";
+	/* our emulated PGW /* GTP1U */
+	charstring mp_upf_gtpu_local_ip := "127.0.0.100";
+
+	charstring mp_diam_realm := "localdomain";
+	integer mp_diam_watchdog_initial_wait_sec := 6*3;
+}
+
+type port Coord_PT message
+{
+	inout charstring;
+} with { extension "internal" };
+private const charstring COORD_CMD_READY := "COORD_CMD_READY";
+private const charstring COORD_CMD_START := "COORD_CMD_START";
+private const charstring COORD_CMD_ATTACHED := "COORD_CMD_ATTACHED";
+private const charstring COORD_CMD_STOP := "COORD_CMD_STOP";
+
+type component MTC_CT {
+	var DIAMETER_Emulation_CT vc_SWx;
+	port DIAMETER_PT SWx_UNIT;
+	port DIAMETEREM_PROC_PT SWx_PROC;
+
+	var DIAMETER_Emulation_CT vc_S6b;
+	port DIAMETER_PT S6b_UNIT;
+	port DIAMETEREM_PROC_PT S6b_PROC;
+
+	var GSUP_Emulation_CT vc_GSUP;
+	var IPA_Emulation_CT vc_GSUP_IPA;
+	port IPA_CTRL_PT GSUP_IPA_EVENT;
+
+	var GTPv2_Emulation_CT vc_GTP2;
+	port GTP2EM_PT TEID0;
+
+	port Coord_PT COORD;
+
+	timer g_Tguard;
+};
+
+private altstep as_Tguard() runs on MTC_CT {
+	[] g_Tguard.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Tguard timeout");
+	}
+}
+
+type component DIAMETER_ConnHdlr_CT extends DIAMETER_ConnHdlr {
+	port DIAMETER_Conn_PT DIAMETER_CLIENT;
+	port DIAMETEREM_PROC_PT DIAMETER_PROC_CLIENT;
+}
+
+function f_diam_connhldr_ct_main(hexstring imsi) runs on DIAMETER_ConnHdlr_CT {
+	var DIAMETER_ConnHdlr vc_conn_unused;
+	var PDU_DIAMETER msg;
+	var UINT32 ete_id;
+
+	f_diameter_expect_imsi(imsi);
+
+	while (true) {
+		alt {
+		[] DIAMETER_CLIENT.receive(PDU_DIAMETER:?) -> value msg {
+			DIAMETER.send(msg);
+			}
+		[] DIAMETER.receive(PDU_DIAMETER:?) -> value msg {
+			DIAMETER_CLIENT.send(msg);
+			}
+		[] DIAMETER_PROC_CLIENT.getcall(DIAMETEREM_register_eteid:{?,?}) -> param(ete_id, vc_conn_unused) {
+			DIAMETER_PROC.call(DIAMETEREM_register_eteid:{ete_id, self}) {
+				[] DIAMETER_PROC.getreply(DIAMETEREM_register_eteid:{?,?}) {};
+				}
+			DIAMETER_PROC_CLIENT.reply(DIAMETEREM_register_eteid:{ete_id, vc_conn_unused});
+			}
+		}
+	}
+}
+
+type component EPDG_ConnHdlr extends DIAMETER_ConnHdlr, GSUP_ConnHdlr, GTP2_ConnHdlr {
+	var EPDG_ConnHdlrPars g_pars;
+
+	port DIAMETER_Conn_PT SWx;
+	port DIAMETEREM_PROC_PT SWx_PROC;
+	port DIAMETER_Conn_PT S6b;
+	port DIAMETEREM_PROC_PT S6b_PROC;
+	port Coord_PT COORD;
+};
+type record of EPDG_ConnHdlr EPDG_ConnHdlrList;
+
+type record BearerConfig {
+	 /* EPS Bearer ID */
+	uint4_t		ebi optional,
+	/* TEI (Data) local side */
+	OCT4 		teid_local optional,
+	/* TEI (Data) remote side */
+	OCT4 		teid_remote optional,
+	/* GTP-U address of the peer (ePDG) */
+	charstring	gtpu_addr_remote optional
+};
+
+type record EPDG_ConnHdlrPars {
+	hexstring imsi,
+	charstring apn,
+	charstring ue_ip,
+
+	/* TEI (Control) local side */
+	OCT4 teic_local,
+	/* TEI (Control) remote side */
+	OCT4 teic_remote optional,
+
+	BearerConfig bearer optional,
+
+	AuthVector vec optional
+};
+
+private function f_epdg_connhldr_SWx_expect_eteid(UINT32 ete_id) runs on EPDG_ConnHdlr {
+	SWx_PROC.call(DIAMETEREM_register_eteid:{ete_id, null}) {
+		[] SWx_PROC.getreply(DIAMETEREM_register_eteid:{?,?}) {};
+	}
+}
+private function f_epdg_connhldr_S6b_expect_eteid(UINT32 ete_id) runs on EPDG_ConnHdlr {
+	S6b_PROC.call(DIAMETEREM_register_eteid:{ete_id, null}) {
+		[] S6b_PROC.getreply(DIAMETEREM_register_eteid:{?,?}) {};
+	}
+}
+
+private function f_gen_addr_in_pool(integer idx := 0) return charstring
+{
+	/* Skip first 2 addresses reserved for TUN */
+	var integer internal_idx := idx + 2;
+	var integer suffix := internal_idx rem (256*256);
+	var integer C := suffix / 256;
+	var integer D := suffix rem 256;
+	return "192.168." & int2str(C) & "." & int2str(D);
+}
+
+private function f_init_pars(integer idx := 0)
+runs on MTC_CT return EPDG_ConnHdlrPars {
+	var EPDG_ConnHdlrPars pars := {
+		imsi := f_rnd_imsi('26242'H),
+		apn := "internet",
+		ue_ip := f_gen_addr_in_pool(idx),
+		teic_local := '00000000'O,
+		teic_remote := omit,
+		bearer := {
+			ebi := omit,
+			teid_local := omit,
+			teid_remote := omit,
+			gtpu_addr_remote := omit
+		},
+		vec := f_gen_auth_vec_3g()
+	};
+	return pars;
+}
+
+private function f_init_gsup(charstring id) runs on MTC_CT {
+	id := id & "-GSUP";
+	var GsupOps ops := {
+		create_cb := refers(GSUP_Emulation.ExpectedCreateCallback)
+	};
+
+	vc_GSUP_IPA := IPA_Emulation_CT.create(id & "-IPA");
+	vc_GSUP := GSUP_Emulation_CT.create(id);
+
+	map(vc_GSUP_IPA:IPA_PORT, system:IPA_CODEC_PT);
+	connect(vc_GSUP:GSUP, vc_GSUP_IPA:IPA_GSUP_PORT);
+	/* we use this hack to get events like ASP_IPA_EVENT_UP */
+	connect(vc_GSUP_IPA:IPA_CTRL_PORT, self:GSUP_IPA_EVENT);
+
+	vc_GSUP.start(GSUP_Emulation.main(ops, id));
+	vc_GSUP_IPA.start(IPA_Emulation.main_client(mp_gsup_remote_ip, mp_gsup_remote_port,
+						    mp_gsup_local_ip, mp_gsup_local_port));
+
+	/* wait for incoming connection to GSUP port before proceeding */
+	timer T := 10.0;
+	T.start;
+	alt {
+	[] GSUP_IPA_EVENT.receive(tr_ASP_IPA_EV(ASP_IPA_EVENT_UP)) { }
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "No connection to GSUP Port");
+		}
+	}
+}
+
+private function DiameterForwardUnitdataCallback(PDU_DIAMETER msg)
+runs on DIAMETER_Emulation_CT return template PDU_DIAMETER {
+	DIAMETER_UNIT.send(msg);
+	return omit;
+}
+
+private function f_init_diameter(charstring id) runs on MTC_CT {
+	var DIAMETEROps ops := {
+		create_cb := refers(DIAMETER_Emulation.ExpectedCreateCallback),
+		unitdata_cb := refers(DiameterForwardUnitdataCallback),
+		raw := false /* handler mode (IMSI based routing) */
+	};
+	var DIAMETER_conn_parameters pars;
+
+	/* SWx setup: */
+	pars := {
+		remote_ip := "",
+		remote_sctp_port := -1, /* server mode */
+		local_ip := mp_swx_local_ip,
+		local_sctp_port := mp_swx_local_port,
+		origin_host := "hss." & mp_diam_realm,
+		origin_realm := mp_diam_realm,
+		auth_app_id := omit,
+		vendor_app_id := c_DIAMETER_3GPP_SWx_AID
+	};
+	vc_SWx := DIAMETER_Emulation_CT.create(id);
+	map(vc_SWx:DIAMETER, system:DIAMETER_CODEC_PT);
+	connect(vc_SWx:DIAMETER_UNIT, self:SWx_UNIT);
+	connect(vc_SWx:DIAMETER_PROC, self:SWx_PROC);
+	vc_SWx.start(DIAMETER_Emulation.main(ops, pars, id));
+
+	/* S6b setup: */
+	pars := {
+		remote_ip := mp_s6b_remote_ip,
+		remote_sctp_port := mp_s6b_remote_port, /* client mode */
+		local_ip := mp_s6b_local_ip,
+		local_sctp_port := mp_s6b_local_port,
+		origin_host := "pgw." & mp_diam_realm,
+		origin_realm := mp_diam_realm,
+		auth_app_id := c_DIAMETER_3GPP_S6b_AID,
+		vendor_app_id := c_DIAMETER_3GPP_S6b_AID
+	};
+	vc_S6b := DIAMETER_Emulation_CT.create(id);
+	map(vc_S6b:DIAMETER, system:DIAMETER_CODEC_PT);
+	connect(vc_S6b:DIAMETER_UNIT, self:S6b_UNIT);
+	connect(vc_S6b:DIAMETER_PROC, self:S6b_PROC);
+	vc_S6b.start(DIAMETER_Emulation.main(ops, pars, id));
+
+	f_diameter_wait_capability(SWx_UNIT);
+	f_diameter_wait_capability(S6b_UNIT);
+
+	/* Give some time for our emulation to get out of SUSPECT list of SUT (3 watchdog ping-pongs):
+	 * RFC6733 sec 5.1
+	 * RFC3539 sec 3.4.1 [5]
+	 * https://github.com/freeDiameter/freeDiameter/blob/master/libfdcore/p_psm.c#L49
+	 */
+	f_sleep(int2float(mp_diam_watchdog_initial_wait_sec));
+}
+
+private function f_init_gtp(charstring id) runs on MTC_CT {
+	var Gtp2EmulationCfg cfg := {
+		gtpc_bind_ip := mp_s2b_local_ip,
+		gtpc_bind_port := mp_s2b_local_port,
+		gtpc_remote_ip := mp_s2b_remote_ip,
+		gtpc_remote_port := mp_s2b_remote_port,
+		gtpu_bind_ip := mp_upf_gtpu_local_ip,
+		gtpu_bind_port := GTP1U_PORT,
+		sgw_role := false,
+		use_gtpu_daemon := false /* TODO: maybe use, set to true */
+	};
+
+	vc_GTP2 := GTPv2_Emulation_CT.create(id & "-GTPV2");
+	map(vc_GTP2:GTP2C, system:GTP2C);
+	connect(vc_GTP2:TEID0, self:TEID0);
+	vc_GTP2.start(GTPv2_Emulation.main(cfg));
+}
+
+private function f_init(float t_guard := 40.0) runs on MTC_CT {
+
+	g_Tguard.start(t_guard);
+	activate(as_Tguard());
+
+	f_init_gsup(testcasename());
+	f_init_diameter(testcasename());
+	f_init_gtp(testcasename());
+}
+
+private type function void_fn(charstring id) runs on EPDG_ConnHdlr;
+
+private function f_init_handler(void_fn fn, charstring id, EPDG_ConnHdlrPars pars) runs on EPDG_ConnHdlr {
+	g_pars := pars;
+
+	/* tell GSUP dispatcher to send this IMSI to us */
+	f_create_gsup_expect(hex2str(g_pars.imsi));
+
+	/* tell GTPv2 dispatcher to send this IMSI to us */
+	f_gtp2_register_imsi(g_pars.imsi);
+
+	fn.apply(id);
+}
+
+private function f_start_handler(void_fn fn, EPDG_ConnHdlrPars pars)
+runs on MTC_CT return EPDG_ConnHdlr {
+	var EPDG_ConnHdlr vc_conn;
+	var charstring id := testcasename();
+	var DIAMETER_ConnHdlr_CT vc_conn_swx, vc_conn_s6b;
+
+	vc_conn := EPDG_ConnHdlr.create(id);
+
+	/* GSUP */
+	connect(vc_conn:GSUP, vc_GSUP:GSUP_CLIENT);
+	connect(vc_conn:GSUP_PROC, vc_GSUP:GSUP_PROC);
+
+	/* GTP2 */
+	connect(vc_conn:GTP2, vc_GTP2:CLIENT);
+	connect(vc_conn:GTP2_PROC, vc_GTP2:CLIENT_PROC);
+
+	/* SWx */
+	vc_conn_swx := DIAMETER_ConnHdlr_CT.create(id);
+	connect(vc_conn_swx:DIAMETER, vc_SWx:DIAMETER_CLIENT);
+	connect(vc_conn_swx:DIAMETER_PROC, vc_SWx:DIAMETER_PROC);
+	connect(vc_conn:SWx, vc_conn_swx:DIAMETER_CLIENT);
+	connect(vc_conn:SWx_PROC, vc_conn_swx:DIAMETER_PROC_CLIENT);
+	vc_conn_swx.start(f_diam_connhldr_ct_main(pars.imsi));
+
+	/* S6b */
+	vc_conn_s6b := DIAMETER_ConnHdlr_CT.create(id);
+	connect(vc_conn_s6b:DIAMETER, vc_S6b:DIAMETER_CLIENT);
+	connect(vc_conn_s6b:DIAMETER_PROC, vc_S6b:DIAMETER_PROC);
+	connect(vc_conn:S6b, vc_conn_s6b:DIAMETER_CLIENT);
+	connect(vc_conn:S6b_PROC, vc_conn_s6b:DIAMETER_PROC_CLIENT);
+	vc_conn_s6b.start(f_diam_connhldr_ct_main(pars.imsi));
+
+	/* COORD */
+	connect(vc_conn:COORD, self:COORD);
+
+	vc_conn.start(f_init_handler(fn, id, pars));
+	return vc_conn;
+}
+
+private function f_nai() runs on EPDG_ConnHdlr return charstring {
+	return hex2str(g_pars.imsi) & "@" & mp_s6b_nai_realm;
+}
+
+private function f_DIA_SWx_tx_MAA_success(PDU_DIAMETER rx_mar) runs on EPDG_ConnHdlr {
+	var template (omit) AVP avp;
+	var octetstring sess_id;
+	var template (value) GenericAVP sip_auth_data_item;
+
+	avp := f_DIAMETER_get_avp(rx_mar, c_AVP_Code_BASE_NONE_Session_Id);
+	sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+	sip_auth_data_item := ts_AVP_3GPP_SIPAuthDataItem(0,
+							  g_pars.vec.rand,
+							  g_pars.vec.ik,
+							  g_pars.vec.ck,
+							  g_pars.vec.autn,
+							  g_pars.vec.auts);
+	/* Send MAA to translator; expect it to show up on GSUP side */
+	SWx.send(ts_DIA_SWx_MAA(g_pars.imsi, sip_auth_data_item,
+				sess_id := sess_id,
+				hbh_id := rx_mar.hop_by_hop_id,
+				ete_id := rx_mar.end_to_end_id));
+}
+
+private function f_DIA_SWx_tx_MAA_error(PDU_DIAMETER rx_mar, template (value) GenericAVP result) runs on EPDG_ConnHdlr {
+	var template (omit) AVP avp;
+	var octetstring sess_id;
+	var template (value) GenericAVP sip_auth_data_item;
+
+	avp := f_DIAMETER_get_avp(rx_mar, c_AVP_Code_BASE_NONE_Session_Id);
+	sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+	sip_auth_data_item := ts_AVP_3GPP_SIPAuthDataItem(0,
+							  g_pars.vec.rand,
+							  g_pars.vec.ik,
+							  g_pars.vec.ck,
+							  g_pars.vec.autn,
+							  g_pars.vec.auts);
+	SWx.send(ts_DIA_SWx_MAA_result(g_pars.imsi, result,
+				       sess_id := sess_id,
+				       hbh_id := rx_mar.hop_by_hop_id,
+				       ete_id := rx_mar.end_to_end_id));
+}
+
+/* Diameter SWx MAR + MAA. */
+private altstep as_DIA_SWx_MA_success(boolean exp_req_resync := false) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	[] SWx.receive(tr_DIA_SWx_MAR(g_pars.imsi)) -> value rx_dia {
+		if (exp_req_resync) {
+			var octetstring rand_autn_concatenated := g_pars.vec.rand & g_pars.vec.auts;
+			var AVP avp_grp;
+			var GenericAVP sip_auth_avp;
+
+			avp_grp := f_DIAMETER_get_avp_or_fail(rx_dia, c_AVP_Code_CxDx_3GPP_SIP_Auth_Data_Item);
+			sip_auth_avp.avp := f_AVP_Grouped_get_avp_or_fail(avp_grp.avp_data.avp_CxDx_3GPP_SIP_Auth_Data_Item,
+									  c_AVP_Code_CxDx_3GPP_SIP_Authorization);
+
+			if (not match(sip_auth_avp, tr_AVP_3GPP_SIPAuthorization(rand_autn_concatenated))) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Unexpected Diameter AVP SIP-Authorization: ", sip_auth_avp,
+								" vs exp ", tr_AVP_3GPP_SIPAuthorization(rand_autn_concatenated)));
+			}
+		}
+		f_DIA_SWx_tx_MAA_success(rx_dia);
+		setverdict(pass);
+	}
+	[] SWx.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter msg rx: ", rx_dia));
+	}
+}
+
+/* Diameter SWx SAR + SAA. */
+private altstep as_DIA_SWx_SA_success(template (present) CxDx_3GPP_Server_Assignment_Type server_ass_type := ?) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var template (omit) AVP avp;
+	var octetstring sess_id;
+	[] SWx.receive(tr_DIA_SWx_SAR(g_pars.imsi)) -> value rx_dia {
+		avp := f_DIAMETER_get_avp(rx_dia, c_AVP_Code_BASE_NONE_Session_Id);
+		sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+		/* Send SAA to translator; expect it to show up on GSUP side */
+		SWx.send(ts_DIA_SWx_SAA(g_pars.imsi,
+					IPv4,
+					g_pars.apn,
+					sess_id := sess_id,
+					hbh_id := rx_dia.hop_by_hop_id,
+					ete_id := rx_dia.end_to_end_id));
+		setverdict(pass);
+	}
+	[] SWx.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter msg rx: ", rx_dia));
+	}
+}
+
+/* Send PPR as HSS to AAA server, expect back PPA */
+private function f_DIA_SWx_PP(template (present) GenericAVP exp_result_tmpl := tr_AVP_ResultCode(DIAMETER_SUCCESS),
+			      boolean exp_aaa_proc := true) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var UINT32 hbh_id := f_rnd_octstring(4);
+	var UINT32 ete_id := f_rnd_octstring(4);
+	var octetstring reason_info := char2oct("test");
+
+	/* Unlike PPR, PPA contains no IMSI. Register ete_id in DIAMETER_Emulation,
+	 * so PPA is forwarded back to us in DIAMETER port instead of MTC_CT.DIAMETER_UNIT.
+	 */
+	f_epdg_connhldr_SWx_expect_eteid(ete_id);
+
+	SWx.send(ts_DIA_SWx_PPR(g_pars.imsi,
+				IPv4,
+				g_pars.apn,
+				hbh_id := hbh_id,
+				ete_id := ete_id));
+
+	if (exp_aaa_proc) {
+		/* TODO: in successful case, we want to validate how this procedure extends to other interfaces:
+		* """ 3GPP TS 29.273 8.1.2.3.3:
+		* After a successful user profile download, the 3GPP AAA Server shall
+		* initiate re-authentication procedure as described
+		* in clause 7.2.2.4 if the subscriber has previously been authenticated
+		* and authorized to untrusted non-3GPP access.
+		* """
+		*/
+		/* TS 29.273 9.1.2.5.1:
+		 * "The Service Authorization Information Update procedure is performed in two steps":
+		 * step 1: */
+		as_DIA_S6b_RA_success();
+		/* step 2 */
+		/* Since PGW Address didn't change, expect no SAR+SAA triggered as a consequence to AAR+AAA. */
+		f_S6b_AA_success(exp_swx_sa_proc := false);
+	}
+
+	alt {
+	[] SWx.receive(tr_DIA_SWx_PPA(exp_result_tmpl, hbh_id := hbh_id, ete_id := ete_id)) -> value rx_dia {}
+	[] SWx.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter SWx msg rx: ", rx_dia));
+		}
+	}
+}
+
+/* Send RTR as HSS to AAA server, expect back RTA */
+private function f_DIA_SWx_RT(template (value) CxDx_3GPP_Reason_Code reason_code,
+			      template (present) GenericAVP exp_result_tmpl := tr_AVP_ResultCode(DIAMETER_SUCCESS),
+			      boolean exp_aaa_proc := true) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var UINT32 hbh_id := f_rnd_octstring(4);
+	var UINT32 ete_id := f_rnd_octstring(4);
+	var octetstring reason_info := char2oct("test");
+	var CxDx_3GPP_Reason_Code reason_code_permanent_termination := PERMANENT_TERMINATION;
+
+	/* Unlike STR, STA contains no IMSI. Register ete_id in DIAMETER_Emulation,
+	 * so AIA is forwarded back to us in DIAMETER port instead of MTC_CT.DIAMETER_UNIT.
+	 */
+	f_epdg_connhldr_SWx_expect_eteid(ete_id);
+
+	SWx.send(ts_DIA_SWx_RTR(g_pars.imsi, reason_code, reason_info,
+				hbh_id := hbh_id,
+				ete_id := ete_id));
+
+	if (match(reason_code_permanent_termination, reason_code) and exp_aaa_proc) {
+		/* Expect Abort-Session procedure (ASR + ASA) in the S6b interface: */
+		as_DIA_S6b_AS_success();
+		/* Here AAA-Server starts an ASR + ASA procedure towards ePDG, which forwards it to strongswan: */
+		as_GSUP_rx_CL_REQ(OSMO_GSUP_CANCEL_TYPE_WITHDRAW);
+		f_GSUP_tx_CL_RES();
+		/* No need to so STR+STA, since the session was already aborted above during ASR+ASA: */
+		as_GTP2C_DeleteSession_success(do_s6b_st_proc := false);
+	}
+
+	alt {
+	[] SWx.receive(tr_DIA_SWx_RTA(exp_result_tmpl, hbh_id := hbh_id, ete_id := ete_id)) -> value rx_dia {}
+	[] SWx.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter SWx msg rx: ", rx_dia));
+		}
+	}
+}
+
+
+/* Send AAR as PGW to AAA server, expect back AAA */
+private function f_S6b_AA_success(boolean exp_swx_sa_proc := true) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var UINT32 hbh_id := f_rnd_octstring(4);
+	var UINT32 ete_id := f_rnd_octstring(4);
+	var template (value) MIPv4_NONE_MIP_Home_Agent_Address pgw_addr;
+
+	pgw_addr := ts_AVP_Home_Agent_Address(IP, f_inet_addr(mp_s2b_local_ip));
+
+	/* Unlike AAR, AAA contains no IMSI. Register ete_id in DIAMETER_Emulation,
+	 * so AIA is forwarded back to us in DIAMETER port instead of MTC_CT.DIAMETER_UNIT.
+	 */
+	f_epdg_connhldr_S6b_expect_eteid(ete_id);
+
+	S6b.send(ts_DIA_S6b_AAR(f_nai(),
+				int2oct(DIA_TS29_373_MIP6_Feature_Vector_GTPv2_SUPPORTED, 8),
+				g_pars.apn,
+				pgw_addr,
+				hbh_id := hbh_id, ete_id := ete_id));
+
+	if (exp_swx_sa_proc) {
+		/* AAR in S6b in AAA-Server triggers Service-Assignment Request/Answer towards HSS: */
+		as_DIA_SWx_SA_success();
+	}
+
+	alt {
+	[] S6b.receive(tr_DIA_S6b_AAA) -> value rx_dia {}
+	[] S6b.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter S6b msg rx: ", rx_dia));
+		}
+	}
+}
+
+/* Send STR as PGW to AAA server, expect back STA */
+private function f_S6b_ST_success() runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var UINT32 hbh_id := f_rnd_octstring(4);
+	var UINT32 ete_id := f_rnd_octstring(4);
+
+	/* Unlike STR, STA contains no IMSI. Register ete_id in DIAMETER_Emulation,
+	 * so AIA is forwarded back to us in DIAMETER port instead of MTC_CT.DIAMETER_UNIT.
+	 */
+	f_epdg_connhldr_S6b_expect_eteid(ete_id);
+
+	S6b.send(ts_DIA_S6b_STR(g_pars.imsi, DIAMETER_LOGOUT,
+				hbh_id := hbh_id, ete_id := ete_id));
+	alt {
+	[] S6b.receive(tr_DIA_S6b_STA(DIAMETER_SUCCESS)) -> value rx_dia {}
+	[] S6b.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter S6b msg rx: ", rx_dia));
+		}
+	}
+}
+
+/* Diameter S6b RAR + RAA, TS 29.273 9.1.2.5. */
+private altstep as_DIA_S6b_RA_success() runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var template (omit) AVP avp;
+	var octetstring sess_id;
+	[] S6b.receive(tr_DIA_S6b_RAR(f_nai())) -> value rx_dia {
+		avp := f_DIAMETER_get_avp(rx_dia, c_AVP_Code_BASE_NONE_Session_Id);
+		sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+		S6b.send(ts_DIA_S6b_RAA(DIAMETER_SUCCESS,
+					sess_id := sess_id,
+					hbh_id := rx_dia.hop_by_hop_id,
+					ete_id := rx_dia.end_to_end_id));
+		setverdict(pass);
+	}
+	[] S6b.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter S6b msg rx: ", rx_dia));
+	}
+}
+
+/* Diameter S6b ASR + ASA, TS 29.273 9.1.2.3.4. */
+private altstep as_DIA_S6b_AS_success() runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var template (omit) AVP avp;
+	var octetstring sess_id;
+	[] S6b.receive(tr_DIA_S6b_ASR(f_nai())) -> value rx_dia {
+		avp := f_DIAMETER_get_avp(rx_dia, c_AVP_Code_BASE_NONE_Session_Id);
+		sess_id := valueof(avp.avp_data.avp_BASE_NONE_Session_Id);
+		S6b.send(ts_DIA_S6b_ASA(DIAMETER_SUCCESS,
+					sess_id := sess_id,
+					hbh_id := rx_dia.hop_by_hop_id,
+					ete_id := rx_dia.end_to_end_id));
+		setverdict(pass);
+	}
+	[] S6b.receive(PDU_DIAMETER:?) -> value rx_dia {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected Diameter S6b msg rx: ", rx_dia));
+	}
+}
+
+private function f_exp_tr_GTP2C_APCO_in_CreateSessionReq()
+		runs on EPDG_ConnHdlr return template (present) APCO {
+	var template ProtocolIDs_and_ContainerIDs protos, protosV4, protosV6, protosV46;
+	protosV4 := {tr_GTP2C_PCO_P_DNS_IPv4(''O), tr_GTP2C_PCO_P_PCSCF_IPv4(''O)};
+	protosV6 := {tr_GTP2C_PCO_P_DNS_IPv6(''O), tr_GTP2C_PCO_P_PCSCF_IPv6(''O)};
+	protosV46 := {tr_GTP2C_PCO_P_DNS_IPv4(''O), tr_GTP2C_PCO_P_PCSCF_IPv4(''O),
+		      tr_GTP2C_PCO_P_DNS_IPv6(''O), tr_GTP2C_PCO_P_PCSCF_IPv6(''O)}
+	/* TODO: pick proto based on req_type v4, v6 or v4v6 */
+	protos := protosV4;
+	return tr_GTP2C_APCO('0000'B, protos);
+}
+
+private function f_GTPv2C_gen_APCO_response(APCO apco_req) runs on EPDG_ConnHdlr return template (value) APCO {
+	var ProtocolIDs_and_ContainerIDs proto_list_resp := {};
+
+	for (var integer i := 0; i < lengthof(apco_req.protocolIDs_and_ContainerIDs); i := i + 1) {
+		var ProtocolID_or_ContainerID proto_req := apco_req.protocolIDs_and_ContainerIDs[i];
+		select (proto_req.protocolID_or_ContainerID) {
+		case (PCO_P_to_OCT2(PCO_P_DNS_IPv4_ADDR)) {
+			proto_list_resp := proto_list_resp & { valueof(ts_GTP2C_PCO_P_DNS_IPv4(f_inet_addr(mp_s2b_dns_ipv4))) };
+		}
+		case (PCO_P_to_OCT2(PCO_P_DNS_IPv6_ADDR)) {
+			proto_list_resp := proto_list_resp & { valueof(ts_GTP2C_PCO_P_DNS_IPv6(f_inet_addr(mp_s2b_dns_ipv6))) };
+		}
+		case (PCO_P_to_OCT2(PCO_P_PCSCF_IPv4_ADDR)) {
+			proto_list_resp := proto_list_resp & { valueof(ts_GTP2C_PCO_P_PCSCF_IPv4(f_inet_addr(mp_s2b_pcscf_ipv4))) };
+		}
+		case (PCO_P_to_OCT2(PCO_P_PCSCF_ADDR)) {
+			proto_list_resp := proto_list_resp & { valueof(ts_GTP2C_PCO_P_PCSCF_IPv6(f_inet_addr(mp_s2b_pcscf_ipv6))) };
+		}
+		case else {
+			log("Ignoring unknown PCO Protocol ID: ", proto_req);
+		}
+		}
+	}
+
+	return ts_GTP2C_APCO(apco_req.instance, proto_list_resp);
+}
+
+private function f_EPDG_ConnHdlr_parse_CreateSessionReq(PDU_GTPCv2 rx_msg) runs on EPDG_ConnHdlr {
+	var BearerContextIEs rx_bctx_ies;
+	var FullyQualifiedTEID rx_fteid_gtpu;
+
+	/* Parse TEIC and Bearer EBI and TEID and store it in g_pars */
+	g_pars.teic_remote := rx_msg.gtpcv2_pdu.createSessionRequest.fullyQualifiedTEID[0].tEID_GRE_Key;
+	rx_bctx_ies := rx_msg.gtpcv2_pdu.createSessionRequest.bearerContextGrouped[0].bearerContextIEs;
+	g_pars.bearer.ebi := rx_bctx_ies.ePS_Bearer_ID.ePS_Bearer_ID_Value;
+
+	rx_fteid_gtpu := rx_bctx_ies.fullyQualifiedTEID[0];
+	g_pars.bearer.teid_remote := rx_fteid_gtpu.tEID_GRE_Key;
+	if (rx_fteid_gtpu.v4_Flag == '1'B) {
+		g_pars.bearer.gtpu_addr_remote := f_inet_ntoa(rx_fteid_gtpu.iPv4_Address);
+	}
+	/*if (rx_fteid_gtpu.v6_Flag == '1'B) {
+		g_gtpu6_remote := rx_fteid_gtpu.iPv6_Address;
+	}*/
+
+	/* allocate + register TEID-C on local side */
+	g_pars.teic_local := f_gtp2_allocate_teid();
+	g_pars.bearer.teid_local := g_pars.teic_local;
+}
+
+/* ePDG Creates session at the PGW. PGW sends Diameter s6b AAR + AAA. */
+private altstep as_GTP2C_CreateSession_success() runs on EPDG_ConnHdlr {
+	var PDU_GTPCv2 rx_msg;
+	var template (value) FullyQualifiedTEID fteid_c_ie, fteid_u_ie;
+	var template (value) PDN_AddressAllocation paa;
+	var template (value) BearerContextIEs bctx_ies;
+
+	[] GTP2.receive(tr_GTP2C_CreateSessionReq(g_pars.imsi, apco := f_exp_tr_GTP2C_APCO_in_CreateSessionReq())) -> value rx_msg {
+		f_EPDG_ConnHdlr_parse_CreateSessionReq(rx_msg);
+
+		/* Upon rx of CreateSession, emulate PGW asking the AAA server. */
+		f_S6b_AA_success();
+
+		fteid_c_ie := ts_GTP2C_FTEID(FTEID_IF_S2b_PGW_GTPC, g_pars.teic_local, 1,
+					f_inet_addr(mp_s2b_local_ip), omit);
+		fteid_u_ie := ts_GTP2C_FTEID(FTEID_IF_S2bU_PGW_GTPU, g_pars.bearer.teid_local, 4,
+					f_inet_addr(mp_s2b_local_ip), omit);
+		paa := ts_GTP2C_PdnAddrAlloc_v4(f_inet_addr(g_pars.ue_ip));
+		bctx_ies := ts_GTP2C_BcContextIE(ebi := g_pars.bearer.ebi,
+						 teid_list := { fteid_u_ie },
+						 qos := ts_GTP2C_BearerQos('09'O, 0,0,0,0),
+						 charging_id := ts_GTP2C_ChargingID(g_pars.teic_local));
+		GTP2.send(ts_GTP2C_CreateSessionResp(g_pars.teic_remote, rx_msg.sequenceNumber,
+						     Request_accepted,
+						     { fteid_c_ie }, paa,
+						     { ts_GTP2C_BcGrouped(bctx_ies) },
+						     f_GTPv2C_gen_APCO_response(rx_msg.gtpcv2_pdu.createSessionRequest.aPCO) ));
+		setverdict(pass);
+	}
+	[] GTP2.receive(PDU_GTPCv2:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP2C msg rx: ", rx_msg));
+	}
+}
+
+/* ePDG Creates session at the PGW. PGW sends Diameter s6b AAR + AAA. */
+private altstep as_GTP2C_CreateSession_error(GTP2C_Cause resp_cause, boolean do_s6b_aar := false) runs on EPDG_ConnHdlr {
+	var PDU_GTPCv2 rx_msg;
+	var template (value) FullyQualifiedTEID fteid_c_ie, fteid_u_ie;
+	var template (value) PDN_AddressAllocation paa;
+	var template (value) BearerContextIEs bctx_ies;
+
+	[] GTP2.receive(tr_GTP2C_CreateSessionReq(g_pars.imsi, apco := f_exp_tr_GTP2C_APCO_in_CreateSessionReq())) -> value rx_msg {
+		f_EPDG_ConnHdlr_parse_CreateSessionReq(rx_msg);
+
+		/* Upon rx of CreateSession, emulate PGW asking the AAA server. */
+		if (do_s6b_aar) {
+			f_S6b_AA_success();
+		}
+
+		fteid_c_ie := ts_GTP2C_FTEID(FTEID_IF_S2b_PGW_GTPC, g_pars.teic_local, 1,
+					f_inet_addr(mp_s2b_local_ip), omit);
+		fteid_u_ie := ts_GTP2C_FTEID(FTEID_IF_S2bU_PGW_GTPU, g_pars.bearer.teid_local, 4,
+					f_inet_addr(mp_s2b_local_ip), omit);
+		GTP2.send(ts_GTP2C_CreateSessionResp(g_pars.teic_remote, rx_msg.sequenceNumber,
+						     resp_cause));
+		setverdict(pass);
+	}
+	[] GTP2.receive(PDU_GTPCv2:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP2C msg rx: ", rx_msg));
+	}
+}
+
+/* ePDG Deletes session at the PGW. PGW sends Diameter s6b AAR + AAA. */
+private altstep as_GTP2C_DeleteSession_success(boolean do_s6b_st_proc := true) runs on EPDG_ConnHdlr {
+	var PDU_GTPCv2 rx_msg;
+	var BearerContextIEs rx_bctx_ies;
+	var template (value) FullyQualifiedTEID fteid_c_ie, fteid_u_ie;
+	var template (value) PDN_AddressAllocation paa;
+	var template (value) BearerContextIEs bctx_ies;
+
+	[] GTP2.receive(tr_GTP2C_DeleteSessionReq(g_pars.teic_local)) -> value rx_msg {
+		if (do_s6b_st_proc) {
+			/* Upon rx of DeleteSession, emulate PGW requesting the AAA server for Sesssion Termination. */
+			f_S6b_ST_success();
+		}
+
+		GTP2.send(ts_GTP2C_DeleteSessionResp(g_pars.teic_remote,
+						     rx_msg.sequenceNumber,
+						     Request_accepted));
+		setverdict(pass);
+	}
+	[] GTP2.receive(PDU_GTPCv2:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP2C msg rx: ", rx_msg));
+	}
+}
+
+/* Expect CreateBearerResponse */
+private altstep as_GTP2C_CreateBearer_success() runs on EPDG_ConnHdlr {
+	var PDU_GTPCv2 rx_msg;
+
+	[] GTP2.receive(tr_GTP2C_CreateBearerResp(g_pars.teic_local)) -> value rx_msg {
+		setverdict(pass);
+	}
+	[] GTP2.receive(PDU_GTPCv2:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP2C msg rx: ", rx_msg));
+	}
+}
+private function f_GTP2C_CreateBearer_success(uint4_t dedicated_bearer_id := 6) runs on EPDG_ConnHdlr {
+
+	var template (value) FullyQualifiedTEID fteid_u_ie := ts_GTP2C_FTEID(FTEID_IF_S2bU_ePDG_GTPU, g_pars.bearer.teid_local, dedicated_bearer_id,
+							    f_inet_addr(mp_s2b_local_ip), omit);
+	var template (value) FullyQualifiedTEID_List teid_list := { fteid_u_ie };
+
+	var template (value) FullyQualifiedPDN_ConnectionSetID pgw_fq_csid := ts_GTP2C_FQCSID_IPv4(f_inet_addr(mp_s2b_local_ip), int2oct(dedicated_bearer_id, 2));
+	var template (value) FullyQualifiedPDN_ConnectionSetID_List csid_list := { pgw_fq_csid };
+
+	var template (value) BearerContextGrouped_List bcg_list := {
+			ts_GTP2C_BcGrouped({
+				ePS_Bearer_ID := ts_GTP2C_EpsBearerId(dedicated_bearer_id),
+				cause := omit,
+				ePS_Bearer_TFT := omit,
+				fullyQualifiedTEID := teid_list,
+				bearerLevel_QoS := ts_GTP2C_BearerQos('09'O, 0,0,0,0),
+				chargingID := ts_GTP2C_ChargingID(f_rnd_octstring(4)),
+				bearerFlags := omit,
+				transactionIdentifier := omit,
+				protocolConfigOptions := omit,
+				rAN_NASCause := omit,
+				additionalProtocolConfigOptions := omit,
+				extendedProtocolConfigOptions := omit
+				})
+	};
+	GTP2.send(ts_GTP2C_CreateBearerReq(g_pars.teic_remote, omit, g_pars.bearer.ebi,
+					   dedicated_bearer_id, bcg_list, csid_list));
+	as_GTP2C_CreateBearer_success();
+}
+
+/* Expect DeleteBearerResponse */
+private altstep as_GTP2C_DeleteBearer_success() runs on EPDG_ConnHdlr {
+	var PDU_GTPCv2 rx_msg;
+	var template (value) FullyQualifiedTEID fteid_c_ie, fteid_u_ie;
+	var template (value) PDN_AddressAllocation paa;
+
+	[] GTP2.receive(tr_GTP2C_DeleteBearerResp(g_pars.teic_local)) -> value rx_msg {
+		setverdict(pass);
+	}
+	[] GTP2.receive(PDU_GTPCv2:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP2C msg rx: ", rx_msg));
+	}
+}
+private function f_GTP2C_DeleteBearer_success() runs on EPDG_ConnHdlr {
+	var integer proc_trans_id := 3;
+	GTP2.send(ts_GTP2C_DeleteBearerReq(g_pars.teic_remote, proc_trans_id, g_pars.bearer.ebi, Access_changed_from_Non_3GPP_to_3GPP));
+	as_GSUP_CancelLocation_success();
+	as_GTP2C_DeleteBearer_success();
+}
+
+private template (value) Gtp1uPeer ts_GtpPeerU(octetstring ip) := {
+	connId := 1,
+	remName := f_inet_ntoa(ip),
+	remPort := GTP1U_PORT
+}
+private function f_GTP1U_send(octetstring payload) runs on EPDG_ConnHdlr {
+	var Gtp1uPeer peer := valueof(ts_GtpPeerU(f_inet_addr(g_pars.bearer.gtpu_addr_remote)));
+	GTP2.send(ts_GTP1U_GPDU(peer, omit /*opt_part*/, g_pars.bearer.teid_remote, payload));
+}
+private function f_GTP1U_echo_ping_pong(uint16_t seq_nr := 0) runs on EPDG_ConnHdlr {
+	var Gtp1uPeer peer := valueof(ts_GtpPeerU(f_inet_addr(g_pars.bearer.gtpu_addr_remote)));
+	GTP2.send(ts_GTPU_PING(peer, seq := seq_nr));
+	GTP2.receive(tr_GTPU_PONG(peer));
+}
+private altstep as_GTPU_rx_icmp4(template (present) PDU_ICMP expected := ?) runs on EPDG_ConnHdlr {
+	var Gtp1uUnitdata rx_msg;
+	var template (value) Gtp1uPeer peer := ts_GtpPeerU(f_inet_addr(g_pars.bearer.gtpu_addr_remote));
+
+	[] GTP2.receive(tr_GTPU_GPDU(peer, g_pars.bearer.teid_local)) -> value rx_msg {
+			/*TODO: verify gtpu txseq:
+			if (f_verify_gtpu_txseq(ud.gtpu, use_gtpu_txseq) == false) {
+				setverdict(fail);
+				stop;
+			}
+			*/
+			var octetstring gpdu := rx_msg.gtpu.gtpu_IEs.g_PDU_IEs.data;
+			var IPv4_packet ip4 := f_IPv4_dec(gpdu);
+			if (ip4.header.ver != 4) {
+				repeat;
+			}
+			var PDU_ICMP icmp4 := f_dec_PDU_ICMP(ip4.payload);
+			if (not match(icmp4, expected)) {
+				repeat;
+			}
+	}
+	[] GTP2.receive(Gtp1uUnitdata:?) -> value rx_msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GTP msg rx: ", rx_msg));
+	}
+}
+
+/************
+ * GSUP CEAI
+ ************/
+
+private function f_GSUP_tx_SAI_REQ(boolean req_resync := false) runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	var template (value) GSUP_IEs pdp_info;
+	pdp_info := { ts_GSUP_IE_PDP_CONTEXT_ID('00'O),
+		      ts_GSUP_IE_PDP_ADDRESS(ts_EuaIPv4Dyn),
+		      ts_GSUP_IE_APN(f_enc_dns_hostname(g_pars.apn)) };
+	if (req_resync) {
+		GSUP.send(ts_GSUP_SAI_REQ_PDP_INFO_UMTS_AKA_RESYNC(
+				g_pars.imsi, pdp_info,
+				g_pars.vec.auts, g_pars.vec.rand));
+	} else {
+		GSUP.send(ts_GSUP_SAI_REQ_PDP_INFO(g_pars.imsi, pdp_info));
+	}
+}
+
+private altstep as_GSUP_rx_SAI_RES() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	var template (present) GSUP_IE auth_tuple_ie := tr_GSUP_IE_AuthTuple3G(
+						g_pars.vec.rand,
+						g_pars.vec.ik,
+						g_pars.vec.ck,
+						g_pars.vec.autn,
+						g_pars.vec.rand & g_pars.vec.auts);
+
+	[] GSUP.receive(tr_GSUP_SAI_RES(g_pars.imsi, auth_tuple_ie)) -> value rx_gsup {
+	}
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+	}
+}
+
+private altstep as_GSUP_rx_SAI_ERR(template (present) integer cause := ?) runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+
+	[] GSUP.receive(tr_GSUP_SAI_ERR(g_pars.imsi, cause)) -> value rx_gsup {
+	}
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+	}
+}
+
+private altstep as_GSUP_rx_CL_REQ(template GSUP_CancelType ctype := omit) runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+
+	/* XXX: workaround for 'dom := *' causing a DTE:
+	 * "Dynamic test case error: Restriction `present' on template of type @GSUP_Types.GSUP_CnDomain violated." */
+	[] GSUP.receive(tr_GSUP_CL_REQ(g_pars.imsi, dom := omit, ctype := ctype)) -> value rx_gsup;
+	[] GSUP.receive(tr_GSUP_CL_REQ(g_pars.imsi, dom := ?, ctype := ctype)) -> value rx_gsup;
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+	}
+}
+
+private function f_GSUP_tx_CL_RES() runs on EPDG_ConnHdlr {
+	GSUP.send(ts_GSUP_CL_RES(g_pars.imsi));
+}
+
+/* GSUP AuthInfo Req + Resp, triggers SWx MAR + MAA. */
+private function f_GSUP_AI_success(boolean req_resync := false) runs on EPDG_ConnHdlr {
+	f_GSUP_tx_SAI_REQ(req_resync);
+	as_DIA_SWx_MA_success(req_resync);
+	as_GSUP_rx_SAI_RES();
+	setverdict(pass);
+}
+
+/* GSUP LU Req + Resp, triggers SWx SAR + SAA (Server Assignment). */
+private function f_GSUP_LU_success() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	var template octetstring destination_name := *;
+	GSUP.send(ts_GSUP_UL_REQ(g_pars.imsi));
+	as_DIA_SWx_SA_success(REGISTRATION);
+	/* Expect a positive response back to the translator */
+	alt {
+	[] GSUP.receive(tr_GSUP_UL_RES(g_pars.imsi, destination_name));
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+		}
+	}
+	setverdict(pass);
+}
+
+/* GSUP TunnelEPDG Tunnel Req + Resp, triggers S2b CreateSession Req + Response. */
+private function f_GSUP_EPDGTunnel_success() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	var template (value) PCO_DATA pco := PCO_Types.ts_PCO({ ts_PCO_P_DNS_IPv4, ts_PCO_P_PCSCF_IPv4 });
+	GSUP.send(ts_GSUP_EPDGTunnel_REQ(g_pars.imsi, pco));
+	as_GTP2C_CreateSession_success();
+	/* Expect a positive response back to the translator; */
+	var template (present) GSUP_IEs exp_pdp_info := {
+			tr_GSUP_IE_PDP_CONTEXT_ID(?),
+			tr_GSUP_IE_PDP_ADDRESS(tr_GSUP_PDP_Address_IPv4(f_inet_addr(g_pars.ue_ip))),
+			tr_GSUP_IE_APN(f_enc_dns_hostname(g_pars.apn)),
+			tr_GSUP_IE_PDP_QOS(?),
+			tr_GSUP_IE_Charging_Characteristics(?)
+			};
+	var template (present) PCO_DATA exp_pco := PCO_Types.tr_PCO({
+			tr_PCO_P_DNS_IPv4(f_inet_addr(mp_s2b_dns_ipv4)),
+			tr_PCO_P_PCSCF_IPv4(f_inet_addr(mp_s2b_pcscf_ipv4))
+			});
+	/* TODO: check for v6 and v4v6 types ^ */
+	alt {
+	[] GSUP.receive(tr_GSUP_EPDGTunnel_RES(g_pars.imsi, exp_pdp_info));
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+		}
+	}
+	setverdict(pass);
+}
+
+/* GSUP TunnelEPDG Tunnel Req + Resp, triggers S2b CreateSession Req + Response (rejected). */
+private function f_GSUP_EPDGTunnel_error() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	var template (value) PCO_DATA pco := PCO_Types.ts_PCO({ ts_PCO_P_DNS_IPv4, ts_PCO_P_PCSCF_IPv4 });
+	GSUP.send(ts_GSUP_EPDGTunnel_REQ(g_pars.imsi, pco));
+	as_GTP2C_CreateSession_error(APN_access_denied__no_subscription);
+	alt {
+	[] GSUP.receive(tr_GSUP_EPDGTunnel_ERR(g_pars.imsi));
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+		}
+	}
+	setverdict(pass);
+}
+
+/* GSUP Purge MS Req + Resp, triggers S2b DeleteSession Req + Response. */
+private function f_GSUP_PurgeMS_success() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+	GSUP.send(ts_GSUP_PURGE_MS_REQ(g_pars.imsi, OSMO_GSUP_CN_DOMAIN_PS));
+	as_GTP2C_DeleteSession_success();
+	/* ePDG internally sends STR to its AAA-Server. Since all sessions
+	become inactive, AAA-Server sends SAR(USER_DEREGISTRATION) to HSS: */
+
+	/* Expect a positive response back to the translator; */
+	as_DIA_SWx_SA_success(USER_DEREGISTRATION);
+	alt {
+	[] GSUP.receive(tr_GSUP_PURGE_MS_RES(g_pars.imsi));
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+		}
+	}
+	setverdict(pass);
+}
+
+/* Expect CancelLocationReq */
+private altstep as_GSUP_CancelLocation_success() runs on EPDG_ConnHdlr {
+	var GSUP_PDU rx_gsup;
+
+	[] GSUP.receive(tr_GSUP_CL_REQ(g_pars.imsi)) -> value rx_gsup {
+		GSUP.send(ts_GSUP_CL_RES(g_pars.imsi));
+	}
+	[] GSUP.receive(GSUP_PDU:?) -> value rx_gsup {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unexpected GSUP msg rx: ", rx_gsup));
+	}
+}
+
+private function f_initial_attach() runs on EPDG_ConnHdlr {
+	f_GSUP_AI_success();
+	f_GSUP_LU_success();
+	f_GSUP_EPDGTunnel_success();
+}
+
+private function f_TC_authinfo_normal(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	f_GSUP_PurgeMS_success();
+}
+testcase TC_authinfo_normal() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_authinfo_normal), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_authinfo_MAA_unknown_user(charstring id) runs on EPDG_ConnHdlr {
+	var PDU_DIAMETER rx_dia;
+	var DIAMETER_ExperimentalResultcode exp_result_code := DIAMETER_ERROR_USER_UNKNOWN;
+	f_GSUP_tx_SAI_REQ();
+
+	SWx.receive(tr_DIA_SWx_MAR(g_pars.imsi)) -> value rx_dia;
+	f_DIA_SWx_tx_MAA_error(rx_dia,
+			       ts_AVP_ExperimentalResult(vendor_id_3GPP,
+							 int2oct(enum2int(exp_result_code), 4)));
+	/* cause 2 = IMSI_UNKNOWN */
+	as_GSUP_rx_SAI_ERR(2);
+}
+testcase TC_authinfo_MAA_unknown_user() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_authinfo_MAA_unknown_user), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+/* Emulate UE doing MAR+MAA, then repeating and continuing. */
+private function f_TC_authinfo_twice(charstring id) runs on EPDG_ConnHdlr {
+	f_GSUP_AI_success();
+	f_initial_attach();
+}
+testcase TC_authinfo_twice() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_authinfo_twice), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+/* Emulate UE doing MAR+MAA, then UE requesting again due to resync needed */
+private function f_TC_authinfo_fail_resync(charstring id) runs on EPDG_ConnHdlr {
+	f_GSUP_AI_success(false);
+	f_GSUP_AI_success(true);
+	f_GSUP_LU_success();
+	f_GSUP_EPDGTunnel_success();
+	f_GSUP_PurgeMS_success();
+}
+testcase TC_authinfo_fail_resync() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_authinfo_fail_resync), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_ho_lte_to_wifi(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Whenever UE comes from 3GPP, PGW may activate a dedicated S2b bearer
+	 * and notify ePDG with a Create Bearer Request */
+	f_GTP2C_CreateBearer_success();
+	f_GSUP_PurgeMS_success();
+}
+testcase TC_ho_lte_to_wifi() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_ho_lte_to_wifi), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_ho_wifi_to_lte(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Whenever UE goes back to 3GPP, PGW will notify ePDG with a Delete Bearer Request
+	 * cause="Access changed from non-3gpp to 3gpp" */
+	f_GTP2C_DeleteBearer_success();
+}
+testcase TC_ho_wifi_to_lte() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_ho_wifi_to_lte), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_s2b_CreateSession_rejected(charstring id) runs on EPDG_ConnHdlr {
+	f_GSUP_AI_success();
+	f_GSUP_LU_success();
+	f_GSUP_EPDGTunnel_error();
+}
+testcase TC_s2b_CreateSession_rejected() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_s2b_CreateSession_rejected), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+/* 3GPP TS 29.273 Network Initiated De-Registration by HSS, Administrative */
+private function f_TC_hss_initiated_deregister_new_server_assigned(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Procedure should be performed properly: */
+	f_DIA_SWx_RT(NEW_SERVER_ASSIGNED, tr_AVP_ResultCode(DIAMETER_SUCCESS));
+	/* Subscriber was already removed, it should fail if requested again: */
+	var DIAMETER_ts29_229_ExperimentalResultcode erc := DIAMETER_ERROR_USER_UNKNOWN;
+	f_DIA_SWx_RT(NEW_SERVER_ASSIGNED, tr_AVP_ExperimentalResult(vendor_id_3GPP, int2oct(enum2int(erc), 4)));
+}
+testcase TC_hss_initiated_deregister_new_server_assigned() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_hss_initiated_deregister_new_server_assigned), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_hss_initiated_deregister_permanent_termination(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Procedure should be performed properly: */
+	f_DIA_SWx_RT(PERMANENT_TERMINATION, tr_AVP_ResultCode(DIAMETER_SUCCESS));
+	f_sleep(1.0); /* OS#6796 */
+	/* Subscriber was already removed, it should fail if requested again: */
+	var DIAMETER_ts29_229_ExperimentalResultcode erc := DIAMETER_ERROR_USER_UNKNOWN;
+	f_DIA_SWx_RT(PERMANENT_TERMINATION, tr_AVP_ExperimentalResult(vendor_id_3GPP, int2oct(enum2int(erc), 4)),
+		     exp_aaa_proc := false);
+}
+testcase TC_hss_initiated_deregister_permanent_termination() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_hss_initiated_deregister_permanent_termination), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+/*
+ * 3GPP TS 29.273 8.1.2.3 HSS Initiated Update of User Profile
+ * 3GPP TS 29.273 8.2.2.2 HSS Initiated Update of User Profile Procedure
+ */
+private function f_TC_hss_initiated_update_user_profile(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Procedure should be performed properly: */
+	f_DIA_SWx_PP(tr_AVP_ResultCode(DIAMETER_SUCCESS));
+}
+testcase TC_hss_initiated_update_user_profile() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_hss_initiated_update_user_profile), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+/*
+ * Same as TC_hss_initiated_update_user_profile_unknown, but without registering
+ * subscriber first, so expect DIAMETER_ERROR_USER_UNKNOWN in answer.
+ */
+private function f_TC_hss_initiated_update_user_profile_unknown(charstring id) runs on EPDG_ConnHdlr {
+	var DIAMETER_ts29_229_ExperimentalResultcode erc := DIAMETER_ERROR_USER_UNKNOWN;
+	f_DIA_SWx_PP(tr_AVP_ExperimentalResult(vendor_id_3GPP, int2oct(enum2int(erc), 4)),
+		     exp_aaa_proc := false);
+}
+testcase TC_hss_initiated_update_user_profile_unknown() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_hss_initiated_update_user_profile_unknown), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_concurrent_ues(charstring id) runs on EPDG_ConnHdlr {
+	COORD.send(COORD_CMD_READY);
+	COORD.receive(COORD_CMD_START);
+	f_initial_attach();
+	COORD.send(COORD_CMD_ATTACHED);
+	COORD.receive(COORD_CMD_STOP);
+	f_GSUP_PurgeMS_success();
+}
+private function f_TC_concurrent_ues_MTC(integer num_ues) runs on MTC_CT {
+	var EPDG_ConnHdlrList vc_conn_list := {};
+	var EPDG_ConnHdlr vc_conn;
+	f_init(t_guard := 100.0);
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		var EPDG_ConnHdlrPars pars := f_init_pars(i);
+		vc_conn := f_start_handler(refers(f_TC_concurrent_ues), pars);
+		vc_conn_list := vc_conn_list & { vc_conn };
+	}
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		COORD.receive(COORD_CMD_READY);
+	}
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		COORD.send(COORD_CMD_START) to vc_conn_list[i];
+		f_sleep(0.1);
+	}
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		COORD.receive(COORD_CMD_ATTACHED);
+	}
+
+	log("All attached!");
+	f_sleep(1.0);
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		COORD.send(COORD_CMD_STOP) to vc_conn_list[i];
+	}
+
+	for (var integer i := 0; i < num_ues; i := i + 1) {
+		vc_conn_list[i].done;
+	}
+
+	setverdict(pass);
+}
+testcase TC_concurrent_ues2() runs on MTC_CT {
+	f_TC_concurrent_ues_MTC(2)
+}
+testcase TC_concurrent_ues100() runs on MTC_CT {
+	f_TC_concurrent_ues_MTC(100)
+}
+
+private function f_TC_upf_echo_req(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Dispatch Echo Resp to this component: */
+	f_gtp2_register_teid('00000000'O);
+	f_GTP1U_echo_ping_pong(seq_nr := 0);
+	/* Send one again, to validate it works several times: */
+	f_GTP1U_echo_ping_pong(seq_nr := 1);
+	f_GSUP_PurgeMS_success();
+}
+testcase TC_upf_echo_req() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_upf_echo_req), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+private function f_TC_mt_ipv4_echo_req(charstring id) runs on EPDG_ConnHdlr {
+	f_initial_attach();
+	/* Dispatch Echo Resp to this component: */
+	f_gtp2_register_teid('00000000'O);
+	var octetstring echo_req := f_gen_icmpv4_echo(f_inet_addr(mp_upf_gtpu_local_ip), f_inet_addr(g_pars.ue_ip));
+	f_GTP1U_send(echo_req);
+	as_GTPU_rx_icmp4((tr_ICMPv4_ERP, tr_ICMPv4_DU));
+	f_GSUP_PurgeMS_success();
+}
+testcase TC_mt_ipv4_echo_req() runs on MTC_CT {
+	var EPDG_ConnHdlrPars pars := f_init_pars();
+	var EPDG_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_mt_ipv4_echo_req), pars);
+	vc_conn.done;
+	setverdict(pass);
+}
+
+control {
+	execute ( TC_authinfo_normal() );
+	execute ( TC_authinfo_MAA_unknown_user() );
+	execute ( TC_authinfo_twice() );
+	execute ( TC_authinfo_fail_resync() );
+	execute ( TC_ho_lte_to_wifi() );
+	execute ( TC_ho_wifi_to_lte() );
+	execute ( TC_s2b_CreateSession_rejected() );
+	execute ( TC_hss_initiated_deregister_new_server_assigned() );
+	execute ( TC_hss_initiated_deregister_permanent_termination() );
+	execute ( TC_hss_initiated_update_user_profile() );
+	execute ( TC_hss_initiated_update_user_profile_unknown() );
+	execute ( TC_concurrent_ues2() );
+	execute ( TC_concurrent_ues100() );
+	execute ( TC_upf_echo_req() );
+	execute ( TC_mt_ipv4_echo_req() );
+}
+
+}

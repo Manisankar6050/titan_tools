@@ -1,0 +1,1044 @@
+/* GPRS-NS Emulation in TTCN-3
+ * (C) 2018-2021 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module NS_Emulation {
+	import from Misc_Helpers all;
+	import from NS_Types all;
+	import from BSSGP_Types all;
+	import from Osmocom_Types all;
+	import from Osmocom_Gb_Types all;
+	import from NS_Provider_IPL4 all;
+#ifdef NS_EMULATION_FR
+	import from NS_Provider_FR all;
+#endif
+	import from IPL4asp_Types all;
+
+	type record NsUnitdataRequest {
+		BssgpBvci	bvci,
+		Nsei		nsei,
+		integer		lsp,
+		octetstring	sdu optional,
+		PDU_BSSGP	bssgp optional
+	}
+
+	template NsUnitdataRequest tr_NsUdReq(template Nsei nsei, template BssgpBvci bvci, template integer lsp,
+					      template octetstring sdu, template PDU_BSSGP bssgp) := {
+		bvci := bvci,
+		nsei := nsei,
+		lsp := lsp,
+		sdu := sdu,
+		bssgp := bssgp
+	}
+
+	template (value) NsUnitdataRequest ts_NsUdReq(template (value) Nsei nsei,
+						      template (value) BssgpBvci bvci,
+						      template (value) integer lsp,
+						      template (omit) octetstring sdu,
+						      template (omit) PDU_BSSGP bssgp) := {
+		bvci := bvci,
+		nsei := nsei,
+		lsp := lsp,
+		sdu := sdu,
+		bssgp := bssgp
+	}
+
+	type record NsUnitdataIndication {
+		BssgpBvci	bvci,
+		Nsei		nsei,
+		Nsvci		nsvci,
+		octetstring	sdu optional,
+		PDU_BSSGP	bssgp optional
+	}
+
+	template (present) NsUnitdataIndication tr_NsUdInd(template (present) Nsei nsei,
+							   template (present) BssgpBvci bvci,
+							   template octetstring sdu) := {
+		bvci := bvci,
+		nsei := nsei,
+		nsvci := ?,
+		sdu := sdu,
+		bssgp := ?
+	}
+
+	template (value) NsUnitdataIndication ts_NsUdInd(Nsei nsei, Nsvci nsvci, BssgpBvci bvci, octetstring sdu) := {
+		bvci := bvci,
+		nsei := nsei,
+		nsvci := nsvci,
+		sdu := sdu,
+		bssgp := dec_PDU_BSSGP(sdu)
+	}
+
+	type record NsStatusIndication {
+		Nsei		nsei,
+		Nsvci		nsvci,
+		NsvcState	old_state,
+		NsvcState	new_state,
+		boolean		first_or_last
+	}
+
+	template (present) NsStatusIndication tr_NsStsInd(template (present) Nsei nsei := ?,
+							  template (present) Nsvci nsvci := ?,
+							  template (present) NsvcState old_state := ?,
+							  template (present) NsvcState state := ?,
+							  template (present) boolean first_or_last := ?) := {
+		nsei := nsei,
+		nsvci := nsvci,
+		old_state := old_state,
+		new_state := state,
+		first_or_last := first_or_last
+	}
+
+
+	template (value) NsStatusIndication ts_NsStsInd(Nsei nsei, Nsvci nsvci, NsvcState old_state, NsvcState state,
+							boolean first_or_last := false) := {
+		nsei := nsei,
+		nsvci := nsvci,
+		old_state := old_state,
+		new_state := state,
+		first_or_last := first_or_last
+	}
+
+	type enumerated NsvcState {
+		NSVC_S_DISABLED,		/* administratively disabled */
+		NSVC_S_DEAD_BLOCKED,
+		NSVC_S_WAIT_RESET,
+		NSVC_S_ALIVE_BLOCKED,
+		NSVC_S_ALIVE_UNBLOCKED
+	}
+
+	/* port from our (internal) point of view */
+	type port NS_SP_PT message {
+		in	NsUnitdataRequest;
+		out	NsUnitdataIndication,
+			NsStatusIndication;
+	} with { extension "internal" };
+
+	/* port from the user point of view */
+	type port NS_PT message {
+		in	ASP_Event,
+			NsStatusIndication,
+			NsUnitdataIndication;
+		out	NsUnitdataRequest;
+	} with { extension "internal" };
+
+	/* port from our (internal) point of view */
+	type port NS_CTRL_SP_PT message {
+		in	NsDisableVcRequest,
+			NsEnableVcRequest;
+	} with { extension "internal" };
+
+	/* port from the user point of view */
+	type port NS_CTRL_PT message {
+		out	NsEnableVcRequest,
+			NsDisableVcRequest;
+	} with { extension "internal" };
+
+	type record NsDisableVcRequest {
+		Nsvci nsvci
+	};
+	type record NsEnableVcRequest {
+		Nsvci nsvci
+	};
+
+	type component NS_Provider_CT {
+		/* upper port, facing to NS_Emulation:NSCP */
+		port NS_PROVIDER_PT NSE;
+		/* lower layer ports (UDP/IP, Frame Relay) are added in derived components */
+	};
+
+	type enumerated NS_Provider_LinkStatus {
+		NS_PROV_LINK_STATUS_UP,
+		NS_PROV_LINK_STATUS_DOWN
+	};
+	type union NS_Provider_Evt {
+		NS_Provider_LinkStatus link_status
+	};
+
+	/* port between NS_Provider and NS_CT */
+	type port NS_PROVIDER_PT message {
+		inout PDU_NS, NS_Provider_Evt;
+	} with { extension "internal" };
+
+	type record NSVCConfigurationIP {
+		AddressFamily address_family,
+		PortNumber local_udp_port,
+		charstring local_ip,
+		PortNumber remote_udp_port,
+		charstring remote_ip,
+		uint8_t data_weight,
+		uint8_t signalling_weight
+	};
+	type record NSVCConfigurationFR {
+		charstring netdev,	/* HDLC net-device for AF_PACKET socket */
+		integer dlci
+	};
+	type union NSVCConfigurationP {
+		NSVCConfigurationIP ip,
+		NSVCConfigurationFR fr
+	};
+	type record NSVCConfiguration {
+		NSVCConfigurationP provider,
+		Nsvci nsvci
+	};
+	type record of NSVCConfiguration NSVCConfigurations;
+	type record NSConfiguration {
+		Nsvci nsei,
+		boolean role_sgsn,
+		boolean handle_sns,
+		NSVCConfigurations nsvc
+	}
+
+	/***********************************************************************
+	 * per NS-VCG component. Exists once per [peer of] NSE
+	 ***********************************************************************/
+
+	type component NS_CT {
+		/* NS-User SAP towards the user */
+		port NS_SP_PT NS_SP;
+
+		/* port towards the per-NSVC components */
+		port NSint_PT NSVC;
+
+		/* control port, used to manipulate at runtime */
+		port NS_CTRL_SP_PT NS_CTRL;
+
+		/* all of the NS configuration a user passes to us */
+		var NSConfiguration g_config;
+		var charstring g_id;
+
+		/* references to the endpoint provider components */
+		var IpEndpointTable g_ip_endpoints := {};
+		/* control port for NS-IP provider */
+		port NSPIP_PROC_PT NSPIP_PROC;
+
+		/* references to the per-NSVC components */
+		var NsvcTable g_nsvcs := {};
+		/* list of indexes to g_nsvcs[] of currently unblocked NSVCs */
+		var Osmocom_Types.ro_integer g_unblocked_nsvcs_sig := {};
+		var Osmocom_Types.ro_integer g_unblocked_nsvcs_data := {};
+	};
+	type record NsvcTableEntry {
+		NSVCConfiguration cfg,
+		NSVC_CT vc_conn,
+		NsvcState state
+	};
+	type record of NsvcTableEntry NsvcTable;
+	type record IpEndpointTableEntry {
+		/* configuration */
+		AddressFamily address_family,
+		PortNumber local_udp_port,
+		charstring local_ip,
+		uint8_t data_weight,
+		uint8_t signalling_weight,
+		/* state */
+		NS_Provider_IPL4_CT provider_ct
+	};
+	type record of IpEndpointTableEntry IpEndpointTable;
+
+	/* internal port from the NS-VC point of view */
+	type port NSint_SP_PT message {
+		in	NsUnitdataRequest,
+			SnsRequest,
+			NsCtrlRequest;
+		out	NsUnitdataIndication,
+			SnsIndication,
+			NsStatusIndication;
+	} with { extension "internal" };
+
+	/* internal port from the NS-VCG point of view */
+	type port NSint_PT message {
+		in	ASP_Event,
+			NsStatusIndication,
+			SnsIndication,
+			NsUnitdataIndication;
+		out	NsUnitdataRequest,
+			SnsRequest,
+			NsCtrlRequest;
+	} with { extension "internal" };
+
+	/* Used by NS-VC to report reception of a SNS PDU to NS-VCG */
+	type record SnsIndication {
+		Nsvci		nsvci,
+		PDU_NS		ns
+	};
+
+	/* Used by NS-VCG to request transmission of a SNS PDU via a NS-VC */
+	type record SnsRequest {
+		Nsvci		nsvci,
+		PDU_NS		ns
+	};
+
+	type enumerated NsCtrlRequest {
+		StartAliveProcedure	(0),
+		DisableReq		(1),	/* administratively disable NS-VC */
+		EnableReq		(2),	/* administratively enable NS-VC */
+		ForceAliveState		(3)
+	};
+
+	function f_ipep_find(AddressFamily af, PortNumber local_udp_port, charstring local_ip,
+			     out IpEndpointTableEntry ret)
+	runs on NS_CT return boolean {
+		var integer i;
+		for (i := 0; i < lengthof(g_ip_endpoints); i := i+1) {
+			var IpEndpointTableEntry ipep := g_ip_endpoints[i];
+			if (ipep.address_family == af and ipep.local_udp_port == local_udp_port and
+			    ipep.local_ip == local_ip) {
+				ret := ipep;
+				return true;
+			}
+		}
+		return false
+	}
+
+	/* find or create IP endpoint component for [local part of] nsvc_cfg */
+	function f_ipep_find_or_create(NSVCConfiguration nsvc_cfg)
+	runs on NS_CT return NS_Provider_IPL4_CT {
+		var IpEndpointTableEntry ipep;
+		if (f_ipep_find(nsvc_cfg.provider.ip.address_family,
+				nsvc_cfg.provider.ip.local_udp_port,
+				nsvc_cfg.provider.ip.local_ip, ipep)) {
+			return ipep.provider_ct;
+		} else {
+			var charstring nsvc_id := g_id & "-NSVCI" & int2str(nsvc_cfg.nsvci);
+			ipep := {
+				address_family := nsvc_cfg.provider.ip.address_family,
+				local_udp_port := nsvc_cfg.provider.ip.local_udp_port,
+				local_ip := nsvc_cfg.provider.ip.local_ip,
+				data_weight := nsvc_cfg.provider.ip.data_weight,
+				signalling_weight := nsvc_cfg.provider.ip.signalling_weight,
+				provider_ct := -
+			};
+			/* Create ipep and add it to the list */
+			log("Creating NSIP provider for ",  ipep.local_ip, ":",
+			    ipep.local_udp_port);
+			ipep.provider_ct := NS_Provider_IPL4_CT.create(nsvc_id & "-provIP") alive;
+			connect(self:NSPIP_PROC, ipep.provider_ct:PROC);
+			ipep.provider_ct.start(NS_Provider_IPL4.main(nsvc_cfg, g_config, nsvc_id));
+			g_ip_endpoints := g_ip_endpoints & { ipep };
+			return ipep.provider_ct;
+		}
+	}
+
+	/* add one NSVC (component and table entry */
+	function f_nsvc_add(NSVCConfiguration nsvc_cfg) runs on NS_CT {
+		var charstring nsvc_id := g_id & "-NSVCI" & int2str(nsvc_cfg.nsvci);
+		var NsvcTableEntry te;
+		var NS_Provider_IPL4_CT vc_ipep := null;
+
+		/* For the IP provider, we have one provider component per local endpoint,
+		 * which we must create before adding the NSVcs (for each remote endpoint)
+		 * to it */
+		if (ischosen(nsvc_cfg.provider.ip)) {
+			vc_ipep := f_ipep_find_or_create(nsvc_cfg);
+		}
+
+		/* Start the actual NSVC component */
+
+		te.cfg := nsvc_cfg;
+		te.vc_conn := NSVC_CT.create(nsvc_id) alive;
+		te.state := NSVC_S_DEAD_BLOCKED;
+
+		connect(self:NSVC, te.vc_conn:NS_SP);
+		log("Starting NSVC component for ",  nsvc_cfg);
+		te.vc_conn.start(NSVCStart(nsvc_cfg, g_config, nsvc_id, vc_ipep));
+
+		g_nsvcs := g_nsvcs & { te };
+		/* no need to add to g_unblocked_nsvcs, as state is always DEAD_BLOCKED above */
+
+		/* For the IP provider, we must explicitly associate each NSVC with it */
+		if (ischosen(nsvc_cfg.provider.ip)) {
+			/* this causes NS_Provider_IPL4.f_nsvc_add() to be executed */
+			f_nspip_add_nsvc(vc_ipep, nsvc_cfg.provider.ip.remote_ip,
+					 nsvc_cfg.provider.ip.remote_udp_port, te.vc_conn);
+		}
+	}
+
+	function f_nsvc_find_idx(Nsvci nsvci) runs on NS_CT return integer {
+		var integer i;
+		for (i := 0; i < lengthof(g_nsvcs); i := i+1) {
+			if (g_nsvcs[i].cfg.nsvci == nsvci) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	function f_nsvc_find(Nsvci nsvci) runs on NS_CT return NSVC_CT {
+		var integer i := f_nsvc_find_idx(nsvci);
+		if (i < 0) {
+			return null;
+		} else {
+			return g_nsvcs[i].vc_conn;
+		}
+	}
+
+	function f_nsvc_update_state(Nsvci nsvci, NsvcState state) runs on NS_CT {
+		var integer i := f_nsvc_find_idx(nsvci);
+		if (i < 0) {
+			return;
+		}
+		if (g_nsvcs[i].state != NSVC_S_ALIVE_UNBLOCKED and state == NSVC_S_ALIVE_UNBLOCKED) {
+			/* add index to list of unblocked NSVCs */
+			if (not ischosen(g_nsvcs[i].cfg.provider.ip) or
+			    g_nsvcs[i].cfg.provider.ip.signalling_weight > 0) {
+				ro_integer_add_unique(g_unblocked_nsvcs_sig, i);
+			}
+			if (not ischosen(g_nsvcs[i].cfg.provider.ip) or
+			    g_nsvcs[i].cfg.provider.ip.data_weight > 0) {
+				ro_integer_add_unique(g_unblocked_nsvcs_data, i);
+			}
+		} else if (g_nsvcs[i].state == NSVC_S_ALIVE_UNBLOCKED and state != NSVC_S_ALIVE_UNBLOCKED) {
+			/* remove index to list of unblocked NSVCs */
+			ro_integer_del(g_unblocked_nsvcs_sig, i);
+			ro_integer_del(g_unblocked_nsvcs_data, i);
+		}
+		g_nsvcs[i].state := state;
+	}
+
+	function NSStart(NSConfiguration init_config, charstring id := testcasename()) runs on NS_CT {
+		g_config := init_config;
+		g_id := id;
+
+		/* iterate over list of NS-VCs and start per-NSVC components */
+		for (var integer i := 0; i < lengthof(g_config.nsvc); i := i+1) {
+			var NSVCConfiguration nsvc_cfg := g_config.nsvc[i];
+			f_nsvc_add(nsvc_cfg);
+		}
+
+		if (g_config.handle_sns and not g_config.role_sgsn) {
+			f_sns_outbound_size_config();
+		}
+		while (true) {
+			alt {
+			[] as_ns_common() {}
+			}
+		}
+	}
+
+	function f_count_nsvcs_in_state(template NsvcState state := ?) runs on NS_CT return integer {
+		var integer i;
+		var integer res := 0;
+		for (i := 0; i < lengthof(g_nsvcs); i := i+1) {
+			if (match(g_nsvcs[i].state, state)) {
+				res := res + 1;
+			}
+		}
+		return res;
+	}
+
+	private altstep as_ns_common_status() runs on NS_CT {
+		var NsStatusIndication rx_nssi;
+		[] NSVC.receive(tr_NsStsInd(g_config.nsei, ?, ?, NSVC_S_ALIVE_UNBLOCKED)) -> value rx_nssi {
+			/* check if this one is the first to be unblocked */
+			var integer num_nsvc_unblocked := f_count_nsvcs_in_state(NSVC_S_ALIVE_UNBLOCKED);
+			f_nsvc_update_state(rx_nssi.nsvci, rx_nssi.new_state);
+			if (num_nsvc_unblocked == 0) {
+				rx_nssi.first_or_last := true;
+			}
+			NS_SP.send(rx_nssi);
+			}
+		[] NSVC.receive(tr_NsStsInd(g_config.nsei, ?, ?, NSVC_S_DEAD_BLOCKED)) -> value rx_nssi {
+			f_nsvc_update_state(rx_nssi.nsvci, rx_nssi.new_state);
+			/* check if this one is the last to be blocked */
+			var integer num_nsvc_unblocked := f_count_nsvcs_in_state(NSVC_S_ALIVE_UNBLOCKED);
+			if (num_nsvc_unblocked == 0) {
+				rx_nssi.first_or_last := true;
+			}
+			NS_SP.send(rx_nssi);
+			}
+		[] NSVC.receive(tr_NsStsInd(g_config.nsei, ?, ?, ?)) -> value rx_nssi {
+			f_nsvc_update_state(rx_nssi.nsvci, rx_nssi.new_state);
+			NS_SP.send(rx_nssi);
+			}
+		[] NSVC.receive(tr_NsStsInd) -> value rx_nssi {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Received NsStatusInd for invalid NSEI: ", rx_nssi));
+			}
+	}
+
+	private altstep as_ns_common() runs on NS_CT {
+		var NsUnitdataIndication rx_nsudi;
+		var NsUnitdataRequest rx_nsudr;
+		var NsDisableVcRequest rx_disar;
+		var NsEnableVcRequest rx_enar;
+		/* pass from NS-VCs up to user */
+		[] as_ns_common_status();
+		[] NSVC.receive(tr_NsUdInd(g_config.nsei, ?, ?)) -> value rx_nsudi {
+			NS_SP.send(rx_nsudi);
+			}
+
+		[g_config.handle_sns and g_config.role_sgsn] as_vcg_sns_sgsn();
+		[g_config.handle_sns and not g_config.role_sgsn] as_vcg_sns_pcu();
+
+		[] NSVC.receive(tr_NsUdInd(?, ?, ?)) -> value rx_nsudi {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Received UnitDataInd for invalid NSEI: ", rx_nsudi));
+			}
+		/* from user down to NS-VC */
+		[] NS_CTRL.receive(NsDisableVcRequest:?) -> value rx_disar {
+			var integer nsvc_idx := f_nsvc_find_idx(rx_disar.nsvci);
+			NSVC.send(NsCtrlRequest:DisableReq) to g_nsvcs[nsvc_idx].vc_conn;
+			}
+		[] NS_CTRL.receive(NsEnableVcRequest:?) -> value rx_enar {
+			var integer nsvc_idx := f_nsvc_find_idx(rx_enar.nsvci);
+			NSVC.send(NsCtrlRequest:EnableReq) to g_nsvcs[nsvc_idx].vc_conn;
+			}
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, 0, ?, ?, *)) -> value rx_nsudr {
+			/* load distribution function */
+			var integer nsvc_idx := g_unblocked_nsvcs_sig[rx_nsudr.lsp mod lengthof(g_unblocked_nsvcs_sig)];
+			NSVC.send(rx_nsudr) to g_nsvcs[nsvc_idx].vc_conn;
+			}
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, ?, ?, ?, *)) -> value rx_nsudr {
+			/* load distribution function */
+			var integer nsvc_idx := g_unblocked_nsvcs_data[rx_nsudr.lsp mod lengthof(g_unblocked_nsvcs_data)];
+			NSVC.send(rx_nsudr) to g_nsvcs[nsvc_idx].vc_conn;
+			}
+
+		[] NS_SP.receive(tr_NsUdReq(?, ?, ?, ?, *)) -> value rx_nsudr {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Received NsUnitdataReq for invalid NSEI: ", rx_nsudr));
+			}
+	}
+
+	/* generate a list of v4 + v6 endpoints based on the IpEndpointTable */
+	private function gen_sns_ip_elems(out template (omit) IP4_Elements v4_out,
+					  out template (omit) IP6_Elements v6_out) runs on NS_CT {
+		var integer i;
+		var IP4_Elements v4 := {};
+		var IP6_Elements v6 := {};
+
+		for (i := 0; i < lengthof(g_ip_endpoints); i := i + 1) {
+			var IpEndpointTableEntry ipep := g_ip_endpoints[i];
+			if (ipep.address_family == AF_INET) {
+				v4 := v4 & { valueof(ts_SNS_IPv4(ipep.local_ip,
+								 ipep.local_udp_port,
+								 ipep.signalling_weight,
+								 ipep.data_weight)) };
+			} else if (ipep.address_family == AF_INET6) {
+				v6 := v6 & { valueof(ts_SNS_IPv6(ipep.local_ip,
+								 ipep.local_udp_port,
+								 ipep.signalling_weight,
+								 ipep.data_weight)) };
+			}
+		}
+
+		/* we must not return empty lists, but 'omit' as otherwise we get wrong SNS IEs */
+		if (lengthof(v4) == 0) {
+			v4_out := omit;
+		} else {
+			v4_out := v4;
+		}
+		if (lengthof(v6) == 0) {
+			v6_out := omit;
+		} else {
+			v6_out := v6;
+		}
+	}
+
+	private function f_broadcast_ns_ctrl(template (value) NsCtrlRequest req) runs on NS_CT {
+		for (var integer i := 0; i < lengthof(g_nsvcs); i := i+1) {
+			NSVC.send(req) to g_nsvcs[i].vc_conn;
+		}
+	}
+
+	/* perform an outbound SNS-SIZE + SNS-CONFIG */
+	private function f_sns_outbound_size_config(integer idx := 0) runs on NS_CT {
+		var NSVCConfiguration nsvc_cfg := g_config.nsvc[idx];
+		var NSVC_CT vc;
+
+		if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+			NSVC.send(SnsRequest:{nsvc_cfg.nsvci, ts_SNS_SIZE(g_config.nsei, rst_flag := true,
+									  max_nsvcs := 1,
+									  num_v4 := 1, num_v6 := omit)});
+		} else {
+			NSVC.send(SnsRequest:{nsvc_cfg.nsvci, ts_SNS_SIZE(g_config.nsei, rst_flag := true,
+									  max_nsvcs := 1,
+									  num_v4 := omit, num_v6 := 1)});
+		}
+		/* expect SIZE-ACK */
+		alt {
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_SIZE_ACK(g_config.nsei, omit)}) -> sender vc;
+		[] NSVC.receive(NsStatusIndication:?) { repeat; }
+		}
+		/* send a SNS-CONFIG in response and expect a SNS-CONFIG-ACK */
+		var template (omit) IP4_Elements v4;
+		var template (omit) IP6_Elements v6;
+		gen_sns_ip_elems(v4, v6);
+		NSVC.send(SnsRequest:{nsvc_cfg.nsvci,
+				      ts_SNS_CONFIG(g_config.nsei, true, v4, v6)}) to vc;
+		alt {
+		[] as_ns_common_status() {
+			repeat;
+			}
+		[] NSVC.receive(SnsIndication:{?,
+						tr_SNS_CONFIG_ACK(g_config.nsei, omit)}) from vc {
+			/* success */
+			log("Outbound SNS Config succeeded.");
+			}
+		[] NSVC.receive(SnsIndication:{?,
+						tr_SNS_CONFIG_ACK(g_config.nsei, ?)}) from vc {
+			setverdict(fail, "Unexpected SNS-CONFIG-NACK");
+			self.stop;
+			}
+		}
+	}
+
+	/* simple IP Sub-Network Service responder for the PCU/BSS side. This is not a full implementation
+	 * of the protocol, merely sufficient to make the SGSN side happy to proceed */
+	private altstep as_vcg_sns_pcu() runs on NS_CT {
+		var SnsIndication sind;
+		var NSVC_CT vc;
+
+		/* FIXME: We assume our peer has only one endpoint */
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, true,
+				    {tr_SNS_IPv4(g_config.nsvc[0].provider.ip.remote_ip,
+						 g_config.nsvc[0].provider.ip.remote_udp_port)})})
+										-> value sind sender vc {
+			/* blindly acknowledge whatever the SGSN sends */
+			NSVC.send(SnsRequest:{sind.nsvci, ts_SNS_CONFIG_ACK(g_config.nsei, omit)}) to vc;
+			log("Inbound SNS Config succeeded.");
+			/* switch to "alive" state already before sending the SNS-CONFIG, as otherwise
+			 * there would be a race condition between internally performing the state change
+			 * of all related NS-VCs and the first incoming NS-PDU after SNS-CONFIG-ACK */
+			f_broadcast_ns_ctrl(NsCtrlRequest:ForceAliveState);
+			/* inform all NS-VC that they are now considered alive */
+			f_broadcast_ns_ctrl(NsCtrlRequest:StartAliveProcedure);
+		}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, false, ?)}) { /* ignore */}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, true, ?)}) {
+			setverdict(fail, "Unexpected SNS-CONFIG content");
+			self.stop;
+		}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(?, ?, ?)}) {
+			setverdict(fail, "SNS-CONFIG from unexpected NSEI");
+			self.stop;
+		}
+
+	}
+
+	/* simple IP Sub-Network Service responder for the SGSN side. This is not a full implementation
+	 * of the protocol, merely sufficient to make the PCU/BSS side happy to proceed */
+	private altstep as_vcg_sns_sgsn() runs on NS_CT {
+		var SnsIndication sind;
+		var NSVC_CT vc;
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_SIZE(g_config.nsei)}) -> value sind sender vc {
+			/* blindly acknowledge whatever the PCU sends */
+			NSVC.send(SnsRequest:{sind.nsvci, ts_SNS_SIZE_ACK(g_config.nsei, omit)}) to vc;
+		}
+		/* FIXME: We assume our peer has only one endpoint */
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, true,
+				    {tr_SNS_IPv4(g_config.nsvc[0].provider.ip.remote_ip,
+						 g_config.nsvc[0].provider.ip.remote_udp_port)})})
+										-> value sind sender vc {
+			/* blindly acknowledge whatever the PCU sends */
+			NSVC.send(SnsRequest:{sind.nsvci, ts_SNS_CONFIG_ACK(g_config.nsei, omit)}) to vc;
+			/* switch to "alive" state already before sending the SNS-CONFIG, as otherwise
+			 * there would be a race condition between internally performing the state change
+			 * of all related NS-VCs and the first incoming NS-PDU after SNS-CONFIG-ACK */
+			f_broadcast_ns_ctrl(NsCtrlRequest:ForceAliveState);
+			/* send a SNS-CONFIG in response and expect a SNS-CONFIG-ACK */
+			var template (omit) IP4_Elements v4;
+			var template (omit) IP6_Elements v6;
+			gen_sns_ip_elems(v4, v6);
+			NSVC.send(SnsRequest:{sind.nsvci,
+					      ts_SNS_CONFIG(g_config.nsei, true, v4, v6)}) to vc;
+			alt {
+			[] as_ns_common_status() {
+				repeat;
+				}
+			[] NSVC.receive(SnsIndication:{sind.nsvci,
+							tr_SNS_CONFIG_ACK(g_config.nsei, omit)}) from vc {
+				/* success */
+				log("SNS Config succeeded. Sending Alive");
+				/* inform all NS-VC that they are now considered alive */
+				f_broadcast_ns_ctrl(NsCtrlRequest:StartAliveProcedure);
+				}
+			[] NSVC.receive(SnsIndication:{sind.nsvci,
+							tr_SNS_CONFIG_ACK(g_config.nsei, ?)}) from vc {
+				setverdict(fail, "Unexpected SNS-CONFIG-NACK");
+				self.stop;
+				}
+			}
+		}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, false, ?)}) { /* ignore */}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(g_config.nsei, true, ?)}) {
+			setverdict(fail, "Unexpected SNS-CONFIG content");
+			self.stop;
+		}
+		[] NSVC.receive(SnsIndication:{?, tr_SNS_CONFIG(?, ?, ?)}) {
+			setverdict(fail, "SNS-CONFIG from unexpected NSEI");
+			self.stop;
+		}
+	}
+
+	/***********************************************************************
+	 per-NSVC component. Exists once for each NS-VC in the NS-VCG
+	 ***********************************************************************/
+
+	type component NSVC_CT {
+		/* UDP port towards the bottom (IUT) */
+		port NS_PROVIDER_PT NSCP;
+		var NS_Provider_IPL4_CT vc_NSP_IP;
+#ifdef NS_EMULATION_FR
+		var NS_Provider_FR_CT vc_NSP_FR;
+#endif
+
+		/* port towards the NS_CT */
+		port NSint_SP_PT NS_SP;
+
+		/* configuration passed by the user */
+		var NSVCConfiguration	g_nsvc_config;
+		/* we cannot access the NS_CT.config and hence need to copy those */
+		var NSConfiguration	g_config;
+
+		var NsvcState		vc_state := NSVC_S_DEAD_BLOCKED;
+
+		timer Tns_alive := 3.0;
+		timer Tns_test := 10.0;
+		timer Tns_block := 10.0;
+		timer Tns_reset := 10.0;
+	}
+
+	function NSVCStart(NSVCConfiguration init_config, NSConfiguration init_g_config, charstring id :=
+testcasename(), NS_Provider_IPL4_CT nsp_ip := null) runs on NSVC_CT {
+		g_nsvc_config := init_config;
+		g_config := init_g_config;
+		f_init(id & "-NSVCemu" & int2str(g_nsvc_config.nsvci), nsp_ip);
+		f_ScanEvents();
+	}
+
+	private function f_init(charstring id, NS_Provider_IPL4_CT nsp_ip) runs on NSVC_CT {
+		if (ischosen(g_nsvc_config.provider.ip)) {
+			/* the provider already exists; we just associate with it */
+			vc_NSP_IP := nsp_ip
+#ifdef NS_EMULATION_FR
+		} else if (ischosen(g_nsvc_config.provider.fr)) {
+			vc_NSP_FR := NS_Provider_FR_CT.create(id & "-provFR") alive;
+			connect(self:NSCP, vc_NSP_FR:NSE);
+			vc_NSP_FR.start(NS_Provider_FR.main(g_nsvc_config, g_config, id));
+#endif
+		} else {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unsupported NS provider");
+		}
+
+		f_change_state(NSVC_S_DEAD_BLOCKED);
+	}
+
+	private function f_change_state(NsvcState new_state) runs on NSVC_CT {
+		var NsvcState old_state := vc_state;
+		vc_state := new_state;
+		log("NSVC ", g_nsvc_config.nsvci, " State Transition: ", old_state, " -> ", new_state);
+		NS_SP.send(ts_NsStsInd(g_config.nsei, g_nsvc_config.nsvci, old_state, new_state));
+	}
+
+	private function f_sendReset() runs on NSVC_CT {
+		NSCP.send(ts_NS_RESET(NS_CAUSE_OM_INTERVENTION, g_nsvc_config.nsvci, g_config.nsei));
+		Tns_reset.start;
+		vc_state := NSVC_S_WAIT_RESET;
+	}
+
+	private function f_sendAlive() runs on NSVC_CT {
+		NSCP.send(t_NS_ALIVE);
+		Tns_alive.start;
+	}
+
+	private function f_sendUnblock() runs on NSVC_CT {
+		NSCP.send(t_NS_UNBLOCK);
+		Tns_block.start;
+	}
+
+	private function f_sendBlock(NsCause cause) runs on NSVC_CT {
+		NSCP.send(ts_NS_BLOCK(cause, g_nsvc_config.nsvci));
+		Tns_block.start;
+	}
+
+	private altstep as_allstate() runs on NSVC_CT {
+		var PDU_NS rf;
+		var ASP_Event evt;
+
+		[] NSCP.receive(NS_Provider_Evt:{link_status:=NS_PROV_LINK_STATUS_DOWN}) {
+			log("Provider Link went down");
+			Tns_test.stop;
+			Tns_alive.stop;
+			f_change_state(NSVC_S_DEAD_BLOCKED);
+		}
+
+		[] NS_SP.receive(NsCtrlRequest:DisableReq) {
+			/* To make NS-VCG remove us from list of active NS-VC */
+			f_change_state(NSVC_S_DEAD_BLOCKED);
+			log("Disabling NSVC on user request");
+			f_change_state(NSVC_S_DISABLED);
+			Tns_test.stop;
+			Tns_alive.stop;
+		}
+
+		/* transition to DEAD if t_alive times out */
+		[Tns_alive.running] Tns_alive.timeout {
+			log("Tns-alive expired: changing to DEAD_BLOCKED + starting Tns-test");
+			f_change_state(NSVC_S_DEAD_BLOCKED);
+			Tns_test.start;
+		}
+
+		[Tns_test.running] Tns_test.timeout {
+			log("Tns-test expired: sending NS-ALIVE");
+			f_sendAlive();
+		}
+
+		/* Stop t_alive when receiving ALIVE-ACK */
+		[Tns_alive.running] NSCP.receive(t_NS_ALIVE_ACK) {
+			log("Rx NS-ALIVE-ACK: stopping Tns-alive; starting Tns-test");
+			Tns_alive.stop;
+			Tns_test.start;
+		}
+
+		/* respond to NS-ALIVE with NS-ALIVE-ACK */
+		[] NSCP.receive(t_NS_ALIVE) {
+			NSCP.send(t_NS_ALIVE_ACK);
+		}
+
+		/* Respond to BLOCK for wrong NSVCI */
+		[] NSCP.receive(tr_NS_BLOCK(?, ?)) -> value rf {
+			log("Rx NS-BLOCK for unknown NSVCI");
+			/* FIXME */
+		}
+
+		[not g_config.handle_sns] as_handle_reset();
+
+		[g_config.handle_sns and ischosen(g_nsvc_config.provider.ip)] as_nsvc_sns();
+
+		/* log + ignore NS-STATUS; must not create another NS-STATUS in response */
+		[] NSCP.receive(tr_NS_STATUS(?)) -> value rf {
+			log("Rx NS-STATUS ", rf," in state ", vc_state);
+			}
+		/* default case of handling unknown PDUs */
+		[] NSCP.receive(PDU_NS: ?) -> value rf {
+			log("Rx Unexpected NS PDU ", rf," in state ", vc_state);
+			NSCP.send(ts_NS_STATUS(NS_CAUSE_PDU_NOT_COMPATIBLE_WITH_PROTOCOL_STATE, rf));
+		}
+	}
+
+	private altstep as_disabled() runs on NSVC_CT {
+		[g_config.handle_sns == true] NS_SP.receive(NsCtrlRequest:EnableReq) {
+			f_change_state(NSVC_S_ALIVE_UNBLOCKED);
+			f_sendAlive();
+			Tns_test.start;
+		}
+		[g_config.handle_sns == false] NS_SP.receive(NsCtrlRequest:EnableReq) {
+			f_change_state(NSVC_S_DEAD_BLOCKED);
+			Tns_test.start;
+		}
+		/* drop any received messages while in this state */
+		[] NSCP.receive {
+			log("Dropping inbound NS mesage as NS-VC is disabled");
+		}
+		[] NS_SP.receive {
+			log("Dropping user primitive as NS-VC is disabled");
+		}
+	}
+
+	private altstep as_handle_reset() runs on NSVC_CT {
+		var PDU_NS rf;
+
+		[g_config.role_sgsn] NSCP.receive(NS_Provider_Evt:{link_status:=NS_PROV_LINK_STATUS_UP}) {
+			log("Provider Link came up: waiting for NS-RESET");
+			}
+
+		[not g_config.role_sgsn] NSCP.receive(NS_Provider_Evt:{link_status:=NS_PROV_LINK_STATUS_UP}) {
+			log("Provider Link came up: sending NS-RESET");
+			f_sendReset();
+			}
+
+		/* Respond to RESET with correct NSEI/NSVCI */
+		[] NSCP.receive(tr_NS_RESET(?, g_nsvc_config.nsvci, g_config.nsei)) -> value rf {
+			f_change_state(NSVC_S_ALIVE_BLOCKED);
+			NSCP.send(ts_NS_RESET_ACK(g_nsvc_config.nsvci, g_config.nsei));
+			log("Rx NS-RESET: Sending NS-ALIVE");
+			f_sendAlive();
+			Tns_test.start;
+		}
+
+		/* Respond to RESET with wrong NSEI/NSVCI */
+		[] NSCP.receive(tr_NS_RESET(?, ?, ?)) -> value rf {
+			log("Rx NS-RESET for unknown NSEI/NSVCI");
+			/* FIXME */
+		}
+	}
+
+	private altstep as_nsvc_sns() runs on NSVC_CT {
+		var PDU_NS rf;
+		var SnsRequest sreq;
+		[] NSCP.receive(NS_Provider_Evt:{link_status:=NS_PROV_LINK_STATUS_UP}) {
+			log("Provider Link came up. Waiting for SNS Size");
+		}
+
+		/* pass up to NS-VCG */
+		[] NSCP.receive(tr_SNS(g_config.nsei)) -> value rf {
+			NS_SP.send(SnsIndication:{g_nsvc_config.nsvci, rf});
+		}
+		[] NSCP.receive(tr_SNS(?)) -> value rf {
+			setverdict(fail, "SNS from unexpected NSEI: ", rf);
+			self.stop;
+		}
+		[] NS_SP.receive(SnsRequest:{g_nsvc_config.nsvci, ?}) -> value sreq {
+			NSCP.send(sreq.ns);
+		}
+		[] NS_SP.receive(SnsRequest:?) -> value sreq {
+			setverdict(fail, "Unexpected SNS from NSVC: ", sreq);
+			self.stop;
+		}
+		[] NS_SP.receive(NsCtrlRequest:ForceAliveState) {
+			f_change_state(NSVC_S_ALIVE_UNBLOCKED);
+			}
+		[] NS_SP.receive(NsCtrlRequest:StartAliveProcedure) {
+			f_sendAlive();
+			Tns_test.start;
+		}
+	}
+
+	private altstep as_alive_blocked() runs on NSVC_CT {
+		var PDU_NS rf;
+		/* bogus block, just respond with ACK */
+		[] NSCP.receive(tr_NS_BLOCK(?, g_nsvc_config.nsvci)) -> value rf {
+			NSCP.send(ts_NS_BLOCK_ACK(g_nsvc_config.nsvci));
+		}
+		/* Respond to UNBLOCK with UNBLOCK-ACK + change state */
+		[] NSCP.receive(t_NS_UNBLOCK) -> value rf {
+			NSCP.send(t_NS_UNBLOCK_ACK);
+			Tns_block.stop;
+			f_change_state(NSVC_S_ALIVE_UNBLOCKED);
+		}
+		[] NSCP.receive(t_NS_UNBLOCK_ACK) -> value rf {
+			Tns_block.stop;
+			f_change_state(NSVC_S_ALIVE_UNBLOCKED);
+		}
+		/* tolerate a late NS-BLOCK-ACK from peer */
+		[] NSCP.receive(tr_NS_BLOCK_ACK(g_nsvc_config.nsvci)) -> value rf {
+		}
+		[] Tns_block.timeout {
+			/* repeat unblock transmission */
+			f_sendUnblock();
+		}
+	}
+
+	private altstep as_alive_unblocked() runs on NSVC_CT {
+		var NsUnitdataRequest ud_req;
+		var PDU_NS rf;
+		/* bogus unblock, just respond with ACK */
+		[] NSCP.receive(t_NS_UNBLOCK) -> value rf {
+			NSCP.send(t_NS_UNBLOCK_ACK);
+		}
+		/* Respond to BLOCK with BLOCK-ACK + change state */
+		[] NSCP.receive(tr_NS_BLOCK(?, g_nsvc_config.nsvci)) -> value rf {
+			NSCP.send(ts_NS_BLOCK_ACK(g_nsvc_config.nsvci));
+			Tns_block.stop;
+			f_change_state(NSVC_S_ALIVE_BLOCKED);
+		}
+		[] NSCP.receive(tr_NS_BLOCK_ACK(g_nsvc_config.nsvci)) -> value rf {
+			Tns_block.stop;
+		}
+		/* tolerate a late NS-UNBLOCK-ACK from peer */
+		[] NSCP.receive(t_NS_UNBLOCK_ACK) -> value rf {
+		}
+
+		[not ischosen(g_nsvc_config.provider.ip) or
+		 g_nsvc_config.provider.ip.data_weight > 0] as_alive_unblocked_data();
+
+		[not ischosen(g_nsvc_config.provider.ip) or
+		 g_nsvc_config.provider.ip.signalling_weight > 0] as_alive_unblocked_sig();
+
+		/* catch any violations of above rule */
+		[ischosen(g_nsvc_config.provider.ip)] NSCP.receive(tr_NS_UNITDATA(?, ?, ?)) -> value rf {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Unexpected Rx NS-UNITDATA on NSVC with data_weight=",
+						g_nsvc_config.provider.ip.data_weight, ", sig_weight=",
+						g_nsvc_config.provider.ip.signalling_weight, ": ", rf));
+		}
+		[ischosen(g_nsvc_config.provider.ip)] NS_SP.receive(tr_NsUdReq(g_config.nsei, ?, ?, *, *)) -> value ud_req {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Unexpected Rx TX-UNITDATA on NSVC with data_weight=",
+						g_nsvc_config.provider.ip.data_weight, ", sig_weight=",
+						g_nsvc_config.provider.ip.signalling_weight, ": ", ud_req));
+		}
+	}
+
+	/* user data transfer; only permitted for some NS-VC */
+	private altstep as_alive_unblocked_data() runs on NSVC_CT {
+		var NsUnitdataRequest ud_req;
+		var PDU_NS rf;
+		/* NS-UNITDATA PDU from network to NS-UNITDATA.ind to user */
+		[] NSCP.receive(tr_NS_UNITDATA_User(?, ?)) -> value rf {
+			NS_SP.send(ts_NsUdInd(g_config.nsei, g_nsvc_config.nsvci,
+					     oct2int(rf.pDU_NS_Unitdata.bVCI),
+					     rf.pDU_NS_Unitdata.nS_SDU));
+		}
+		/* NS-UNITDATA.req from user to NS-UNITDATA PDU on network */
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, t_BssgpBvciUser, ?, ?, omit)) -> value ud_req {
+			/* using raw octetstring PDU */
+			NSCP.send(ts_NS_UNITDATA(t_SduCtrlB, ud_req.bvci, ud_req.sdu));
+		}
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, t_BssgpBvciUser, ?, omit, ?)) -> value ud_req {
+			/* using decoded BSSGP PDU that we need to encode first */
+			var octetstring enc := enc_PDU_BSSGP(ud_req.bssgp);
+			NSCP.send(ts_NS_UNITDATA(t_SduCtrlB, ud_req.bvci, enc));
+		}
+	}
+
+	/* signalling (BVCI=0) transfer; only permitted for some NS-VC */
+	private altstep as_alive_unblocked_sig() runs on NSVC_CT {
+		var NsUnitdataRequest ud_req;
+		var PDU_NS rf;
+		/* NS-UNITDATA PDU from network to NS-UNITDATA.ind to user */
+		[] NSCP.receive(tr_NS_UNITDATA(?, 0, ?)) -> value rf {
+			NS_SP.send(ts_NsUdInd(g_config.nsei, g_nsvc_config.nsvci,
+					     oct2int(rf.pDU_NS_Unitdata.bVCI),
+					     rf.pDU_NS_Unitdata.nS_SDU));
+		}
+		/* NS-UNITDATA.req from user to NS-UNITDATA PDU on network */
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, 0, ?, ?, omit)) -> value ud_req {
+			/* using raw octetstring PDU */
+			NSCP.send(ts_NS_UNITDATA(t_SduCtrlB, ud_req.bvci, ud_req.sdu));
+		}
+		[] NS_SP.receive(tr_NsUdReq(g_config.nsei, 0, ?, omit, ?)) -> value ud_req {
+			/* using decoded BSSGP PDU that we need to encode first */
+			var octetstring enc := enc_PDU_BSSGP(ud_req.bssgp);
+			NSCP.send(ts_NS_UNITDATA(t_SduCtrlB, ud_req.bvci, enc));
+		}
+	}
+
+	private altstep as_wait_reset() runs on NSVC_CT {
+		var PDU_NS rf;
+		[] Tns_reset.timeout {
+			/* If the sending entity of an NS-RESET PDU receives no NS-RESET-ACK PDU before timer
+			 * Tns-reset expires the corresponding NS-VCs shall remain blocked and dead and the
+			 * entire reset procedure shall be repeated */
+			f_sendReset();
+			}
+		[] NSCP.receive(tr_NS_RESET_ACK(g_nsvc_config.nsvci, g_config.nsei)) -> value rf {
+			Tns_reset.stop;
+			f_change_state(NSVC_S_ALIVE_BLOCKED);
+			f_sendAlive();
+			f_sendUnblock();
+		}
+	}
+
+	private function f_ScanEvents() runs on NSVC_CT {
+		var PDU_NS rf;
+		while (true) {
+			alt {
+			[vc_state == NSVC_S_WAIT_RESET] as_wait_reset();
+			[vc_state == NSVC_S_ALIVE_BLOCKED] as_alive_blocked();
+			[vc_state == NSVC_S_ALIVE_UNBLOCKED] as_alive_unblocked();
+			[vc_state == NSVC_S_DISABLED] as_disabled();
+			[vc_state != NSVC_S_DISABLED] as_allstate();
+			}
+		}
+	}
+}

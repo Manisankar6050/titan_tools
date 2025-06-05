@@ -1,0 +1,211 @@
+module MSC_ConnectionHandler {
+
+/* (C) 2017-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from SCCPasp_Types all;
+import from BSSAP_Types all;
+import from BSSAP_CodecPort all;
+import from RAN_Emulation all;
+import from BSSMAP_Templates all;
+
+import from MGCP_Types all;
+import from MGCP_Templates all;
+import from SDP_Types all;
+
+type function void_fn_msc(charstring id) runs on MSC_ConnHdlr;
+
+/* this component represents a single subscriber connection at the MSC.
+ * There is a 1:1 mapping between SCCP connections and RAN_ConnHdlr components.
+ * We inherit all component variables, ports, functions, ... from RAN_ConnHdlr */
+type component MSC_ConnHdlr extends RAN_ConnHdlr {
+	/* SCCP Connecction Identifier for the underlying SCCP connection */
+	var integer g_sccp_conn_id;
+
+	var MSC_State g_state := MSC_STATE_NONE;
+	var MgcpEndpoint g_ep_name;
+	var MgcpCallId g_call_id;
+	var MgcpConnectionId g_mgcp_conn_id;
+	var MSC_TestHdlrParams g_pars;
+}
+
+type record MSC_TestHdlrParams {
+	integer connection_id,
+	integer e1_timeslot
+};
+
+/* helper function to create and connect a MSC_ConnHdlr component */
+private function f_connect_handler(inout MSC_ConnHdlr vc_conn) runs on RAN_Emulation_CT {
+	/* connect client BSSAP port to BSSAP dispatcher */
+	connect(vc_conn:BSSAP, self:CLIENT);
+}
+
+private function f_msc_start_handler(void_fn_msc fn, charstring id, template (omit) MSC_TestHdlrParams pars := omit)
+runs on RAN_Emulation_CT return MSC_ConnHdlr {
+	var MSC_ConnHdlr vc_conn;
+	vc_conn := MSC_ConnHdlr.create(id);
+	f_connect_handler(vc_conn);
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+/* first function inside ConnHdlr component; sets g_pars + starts function */
+private function f_handler_init(void_fn_msc fn, charstring id, template (omit) MSC_TestHdlrParams pars := omit)
+runs on MSC_ConnHdlr {
+	if (isvalue(pars)) {
+		g_pars := valueof(pars);
+	}
+	fn.apply(id);
+}
+
+/* Callback function from general BSSMAP_Emulation whenever a connectionless
+ * BSSMAP message arrives.  Can retunr a PDU_BSSAP that should be sent in return */
+private function UnitdataCallback(PDU_BSSAP bssap)
+runs on RAN_Emulation_CT return template PDU_BSSAP {
+	var template PDU_BSSAP resp := omit;
+
+	if (match(bssap, tr_BSSMAP_Reset)) {
+		resp := ts_BSSMAP_ResetAck;
+	}
+
+	return resp;
+}
+
+/* Callback function from general BSSMAP_Emulation whenever a new incoming
+ * SCCP connection arrivces. Must create + start a new component */
+private function CreateCallback_generic(void_fn_msc fn, BSSAP_N_CONNECT_ind conn_ind, charstring id)
+runs on RAN_Emulation_CT return RAN_ConnHdlr {
+	var MSC_ConnHdlr vc_conn;
+	var MSC_TestHdlrParams pars;
+	pars.connection_id := conn_ind.connectionId;
+	pars.e1_timeslot := g_next_e1_ts;
+
+	/* Create a new RAN_ConnHdlr component */
+	vc_conn := f_msc_start_handler(fn, g_ran_id & "-Conn-" & int2str(conn_ind.connectionId), pars);
+
+	/* increment next E1 timeslot */
+	g_next_e1_ts := g_next_e1_ts + 1;
+	return vc_conn;
+}
+
+const RanOps MSC_RanOps := {
+	create_cb := omit,
+	unitdata_cb := refers(UnitdataCallback),
+	decode_dtap := false,
+	role_ms := false,
+	protocol := RAN_PROTOCOL_BSSAP,
+	transport := BSSAP_TRANSPORT_AoIP,
+	use_osmux := false,
+	bssap_reset_retries := 1,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+}
+
+type enumerated MSC_State {
+	MSC_STATE_NONE,
+	MSC_STATE_WAIT_ASS_COMPL,
+	MSC_STATE_WAIT_CRCX_ACK,
+	MSC_STATE_WAIT_MDCX_ACK,
+	MSC_STATE_WAIT_CLEAR_COMPL,
+	MSC_STATE_WAIT_DLCX_ACK
+}
+
+/* Callback function from general BSSMAP_Emulation whenever a new incoming
+ * SCCP connection arrivces. Must create + start a new component */
+function CreateCallback_establish_fully(BSSAP_N_CONNECT_ind conn_ind, charstring id)
+runs on RAN_Emulation_CT return RAN_ConnHdlr {
+	return CreateCallback_generic(refers(f_msc_establish_fully), conn_ind, id);
+}
+/* main function processing various incoming events */
+function f_msc_establish_fully(charstring id) runs on MSC_ConnHdlr {
+	var MgcpResponse mgcp_rsp;
+	timer T := 5.0;
+
+	g_sccp_conn_id := g_pars.connection_id;
+	g_call_id := f_mgcp_alloc_call_id();
+	g_ep_name := hex2str(int2hex(g_pars.e1_timeslot, 1)) & "@mgw";
+
+	/* we just accepted an incoming SCCP connection, start guard timer */
+	T.start;
+
+	while (true) {
+		var PDU_BSSAP bssap;
+		alt {
+		/* new SCCP-level connection indication from BSC */
+		[g_state == MSC_STATE_NONE] BSSAP.receive(tr_BSSMAP_ComplL3) -> value bssap {
+			/* respond with ASSIGNMENT CMD  */
+			g_state := MSC_STATE_WAIT_ASS_COMPL;
+			BSSAP.send(ts_BSSMAP_AssignmentReq(ts_BSSMAP_IE_CIC(0, g_pars.e1_timeslot)));
+			}
+		[g_state == MSC_STATE_WAIT_ASS_COMPL] BSSAP.receive(tr_BSSMAP_AssignmentComplete(?,*)) {
+			/* FIXME: Send MGCP CRCX */
+			g_state := MSC_STATE_WAIT_CRCX_ACK;
+			var MgcpTransId trans_id := f_mgcp_alloc_tid();
+			//template SDP_Message sdp := omit;
+			BSSAP.send(ts_CRCX(trans_id, g_ep_name, "recvonly", g_call_id)); //, sdp));
+			}
+		/*
+		[] BSSAP.receive(tr_BSSMAP_AssignmentFail) {
+		}
+		*/
+
+		/* receive CRCX ACK: transmit MDCX */
+		[g_state == MSC_STATE_WAIT_CRCX_ACK] BSSAP.receive(tr_CRCX_ACK) -> value mgcp_rsp {
+			/* extract connection ID */
+			g_mgcp_conn_id := f_MgcpResp_extract_conn_id(mgcp_rsp);
+			g_state := MSC_STATE_WAIT_MDCX_ACK;
+			var MgcpTransId trans_id := f_mgcp_alloc_tid();
+			BSSAP.send(ts_MDCX(trans_id, g_ep_name, "sendrecv", g_call_id, g_mgcp_conn_id));
+			}
+
+		/* receive MDCX ACK: wait + transmit CLEAR COMMAND */
+		[g_state == MSC_STATE_WAIT_MDCX_ACK] BSSAP.receive(tr_CRCX_ACK) -> value mgcp_rsp {
+			g_state := MSC_STATE_WAIT_CLEAR_COMPL
+			BSSAP.send(ts_BSSMAP_ClearCommand(9)); /* Cause: call control */
+			}
+
+		/* CLEAR COMPLETE from BSS (response to CLEAR COMMAND) */
+		[g_state == MSC_STATE_WAIT_CLEAR_COMPL] BSSAP.receive(tr_BSSMAP_ClearComplete) {
+			/* send DLCX */
+			g_state := MSC_STATE_WAIT_DLCX_ACK;
+			var MgcpTransId trans_id := f_mgcp_alloc_tid();
+			BSSAP.send(ts_DLCX(trans_id, g_ep_name, g_call_id));
+			}
+
+		[g_state == MSC_STATE_WAIT_DLCX_ACK] BSSAP.receive(tr_DLCX_ACK) {
+			BSSAP.send(ts_MSC_CONN_PRIM_DISC_REQ);
+			setverdict(pass);
+			self.stop;
+			}
+
+		/* TODO: CLEAR REQUEST from BSS */
+
+		[] BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND) {
+			setverdict(fail);
+			self.stop;
+			}
+
+		[] BSSAP.receive(PDU_BSSAP:?) -> value bssap {
+			log("Received unhandled SCCP-CO: ", bssap);
+			}
+
+		/* Guard timer has expired, close connection */
+		[] T.timeout {
+			BSSAP.send(ts_MSC_CONN_PRIM_DISC_REQ);
+			setverdict(fail, "Timeout of guard timer");
+			self.stop;
+			}
+
+		}
+	}
+}
+
+}

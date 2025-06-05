@@ -1,0 +1,793 @@
+/* Asterisk's AMI interface functions in TTCN-3
+ * (C) 2024 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * Author: Pau Espin Pedrol <pespin@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+/*
+ * https://docs.asterisk.org/Configuration/Interfaces/Asterisk-Manager-Interface-AMI/AMI-v2-Specification/
+ */
+module AMI_Functions {
+
+import from Misc_Helpers all;
+import from Osmocom_Types all;
+import from IPL4asp_Types all;
+import from IPL4asp_PortType all;
+import from Socket_API_Definitions all;
+import from TCCConversion_Functions all;
+
+modulepar {
+	float mp_ami_prompt_timeout := 10.0;
+}
+
+const charstring AMI_FIELD_ACTION := "Action";
+const charstring AMI_FIELD_ACTION_ID := "ActionID";
+const charstring AMI_FIELD_CHANNEL := "Channel";
+const charstring AMI_FIELD_CHAN_TYPE := "ChannelType";
+const charstring AMI_FIELD_CONTEXT := "Context";
+const charstring AMI_FIELD_DOMAIN := "Domain";
+const charstring AMI_FIELD_EVENT := "Event";
+const charstring AMI_FIELD_INFO := "Info";
+const charstring AMI_FIELD_RESPONSE := "Response";
+const charstring AMI_FIELD_SECRET := "Secret";
+const charstring AMI_FIELD_STATUS := "Status";
+const charstring AMI_FIELD_USERNAME := "Username";
+
+/* Extensions: */
+const charstring AMI_FIELD_ALGORITHM := "Algorithm";
+const charstring AMI_FIELD_AUTN := "AUTN";
+const charstring AMI_FIELD_AUTS := "AUTS";
+const charstring AMI_FIELD_CK := "CK";
+const charstring AMI_FIELD_IK := "IK";
+const charstring AMI_FIELD_RAND := "RAND";
+const charstring AMI_FIELD_RES := "RES";
+const charstring AMI_FIELD_REGISTRATION := "Registration";
+
+type record AMI_Field {
+	charstring	key,
+	charstring	val
+} with {
+	encode "TEXT"
+	variant "SEPARATOR(': ', ':\s+')"
+};
+
+type set of AMI_Field AMI_Msg with {
+	encode "TEXT"
+	variant "SEPARATOR('\r\n', '(\r\n)|[\n]')"
+	variant "END('\r\n', '(\r\n)|[\n]')"
+};
+
+external function enc_AMI_Msg(in AMI_Msg msg) return charstring
+	with { extension "prototype(convert) encode(TEXT)" }
+external function dec_AMI_Msg(in charstring stream) return AMI_Msg
+	with { extension "prototype(convert) decode(TEXT)" }
+
+template (value) AMI_Field
+ts_AMI_Field(template (value) charstring key,
+	     template (value) charstring val) := {
+	key := key,
+	val := val
+};
+
+template (present) AMI_Field
+tr_AMI_Field(template (present) charstring key := ?,
+	     template (present) charstring val := ?) := {
+	key := key,
+	val := val
+};
+
+/*
+ * Field Templates:
+ */
+
+template (value) AMI_Field
+ts_AMI_Field_Action(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_ACTION, val);
+template (value) AMI_Field
+ts_AMI_Field_ActionId(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_ACTION_ID, val);
+template (value) AMI_Field
+ts_AMI_Field_Channel(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_CHANNEL, val);
+template (value) AMI_Field
+ts_AMI_Field_ChannelType(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_CHAN_TYPE, val);
+template (value) AMI_Field
+ts_AMI_Field_Context(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_CONTEXT, val);
+template (value) AMI_Field
+ts_AMI_Field_Domain(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_DOMAIN, val);
+template (value) AMI_Field
+ts_AMI_Field_Event(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_EVENT, val);
+template (value) AMI_Field
+ts_AMI_Field_Info(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_INFO, val);
+template (value) AMI_Field
+ts_AMI_Field_Secret(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_SECRET, val);
+template (value) AMI_Field
+ts_AMI_Field_Status(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_STATUS, val);
+template (value) AMI_Field
+ts_AMI_Field_Username(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_USERNAME, val);
+/* Extensions: */
+template (value) AMI_Field
+ts_AMI_Field_Algorithm(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_ALGORITHM, val);
+template (value) AMI_Field
+ts_AMI_Field_AUTN(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_AUTN, val);
+template (value) AMI_Field
+ts_AMI_Field_AUTS(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_AUTS, val);
+template (value) AMI_Field
+ts_AMI_Field_CK(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_CK, val);
+template (value) AMI_Field
+ts_AMI_Field_IK(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_IK, val);
+template (value) AMI_Field
+ts_AMI_Field_RAND(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_RAND, val);
+template (value) AMI_Field
+ts_AMI_Field_RES(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_RES, val);
+template (value) AMI_Field
+ts_AMI_Field_Registration(template (value) charstring val) := ts_AMI_Field(AMI_FIELD_REGISTRATION, val);
+
+template (present) AMI_Field
+tr_AMI_Field_Action(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_ACTION, val);
+template (present) AMI_Field
+tr_AMI_Field_ActionId(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_ACTION_ID, val);
+template (present) AMI_Field
+tr_AMI_Field_Channel(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_CHANNEL, val);
+template (present) AMI_Field
+tr_AMI_Field_ChannelType(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_CHAN_TYPE, val);
+template (present) AMI_Field
+tr_AMI_Field_Context(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_CONTEXT, val);
+template (present) AMI_Field
+tr_AMI_Field_Domain(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_DOMAIN, val);
+template (present) AMI_Field
+tr_AMI_Field_Event(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_EVENT, val);
+template (present) AMI_Field
+tr_AMI_Field_Info(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_INFO, val);
+template (present) AMI_Field
+tr_AMI_Field_Response(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_RESPONSE, val);
+template (present) AMI_Field
+tr_AMI_Field_Secret(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_SECRET, val);
+template (present) AMI_Field
+tr_AMI_Field_Status(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_STATUS, val);
+template (present) AMI_Field
+tr_AMI_Field_Username(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_USERNAME, val);
+/* Extensions: */
+template (present) AMI_Field
+tr_AMI_Field_Algorithm(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_ALGORITHM, val);
+template (present) AMI_Field
+tr_AMI_Field_AUTN(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_AUTN, val);
+template (present) AMI_Field
+tr_AMI_Field_AUTS(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_AUTS, val);
+template (present) AMI_Field
+tr_AMI_Field_CK(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_CK, val);
+template (present) AMI_Field
+tr_AMI_Field_IK(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_IK, val);
+template (present) AMI_Field
+tr_AMI_Field_RAND(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_RAND, val);
+template (present) AMI_Field
+tr_AMI_Field_RES(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_RES, val);
+template (present) AMI_Field
+tr_AMI_Field_Registration(template (present) charstring val := ?) := tr_AMI_Field(pattern @nocase AMI_FIELD_REGISTRATION, val);
+
+
+template (present) AMI_Field
+tr_AMI_Field_ResponseSuccess := tr_AMI_Field(pattern @nocase AMI_FIELD_RESPONSE, "Success");
+
+
+/***********************
+ * Message Templates:
+ ***********************/
+
+/*
+ * ACTIONS
+ */
+
+/* Action: AuthResponse
+ * Registration: volte_ims
+ * AUTS: <value>
+ */
+template (value) AMI_Msg
+ts_AMI_Action_AuthResponse_AUTS(template (value) charstring registration,
+				template (value) charstring auts,
+				template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("AuthResponse"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Registration(registration),
+	ts_AMI_Field_AUTS(auts)
+};
+/* Action: AuthResponse
+ * Registration: volte_ims
+ * RES: <value>
+ * CK: <value>
+ * IK: <value>
+ */
+template (value) AMI_Msg
+ts_AMI_Action_AuthResponse_RES(template (value) charstring registration,
+			       template (value) charstring res,
+			       template (value) charstring ck,
+			       template (value) charstring ik,
+			       template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("AuthResponse"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Registration(registration),
+	ts_AMI_Field_RES(res),
+	ts_AMI_Field_CK(ck),
+	ts_AMI_Field_IK(ik)
+};
+
+/* Action: DedicatedBearerStatus
+ * ActionID: <value>
+ * Channel: <value>
+ * Status: <value>
+ */
+template (value) AMI_Msg
+ts_AMI_Action_DedicatedBearerStatus(template (value) charstring channel,
+				    template (value) charstring status,
+				    template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("DedicatedBearerStatus"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Channel(channel),
+	ts_AMI_Field_Status(status)
+};
+
+/* Action: Login
+ * Username: <value>
+ * Secret: <value>
+ */
+template (value) AMI_Msg
+ts_AMI_Action_Login(charstring username,
+		    charstring secret,
+		    template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("Login"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Username(username),
+	ts_AMI_Field_Secret(secret)
+};
+
+template (present) AMI_Msg
+tr_AMI_Action_Login(template(present) charstring username := ?,
+		    template(present) charstring secret := ?,
+		    template (present) charstring action_id := ?) := superset(
+	tr_AMI_Field_Action("Login"),
+	tr_AMI_Field_ActionId(action_id),
+	tr_AMI_Field_Username(username),
+	tr_AMI_Field_Secret(secret)
+);
+
+/* Action: PJSIPAccessNetworkInfo
+ * Registration: volte_ims
+ * Info: 3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=2380100010000101
+ */
+template (value) AMI_Msg
+ts_AMI_Action_PJSIPAccessNetworkInfo(template (value) charstring registration := "volte_ims",
+				     template (value) charstring info := "",
+				     template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("PJSIPAccessNetworkInfo"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Registration(registration),
+	ts_AMI_Field_Info(info)
+};
+function f_ami_gen_PJSIPAccessNetworkInfo_Info_EUTRAN(charstring uli_str) return charstring {
+	return "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=" & uli_str;
+}
+
+/* Action: PJSIPRegister
+ * ActionID: <value>
+ * Registration: volte_ims
+ */
+template (value) AMI_Msg
+ts_AMI_Action_PJSIPRegister(template (value) charstring registration := "volte_ims",
+			    template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("PJSIPRegister"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Registration(registration)
+};
+template (present) AMI_Msg
+tr_AMI_Action_PJSIPRegister(template (present) charstring registration := ?,
+			    template (present) charstring action_id := ?) := {
+	tr_AMI_Field_Action("PJSIPRegister"),
+	tr_AMI_Field_ActionId(action_id),
+	tr_AMI_Field_Registration(registration)
+};
+
+/* Action: PJSIPUnregister
+ * ActionID: <value>
+ * Registration: volte_ims
+ */
+template (value) AMI_Msg
+ts_AMI_Action_PJSIPUnregister(template (value) charstring registration := "volte_ims",
+			      template (value) charstring action_id := "0001") := {
+	ts_AMI_Field_Action("PJSIPUnregister"),
+	ts_AMI_Field_ActionId(action_id),
+	ts_AMI_Field_Registration(registration)
+};
+template (present) AMI_Msg
+tr_AMI_Action_PJSIPUnregister(template (present) charstring registration := ?,
+			      template (present) charstring action_id := ?) := {
+	tr_AMI_Field_Action("PJSIPUnregister"),
+	tr_AMI_Field_ActionId(action_id),
+	tr_AMI_Field_Registration(registration)
+};
+
+/*
+ * RESPONSES
+ */
+
+/* Response: Success
+ */
+template (present) AMI_Msg
+tr_AMI_Response_Success := superset(
+	tr_AMI_Field_ResponseSuccess
+);
+
+/* Response: Success
+ * ActionId: <value>
+ */
+template (present) AMI_Msg
+tr_AMI_Response_Success_ActionId(template (present) charstring action_id := ?) := superset(
+	tr_AMI_Field_ResponseSuccess,
+	tr_AMI_Field_ActionId(action_id)
+);
+
+/*
+ * EVENTS
+ */
+template (present) AMI_Msg
+tr_AMI_Event(template (present) charstring ev_name := ?) := superset(
+	tr_AMI_Field_Event(ev_name)
+);
+
+/* Event: FullyBooted
+ * Privilege: system,all
+ * Status: Fully Booted
+ * Uptime: 4
+ * LastReload: 4 *
+ */
+template (present) AMI_Msg
+tr_AMI_Event_FullyBooted := tr_AMI_Event("FullyBooted");
+
+/* Event: AuthRequest
+ * Privilege: <none>
+ * Registration: volte_ims
+ * Algorithm: AKAv1-MD5
+ * RAND: 14987631f65f8e3788a0798b6ebcd08e
+ * AUTN: f6e19a7ccb028000a06b19c9544516e5
+ */
+template (present) AMI_Msg
+tr_AMI_Event_AuthRequest(template (present) charstring registration := ?,
+			 template (present) charstring algorithm := "AKAv1-MD5",
+			 template (present) charstring rand := ?,
+			 template (present) charstring autn := ?) := superset(
+	tr_AMI_Field_Event("AuthRequest"),
+	tr_AMI_Field_Registration(registration),
+	tr_AMI_Field_Algorithm(algorithm),
+	tr_AMI_Field_RAND(rand),
+	tr_AMI_Field_AUTN(autn)
+);
+
+/* Event: Registry
+ * Privilege: system,all
+ * ChannelType: PJSIP
+ * Username: sip:238010000090828@172.18.155.103
+ * Domain: sip:172.18.155.103
+ * Status: Registered
+ */
+template (present) AMI_Msg
+tr_AMI_Event_Registry(template (present) charstring username := ?,
+		      template (present) charstring domain := ?,
+		      template (present) charstring status := ?,
+		      template (present) charstring chan_type := "PJSIP") := superset(
+	tr_AMI_Field_Event("Registry"),
+	tr_AMI_Field_ChannelType(chan_type),
+	tr_AMI_Field_Username(username),
+	tr_AMI_Field_Domain(domain),
+	tr_AMI_Field_Status(status)
+);
+
+/* Event: Newchannel
+ * Privilege: call,all
+ * Channel: PJSIP/volte_ims-00000001
+ * ChannelState: 0
+ * ChannelStateDesc: Down
+ * CallerIDNum: <unknown>
+ * CallerIDName: <unknown>
+ * ConnectedLineNum: <unknown>
+ * ConnectedLineName: <unknown>
+ * Language: en
+ * AccountCode:
+ * Context: volte_ims
+ * Exten: s
+ * Priority: 1
+ * Uniqueid: 1718732522.1
+ * LinkEvent: Newstate
+ * Privilege: call,all
+ * Channel: PJSIP/volte_ims-00000001
+ * ChannelState: 5
+ * ChannelStateDesc: Ringing
+ * CallerIDNum: 90829
+ * CallerIDName: <unknown>
+ * ConnectedLineNum: 0501
+ * ConnectedLineName: <unknown>
+ * Language: en
+ * AccountCode:
+ * Context: volte_ims
+ * Exten: 90829
+ * Priority: 1
+ * Uniqueid: 1718732522.1
+ * Linkedid: 1718732522.0
+ */
+template (present) AMI_Msg
+tr_AMI_Event_Newchannel(template (present) charstring context := ?) := superset(
+	tr_AMI_Field_Event("Newchannel"),
+	tr_AMI_Field_Context(context)
+);
+
+/***********************
+ * Adapter:
+ ***********************/
+
+type record AMI_Adapter_Parameters {
+	charstring			remote_host,
+	IPL4asp_Types.PortNumber	remote_port,
+	charstring			local_host,
+	IPL4asp_Types.PortNumber	local_port,
+	charstring			welcome_str
+}
+
+const AMI_Adapter_Parameters c_default_AMI_Adapter_pars := {
+	remote_host := "127.0.0.1",
+	remote_port := 5038,
+	local_host := "0.0.0.0",
+	local_port := 0,
+	welcome_str := "Asterisk Call Manager/9.0.0\r\n"
+};
+
+type port AMI_Msg_PT message {
+	inout AMI_Msg;
+} with { extension "internal" };
+
+type component AMI_Adapter_CT {
+	port IPL4asp_PT IPL4;
+	port AMI_Msg_PT CLIENT;
+	var AMI_Adapter_Parameters g_pars;
+
+	/* Connection identifier of the client itself */
+	var IPL4asp_Types.ConnectionId g_self_conn_id := -1;
+}
+
+/* Function to use to connect as client to a remote IPA Server */
+private function f_AMI_Adapter_connect() runs on AMI_Adapter_CT {
+	var IPL4asp_Types.Result res;
+	map(self:IPL4, system:IPL4);
+	res := IPL4asp_PortType.f_IPL4_connect(IPL4, g_pars.remote_host, g_pars.remote_port,
+					       g_pars.local_host, g_pars.local_port, 0, { tcp:={} });
+	if (not ispresent(res.connId)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("Could not connect AMI socket from ", g_pars.local_host, " port ",
+				g_pars.local_port, " to ", g_pars.remote_host, " port ", g_pars.remote_port,
+				"; check your configuration"));
+	}
+	g_self_conn_id := res.connId;
+	log("AMI connected, ConnId=", g_self_conn_id)
+}
+
+private function f_ASP_RecvFrom_msg_to_charstring(ASP_RecvFrom rx_rf) return charstring {
+	return oct2char(rx_rf.msg);
+}
+
+/* Function to use to connect as client to a remote IPA Server */
+private function f_AMI_Adapter_wait_rx_welcome_str() runs on AMI_Adapter_CT {
+	var ASP_RecvFrom rx_rf;
+	var charstring rx_str;
+	timer Twelcome := 3.0;
+
+	Twelcome.start;
+	alt {
+	[] IPL4.receive(ASP_RecvFrom:?) -> value rx_rf {
+		rx_str := f_ASP_RecvFrom_msg_to_charstring(rx_rf);
+		if (g_pars.welcome_str != rx_str) {
+					Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("AMI Welcome message mismatch: '", rx_str,
+						"' vs exp '", g_pars.welcome_str, "'"));
+		}
+	}
+	[] Twelcome.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("AMI Welcome timeout"));
+	}
+	}
+	Twelcome.stop;
+	log("AMI Welcome message received: '", rx_str, "'");
+}
+
+private function dec_AMI_Msg_ext(charstring txt) return AMI_Msg {
+	log("AMI dec: '", txt, "'");
+	/* TEXT Enc/dec is not happy with empty values, workaround it: */
+	var Misc_Helpers.ro_charstring fields := { "AccountCode", "AccountID", "Challenge", "DestExten", "Exten", "Extension", "Hint", "Value" };
+	var charstring patched_txt := txt;
+	for (var integer i := 0; i < lengthof(fields); i := i +1) {
+		patched_txt := f_str_replace(patched_txt, fields[i] & ": \r\n", "");
+	}
+
+	/* "AppData" field sometimes has a value containing separator ": ", which makes
+	 * TEXT dec not happy. Workaround it for now by removing the whole field line:
+	 * "AppData: 5,0502: Call pjsip endpoint from 0501\r\n"
+	 */
+	var integer pos := f_strstr(patched_txt, "AppData: ", 0);
+	if (pos >= 0) {
+		var integer pos_end := f_strstr(patched_txt, "\r\n", pos) + lengthof("\r\n");
+		var charstring to_remove := substr(patched_txt, pos, pos_end - pos);
+		patched_txt := f_str_replace(patched_txt, to_remove, "");
+	}
+
+	log("AMI patched dec: '", patched_txt, "'");
+	return dec_AMI_Msg(patched_txt);
+}
+
+function f_AMI_Adapter_main(AMI_Adapter_Parameters pars := c_default_AMI_Adapter_pars)
+		runs on AMI_Adapter_CT {
+	var AMI_Msg msg;
+	var charstring rx, buf := "";
+	var integer fd;
+	var ASP_RecvFrom rx_rf;
+	var ASP_Event rx_ev;
+
+	g_pars := pars;
+
+	f_AMI_Adapter_connect();
+
+	f_AMI_Adapter_wait_rx_welcome_str();
+
+	while (true) {
+
+		alt {
+		[] IPL4.receive(ASP_RecvFrom:?) -> value rx_rf {
+			var charstring rx_str := f_ASP_RecvFrom_msg_to_charstring(rx_rf);
+			log("AMI rx: '", rx_str, "'");
+			buf := buf & rx_str;
+			log("AMI buf: '", buf, "'");
+
+			/* If several messages come together */
+			var boolean last_is_complete := f_str_endswith(buf, "\r\n\r\n");
+			var Misc_Helpers.ro_charstring msgs := f_str_split(buf, "\r\n\r\n");
+			log("AMI split: ", msgs);
+			if (lengthof(msgs) > 0) {
+				for (var integer i := 0; i < lengthof(msgs) - 1; i := i + 1) {
+					var charstring txt := msgs[i] & "\r\n";
+					msg := dec_AMI_Msg_ext(txt);
+					CLIENT.send(msg);
+				}
+				if (last_is_complete) {
+					var charstring txt := msgs[lengthof(msgs) - 1] & "\r\n";
+					msg := dec_AMI_Msg_ext(txt);
+					CLIENT.send(msg);
+					buf := "";
+				} else {
+					buf := msgs[lengthof(msgs) - 1];
+				}
+			}
+			log("AMI remain buf: '", buf, "'");
+			}
+		[] IPL4.receive(ASP_ConnId_ReadyToRelease:?) {
+			}
+
+		[] IPL4.receive(ASP_Event:?) -> value rx_ev {
+			log("Rx AMI ASP_Event: ", rx_ev);
+			}
+		[] CLIENT.receive(AMI_Msg:?) -> value msg {
+			/* TODO: in the future, queue Action if there's already one Action in transit, to fullfill AMI requirements. */
+			var charstring tx_txt := enc_AMI_Msg(msg) & "\r\n";
+
+			var ASP_SendTo tx := {
+				connId := g_self_conn_id,
+				remName := g_pars.remote_host,
+				remPort := g_pars.remote_port,
+				proto := { tcp := {} },
+				msg := char2oct(tx_txt)
+			};
+			IPL4.send(tx);
+			}
+		}
+	}
+}
+
+
+/*
+ * Functions:
+ */
+
+/* Generate a random "ActionId" value: */
+function f_gen_action_id() return charstring {
+	return hex2str(f_rnd_hexstring(16));
+}
+
+function f_ami_msg_find(AMI_Msg msg,
+			template (present) charstring key := ?)
+return template (omit) AMI_Field {
+	var integer i;
+
+	for (i := 0; i < lengthof(msg); i := i + 1) {
+		if (not ispresent(msg[i])) {
+			continue;
+		}
+		if (match(msg[i].key, key)) {
+			return msg[i];
+		}
+	}
+	return omit;
+}
+
+function f_ami_msg_find_or_fail(AMI_Msg msg,
+				template (present) charstring key := ?)
+return AMI_Field {
+	var template (omit) AMI_Field field;
+	field := f_ami_msg_find(msg, key);
+	if (istemplatekind(field, "omit")) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("Key ", key, " not found in ", msg));
+	}
+	return valueof(field);
+}
+
+function f_ami_msg_get_value(AMI_Msg msg,
+			     template (present) charstring key := ?)
+return template (omit) charstring {
+	var template (omit) AMI_Field field;
+	field := f_ami_msg_find(msg, key);
+	if (istemplatekind(field, "omit")) {
+		return omit;
+	}
+	return field.val;
+}
+
+function f_ami_msg_get_value_or_fail(AMI_Msg msg,
+				     template (present) charstring key := ?)
+return template charstring {
+	var AMI_Field field;
+	field := f_ami_msg_find_or_fail(msg, key);
+	return field.val;
+}
+
+function f_ami_transceive_ret(AMI_Msg_PT pt, template (value) AMI_Msg tx_msg, float rx_timeout := 10.0) return AMI_Msg {
+	var AMI_Msg rx_msg;
+	timer T;
+
+	T.start(rx_timeout);
+	pt.send(tx_msg);
+	alt {
+	[] pt.receive(AMI_Msg:?) -> value rx_msg;
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("AMI Response timeout: ", tx_msg));
+		}
+	}
+	T.stop;
+	return rx_msg;
+
+}
+
+altstep as_ami_rx_ignore(AMI_Msg_PT pt)
+{
+	var AMI_Msg msg;
+	[] pt.receive(AMI_Msg:?) -> value msg {
+		log("Ignoring AMI message := ", msg);
+		repeat;
+	}
+}
+
+private altstep as_ami_rx_fail(AMI_Msg_PT pt, template AMI_Msg exp_msg := *)
+{
+	var AMI_Msg msg;
+	[] pt.receive(AMI_Msg:?) -> value msg {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("Received unexpected AMI message := ", msg, "\nvs exp := ", exp_msg));
+	}
+}
+
+altstep as_ami_expect_msg(AMI_Msg_PT pt, template (present) AMI_Msg msg_expect, boolean fail_others := true)
+{
+	[] pt.receive(msg_expect);
+	[fail_others] as_ami_rx_fail(pt, msg_expect);
+}
+
+function f_ami_wait_rx_msg(AMI_Msg_PT pt,
+			   template (present) AMI_Msg msg_expect := ?,
+			   boolean fail_others := true,
+			   float rx_timeout := 10.0) return AMI_Msg {
+	var AMI_Msg ami_msg;
+	timer tAMI;
+
+	tAMI.start(rx_timeout);
+	alt {
+	[] pt.receive(msg_expect) -> value ami_msg;
+	[not fail_others] as_ami_rx_ignore(pt);
+	[fail_others] as_ami_rx_fail(pt, msg_expect);
+	[] tAMI.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					log2str("AMI msg timeout: ", msg_expect));
+		}
+	}
+	tAMI.stop;
+	return ami_msg;
+}
+
+function f_ami_transceive_match(AMI_Msg_PT pt,
+				template (value) AMI_Msg tx_msg,
+				template (present) AMI_Msg exp_ret := ?,
+				boolean fail_others := true,
+				float rx_timeout := 10.0) return AMI_Msg {
+	pt.send(tx_msg);
+	return f_ami_wait_rx_msg(pt, exp_ret, fail_others, rx_timeout);
+}
+
+function f_ami_transceive_match_response_success(AMI_Msg_PT pt,
+						 template (value) AMI_Msg tx_msg,
+						 boolean fail_others := true) {
+	var template (present) AMI_Msg exp_resp;
+	var template (omit) charstring action_id := f_ami_msg_get_value(valueof(tx_msg), AMI_FIELD_ACTION_ID);
+	if (isvalue(action_id)) {
+		exp_resp := tr_AMI_Response_Success_ActionId(action_id);
+	} else {
+		exp_resp := tr_AMI_Response_Success;
+	}
+	f_ami_transceive_match(pt, tx_msg, exp_resp, fail_others := fail_others);
+}
+
+function f_ami_action_login(AMI_Msg_PT pt, charstring username, charstring secret) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_Login(username, secret, reg_action_id));
+}
+
+function f_ami_action_PJSIPAccessNetworkInfo(AMI_Msg_PT pt,
+					     template (value) charstring registration,
+					     template (value) charstring info) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_PJSIPAccessNetworkInfo(registration, info, reg_action_id));
+}
+
+function f_ami_action_DedicatedBearerStatus(AMI_Msg_PT pt,
+					    template (value) charstring channel,
+					    template (value) charstring status,
+					    boolean fail_others := true) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_DedicatedBearerStatus(channel, status, reg_action_id),
+						fail_others := fail_others);
+}
+
+function f_ami_action_PJSIPRegister(AMI_Msg_PT pt, charstring register) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_PJSIPRegister(register, reg_action_id));
+}
+
+function f_ami_action_PJSIPUnregister(AMI_Msg_PT pt,
+				      charstring register,
+				      boolean fail_others := true) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_PJSIPUnregister(register, reg_action_id),
+						fail_others := fail_others);
+}
+
+function f_ami_action_AuthResponse_AUTS(AMI_Msg_PT pt,
+					template (value) charstring registration,
+					template (value) charstring auts) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_AuthResponse_AUTS(registration, auts, reg_action_id));
+}
+function f_ami_action_AuthResponse_RES(AMI_Msg_PT pt,
+				       template (value) charstring registration,
+				       template (value) charstring res,
+				       template (value) charstring ck,
+				       template (value) charstring ik) {
+	var charstring reg_action_id := f_gen_action_id();
+	f_ami_transceive_match_response_success(pt, ts_AMI_Action_AuthResponse_RES(registration, res, ck, ik, reg_action_id));
+}
+
+private function f_ami_selftest_decode(charstring txt) {
+	log("Text to decode: '", txt, "'");
+	var AMI_Msg msg := dec_AMI_Msg(txt);
+	log("AMI_Msg decoded: ", msg);
+}
+
+function f_ami_selftest() {
+	f_ami_selftest_decode("AppData: 5,0502: Call pjsip endpoint from 0501\r\n");
+}
+
+}

@@ -1,0 +1,205 @@
+/* PCU Interface codec poart in TTCN-3
+ * (C) 2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module PCUIF_CodecPort {
+
+import from Osmocom_Types all;
+import from PCUIF_Types all;
+import from UD_PortType all;
+import from UD_Types all;
+import from General_Types all;
+
+type record PCUIF_send_data {
+	PCUIF_Message	data,
+	integer		id
+};
+
+private function PCUIF_to_UD(in PCUIF_send_data pin, out UD_send_data pout) {
+	pout.id := pin.id;
+	pout.data := enc_PCUIF_Message(pin.data);
+} with { extension "prototype(fast)" };
+
+private function fix_padding(inout PCUIF_data data) {
+	data.data := substr(data.data, 0, data.len);
+}
+
+private function UD_to_PCUIF(in UD_send_data pin, out PCUIF_send_data pout) {
+	pout.id := pin.id;
+	pout.data := dec_PCUIF_Message(pin.data);
+
+	/* HACK: fix padding in decoded message. Due to a bug in TITAN, we
+	 * cannot just use its 'PADDING' attribute because it breaks decoding. */
+	if (ischosen(pout.data.u.data_req)) { fix_padding(pout.data.u.data_req); }
+	if (ischosen(pout.data.u.data_ind)) { fix_padding(pout.data.u.data_ind); }
+} with { extension "prototype(fast)" };
+
+type port PCUIF_CODEC_PT message {
+	out	UD_close, UD_listen, UD_shutdown, UD_connect, PCUIF_send_data;
+	in	UD_listen_result, UD_connect_result, UD_connected, PCUIF_send_data;
+} with { extension "user UD_PT
+	out (
+		UD_close -> UD_close:simple;
+		UD_listen -> UD_listen:simple;
+		UD_shutdown -> UD_shutdown:simple;
+		UD_connect -> UD_connect:simple;
+		PCUIF_send_data -> UD_send_data: function(PCUIF_to_UD)
+		)
+	in (
+		UD_listen_result -> UD_listen_result:simple;
+		UD_connect_result -> UD_connect_result:simple;
+		UD_send_data -> PCUIF_send_data: function(UD_to_PCUIF);
+		UD_connected -> UD_connected:simple
+		)"
+};
+
+template PCUIF_send_data t_SD_PCUIF(integer id, template PCUIF_Message pdu) := {
+	data := pdu,
+	id := id
+}
+
+template PCUIF_send_data t_SD_PCUIF_MSGT(integer id, template PCUIF_MsgType msg_type,
+					 template uint8_t bts_nr := ?) := {
+	data := {
+		msg_type := msg_type,
+		bts_nr := bts_nr,
+		spare := ?,
+		u := ?
+	},
+	id := id
+}
+
+function f_pcuif_connect(PCUIF_CODEC_PT pt, charstring sock) return integer {
+	var UD_connect_result res;
+	timer T := 5.0;
+
+	T.start;
+	pt.send(UD_connect:{sock, -1});
+	alt {
+	[] pt.receive(UD_connect_result:?) -> value res {
+		if (ispresent(res.result) and ispresent(res.result.result_code) and
+		    res.result.result_code == ERROR) {
+			if (ispresent(res.result.err)) {
+				setverdict(fail, "Error connecting to PCU socket ", sock, ": ", res.result.err);
+			} else {
+				setverdict(fail, "Error connecting to PCU socket ", sock);
+			}
+			mtc.stop;
+		} else {
+			return res.id;
+		}
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout connecting to PCU socket ", sock);
+		mtc.stop;
+		}
+	}
+	return -23;
+}
+
+function f_pcuif_close(PCUIF_CODEC_PT pt, integer id)
+{
+	pt.send(UD_close:{id := id});
+}
+
+function f_pcuif_listen(PCUIF_CODEC_PT pt, charstring sock) return integer {
+	var UD_listen_result res;
+	var UD_connected udc;
+	timer T := 5.0;
+
+	pt.send(UD_listen:{sock});
+	T.start;
+	alt {
+	[] pt.receive(UD_listen_result:?) -> value res {
+		if (ispresent(res.result) and ispresent (res.result.result_code) and
+		    res.result.result_code == ERROR) {
+			if (ispresent(res.result.err)) {
+				setverdict(fail, "Error listening on PCU socket ", sock, ": ", res.result.err);
+			} else {
+				setverdict(fail, "Error listening on PCU socket ", sock);
+			}
+			mtc.stop;
+		} else {
+			return res.id;
+		}
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for PCU socket ", sock, " connection");
+		mtc.stop;
+		}
+	}
+	return -23;
+}
+
+function f_PCUIF_tx_imm_ass_pch(PCUIF_CODEC_PT pt, integer conn_id, octetstring imm_ass, hexstring imsi,
+				uint8_t bts_nr := 0, boolean wait_for_cnf := true, OCT4 msg_id := '01020304'O) {
+	timer T := 3.0;
+
+	var PCUIF_pch pch := {
+		msg_id := msg_id,
+		imsi := hex2str(imsi),
+		data := imm_ass,
+		confirm := true
+	};
+	pt.send(t_SD_PCUIF(conn_id, ts_PCUIF_DATA_REQ(bts_nr, 0, 0, 0, 0, PCU_IF_SAPI_PCH_2, enc_PCUIF_pch(pch))));
+
+	/* Exit early when the caller is not interested in the confirmation message */
+	if (wait_for_cnf == false) {
+		return;
+	}
+
+	T.start;
+	alt {
+	[] pt.receive(t_SD_PCUIF(conn_id, tr_PCUIF_DATA_CNF_2(bts_nr, PCU_IF_SAPI_PCH_2))) {
+		log("IMM.ASS was sent on PCH");
+		}
+	[] pt.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for PCU DATA.cnf (PCH)");
+		mtc.stop;
+		}
+	}
+}
+
+/* This function can be used to transmit arbitrary GSM MAC blocks via the AGCH. The BTS will only confirm those MAC
+ * blocks that contain actually a valid immediate assignment message. Otherweise no confirmation is sent back */
+function f_PCUIF_tx_mac_block_agch(PCUIF_CODEC_PT pt, integer conn_id, octetstring mac_block, boolean confirm := true,
+				   uint8_t bts_nr := 0, boolean wait_for_cnf := true, OCT4 msg_id := '01020304'O) {
+	timer T := 3.0;
+
+	var PCUIF_agch agch := {
+		msg_id := msg_id,
+		data := mac_block,
+		confirm := confirm
+	};
+	pt.send(t_SD_PCUIF(conn_id, ts_PCUIF_DATA_REQ(bts_nr, 0, 0, 0, 0, PCU_IF_SAPI_AGCH_2, enc_PCUIF_agch(agch))));
+
+	/* Exit early when the caller is not interested in the confirmation message */
+	if (wait_for_cnf == false) {
+		return;
+	}
+
+	T.start;
+	alt {
+	[] pt.receive(t_SD_PCUIF(conn_id, tr_PCUIF_DATA_CNF_2(bts_nr, PCU_IF_SAPI_AGCH_2))) {
+		log("IMM.ASS was sent on AGCH");
+		}
+	[] pt.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for PCU DATA.cnf (AGCH)");
+		mtc.stop;
+		}
+	}
+	return;
+}
+
+
+
+}

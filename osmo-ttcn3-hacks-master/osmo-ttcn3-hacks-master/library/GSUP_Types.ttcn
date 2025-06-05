@@ -1,0 +1,452 @@
+module GSUP_Types {
+
+/* GSUP_Types, defining abstract TTCN-3 data types for the GSUP protocol.
+ *
+ * GSUP is a non-standard protocol used between OsmoMSC/OsmoSGSN and OsmoHLR
+ * in order to replace the complex TCAP/MAP protocol.
+ *
+ * (C) 2017-2019 by Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from PCO_Types all;
+
+type enumerated GSUP_IEI {
+	OSMO_GSUP_IMSI_IE		('01'O),
+	OSMO_GSUP_CAUSE_IE		('02'O),
+	OSMO_GSUP_AUTH_TUPLE_IE		('03'O),
+	OSMO_GSUP_PDP_INFO_COMPL_IE	('04'O),
+	OSMO_GSUP_PDP_INFO_IE		('05'O),
+	OSMO_GSUP_CANCEL_TYPE_IE	('06'O),
+	OSMO_GSUP_FREEZE_PTMSI_IE	('07'O),
+	OSMO_GSUP_MSISDN_IE		('08'O),
+	OSMO_GSUP_HLR_NUMBER_IE		('09'O),
+	OSMO_GSUP_PDP_CONTEXT_ID_IE	('10'O),
+	OSMO_GSUP_PDP_ADDRESS_IE	('11'O),
+	OSMO_GSUP_ACCESS_POINT_NAME_IE	('12'O),
+	OSMO_GSUP_PDP_QOS_IE		('13'O),
+	OSMO_GSUP_CHARG_CHAR_IE		('14'O),
+	OSMO_GSUP_PCO_IE		('15'O),
+
+	OSMO_GSUP_RAND_IE		('20'O),
+	OSMO_GSUP_SRES_IE		('21'O),
+	OSMO_GSUP_KC_IE			('22'O),
+	OSMO_GSUP_IK_IE			('23'O),
+	OSMO_GSUP_CK_IE			('24'O),
+	OSMO_GSUP_AUTN_IE		('25'O),
+	OSMO_GSUP_AUTS_IE		('26'O),
+	OSMO_GSUP_RES_IE		('27'O),
+	OSMO_GSUP_CN_DOMAIN_IE		('28'O),
+	OSMO_GSUP_SUPPORTED_RAT_TYPES_IE ('29'O),
+	OSMO_GSUP_CURRENT_RAT_TYPE_IE	('2a'O),
+
+	OSMO_GSUP_SESSION_ID_IE		('30'O),
+	OSMO_GSUP_SESSION_STATE_IE	('31'O),
+	OSMO_GSUP_SS_INFO_IE		('35'O),
+
+	/* SM related IEs (see 3GPP TS 29.002, section 7.6.8) */
+	OSMO_GSUP_SM_RP_MR_IE		('40'O),
+	OSMO_GSUP_SM_RP_DA_IE		('41'O),
+	OSMO_GSUP_SM_RP_OA_IE		('42'O),
+	OSMO_GSUP_SM_RP_UI_IE		('43'O),
+	OSMO_GSUP_SM_RP_CAUSE_IE	('44'O),
+	OSMO_GSUP_SM_RP_MMS_IE		('45'O),
+	OSMO_GSUP_SM_ALERT_RSN_IE	('46'O),
+
+	OSMO_GSUP_IMEI_IE		('50'O),
+	OSMO_GSUP_IMEI_RESULT_IE	('51'O),
+	OSMO_GSUP_NUM_VECTORS_REQ_IE	('52'O),
+
+	OSMO_GSUP_MESSAGE_CLASS_IE		('0a'O),
+
+	OSMO_GSUP_SOURCE_NAME_IE	('60'O),
+	OSMO_GSUP_DESTINATION_NAME_IE	('61'O),
+	OSMO_GSUP_AN_APDU_IE		('62'O),
+	OSMO_GSUP_CAUSE_RR_IE		('63'O),
+	OSMO_GSUP_CAUSE_BSSAP_IE	('64'O),
+	OSMO_GSUP_CAUSE_SM_IE		('65'O)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_MessageType {
+	OSMO_GSUP_MSGT_UPDATE_LOCATION_REQUEST	('00000100'B),
+	OSMO_GSUP_MSGT_UPDATE_LOCATION_ERROR	('00000101'B),
+	OSMO_GSUP_MSGT_UPDATE_LOCATION_RESULT	('00000110'B),
+
+	OSMO_GSUP_MSGT_SEND_AUTH_INFO_REQUEST	('00001000'B),
+	OSMO_GSUP_MSGT_SEND_AUTH_INFO_ERROR	('00001001'B),
+	OSMO_GSUP_MSGT_SEND_AUTH_INFO_RESULT	('00001010'B),
+
+	OSMO_GSUP_MSGT_AUTH_FAIL_REPORT		('00001011'B),
+
+	OSMO_GSUP_MSGT_PURGE_MS_REQUEST		('00001100'B),
+	OSMO_GSUP_MSGT_PURGE_MS_ERROR		('00001101'B),
+	OSMO_GSUP_MSGT_PURGE_MS_RESULT		('00001110'B),
+
+	OSMO_GSUP_MSGT_INSERT_DATA_REQUEST	('00010000'B),
+	OSMO_GSUP_MSGT_INSERT_DATA_ERROR	('00010001'B),
+	OSMO_GSUP_MSGT_INSERT_DATA_RESULT	('00010010'B),
+
+	OSMO_GSUP_MSGT_DELETE_DATA_REQUEST	('00010100'B),
+	OSMO_GSUP_MSGT_DELETE_DATA_ERROR	('00010101'B),
+	OSMO_GSUP_MSGT_DELETE_DATA_RESULT	('00010110'B),
+
+	OSMO_GSUP_MSGT_LOCATION_CANCEL_REQUEST	('00011100'B),
+	OSMO_GSUP_MSGT_LOCATION_CANCEL_ERROR	('00011101'B),
+	OSMO_GSUP_MSGT_LOCATION_CANCEL_RESULT	('00011110'B),
+
+	OSMO_GSUP_MSGT_PROC_SS_REQUEST		('00100000'B),
+	OSMO_GSUP_MSGT_PROC_SS_ERROR		('00100001'B),
+	OSMO_GSUP_MSGT_PROC_SS_RESULT		('00100010'B),
+
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_REQUEST	('00100100'B),
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_ERROR	('00100101'B),
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_RESULT	('00100110'B),
+
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_REQUEST	('00101000'B),
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_ERROR	('00101001'B),
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_RESULT	('00101010'B),
+
+	OSMO_GSUP_MSGT_READY_FOR_SM_REQUEST	('00101100'B),
+	OSMO_GSUP_MSGT_READY_FOR_SM_ERROR	('00101101'B),
+	OSMO_GSUP_MSGT_READY_FOR_SM_RESULT	('00101110'B),
+
+	OSMO_GSUP_MSGT_CHECK_IMEI_REQUEST	('00110000'B),
+	OSMO_GSUP_MSGT_CHECK_IMEI_ERROR		('00110001'B),
+	OSMO_GSUP_MSGT_CHECK_IMEI_RESULT	('00110010'B),
+
+	OSMO_GSUP_MSGT_E_PREPARE_HANDOVER_REQUEST		('00110100'B),
+	OSMO_GSUP_MSGT_E_PREPARE_HANDOVER_ERROR			('00110101'B),
+	OSMO_GSUP_MSGT_E_PREPARE_HANDOVER_RESULT		('00110110'B),
+
+	OSMO_GSUP_MSGT_E_PREPARE_SUBSEQUENT_HANDOVER_REQUEST	('00111000'B),
+	OSMO_GSUP_MSGT_E_PREPARE_SUBSEQUENT_HANDOVER_ERROR	('00111001'B),
+	OSMO_GSUP_MSGT_E_PREPARE_SUBSEQUENT_HANDOVER_RESULT	('00111010'B),
+
+	OSMO_GSUP_MSGT_E_SEND_END_SIGNAL_REQUEST		('00111100'B),
+	OSMO_GSUP_MSGT_E_SEND_END_SIGNAL_ERROR			('00111101'B),
+	OSMO_GSUP_MSGT_E_SEND_END_SIGNAL_RESULT			('00111110'B),
+
+	OSMO_GSUP_MSGT_E_PROCESS_ACCESS_SIGNALLING_REQUEST	('01000000'B),
+	OSMO_GSUP_MSGT_E_FORWARD_ACCESS_SIGNALLING_REQUEST	('01000100'B),
+
+	OSMO_GSUP_MSGT_E_CLOSE					('01000111'B),
+	OSMO_GSUP_MSGT_E_ABORT					('01001011'B),
+
+	OSMO_GSUP_MSGT_E_ROUTING_ERROR				('01001110'B),
+
+	OSMO_GSUP_MSGT_EPDG_TUNNEL_REQUEST			('01010000'B),
+	OSMO_GSUP_MSGT_EPDG_TUNNEL_ERROR			('01010001'B),
+	OSMO_GSUP_MSGT_EPDG_TUNNEL_RESULT			('01010010'B)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_CancelType {
+	OSMO_GSUP_CANCEL_TYPE_UPDATE		(0),
+	OSMO_GSUP_CANCEL_TYPE_WITHDRAW		(1)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_CnDomain {
+	OSMO_GSUP_CN_DOMAIN_PS			(1),
+	OSMO_GSUP_CN_DOMAIN_CS			(2)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_IMEIResult {
+	OSMO_GSUP_IMEI_RESULT_ACK		(0),
+	OSMO_GSUP_IMEI_RESULT_NACK		(1)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_SessionState {
+	OSMO_GSUP_SESSION_STATE_NONE		(0),
+	OSMO_GSUP_SESSION_STATE_BEGIN		(1),
+	OSMO_GSUP_SESSION_STATE_CONTINUE	(2),
+	OSMO_GSUP_SESSION_STATE_END		(3)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated GSUP_Message_Class {
+	OSMO_GSUP_MESSAGE_CLASS_UNSET			(0),
+	OSMO_GSUP_MESSAGE_CLASS_SUBSCRIBER_MANAGEMENT	(1),
+	OSMO_GSUP_MESSAGE_CLASS_SMS			(2),
+	OSMO_GSUP_MESSAGE_CLASS_USSD			(3),
+	OSMO_GSUP_MESSAGE_CLASS_INTER_MSC		(4),
+	OSMO_GSUP_MESSAGE_CLASS_IPSEC_EPDG		(5)
+} with { variant "FIELDLENGTH(8)" };
+
+type record GSUP_MSISDN {
+	uint8_t	len,
+	hexstring digits optional
+} with { variant (len) "LENGTHTO(digits)" };
+
+type record GSUP_IMEI {
+	uint8_t	len,
+	hexstring digits optional
+} with { variant (len) "LENGTHTO(digits)" };
+
+type enumerated GSUP_AN_PROTO {
+	OSMO_GSUP_AN_PROTO_48006 (1),
+	OSMO_GSUP_AN_PROTO_25413 (2)
+} with { variant "FIELDLENGTH(8)" };
+
+type record GSUP_AN_APDU {
+	GSUP_AN_PROTO proto,
+	octetstring pdu
+};
+
+type union GSUP_PDP_Address {
+	GSUP_PDP_Address_IPv4		ipv4,
+	GSUP_PDP_Address_IPv6		ipv6,
+	GSUP_PDP_Address_IPv4v6	ipv4v6,
+	GSUP_PDP_Address_unknown	other
+} with { variant "TAG(ipv4, pdp_typenum = '21'O;
+		      ipv6, pdp_typenum = '57'O;
+		      ipv4v6, pdp_typenum = '8D'O;
+		      other, OTHERWISE;)" };
+
+type record  GSUP_PDP_Address_IPv4 {
+	BIT4	spare,
+	BIT4	pdp_typeorg,
+	OCT1	pdp_typenum,
+	OCT4	ipv4_address optional
+};
+
+type record GSUP_PDP_Address_IPv6 {
+	BIT4	spare,
+	BIT4	pdp_typeorg,
+	OCT1 	pdp_typenum,
+	OCT16	ipv6_address optional
+};
+
+type record GSUP_PDP_Address_IPv4v6 {
+	BIT4	spare,
+	BIT4	pdp_typeorg,
+	OCT1 	pdp_typenum,
+	OCT4 	ipv4_address optional,
+	OCT16	ipv6_address optional
+};
+
+type record  GSUP_PDP_Address_unknown {
+	BIT4	spare,
+	BIT4	pdp_typeorg,
+	OCT1	pdp_typenum,
+	octetstring addr optional
+};
+
+type record GSUP_IE {
+	GSUP_IEI	tag,
+	uint8_t		len,
+	GSUP_IeValue	val
+} with { variant (len) "LENGTHTO(val)"
+	 variant (val) "CROSSTAG(imsi, tag = OSMO_GSUP_IMSI_IE;
+				 cause, tag = OSMO_GSUP_CAUSE_IE;
+				 cancel_type, tag = OSMO_GSUP_CANCEL_TYPE_IE;
+				 auth_tuple, tag = OSMO_GSUP_AUTH_TUPLE_IE;
+				 pdp_info_compl, tag = OSMO_GSUP_PDP_INFO_COMPL_IE;
+				 auts, tag = OSMO_GSUP_AUTS_IE;
+				 rand, tag = OSMO_GSUP_RAND_IE;
+				 sres, tag = OSMO_GSUP_SRES_IE;
+				 kc, tag = OSMO_GSUP_KC_IE;
+				 ik, tag = OSMO_GSUP_IK_IE;
+				 ck, tag = OSMO_GSUP_CK_IE;
+				 autn, tag = OSMO_GSUP_AUTN_IE;
+				 res, tag = OSMO_GSUP_RES_IE;
+				 msisdn, tag = OSMO_GSUP_MSISDN_IE;
+				 hlr_number, tag = OSMO_GSUP_HLR_NUMBER_IE;
+				 cn_domain, tag = OSMO_GSUP_CN_DOMAIN_IE;
+				 pdp_info, tag = OSMO_GSUP_PDP_INFO_IE;
+				 pdp_address, tag = OSMO_GSUP_PDP_ADDRESS_IE;
+				 apn, tag = OSMO_GSUP_ACCESS_POINT_NAME_IE;
+				 pdp_qos, tag = OSMO_GSUP_PDP_QOS_IE;
+				 charg_char, tag = OSMO_GSUP_CHARG_CHAR_IE;
+				 pco, tag = OSMO_GSUP_PCO_IE;
+				 pdp_ctx_id, tag = OSMO_GSUP_PDP_CONTEXT_ID_IE;
+				 session_state, tag = OSMO_GSUP_SESSION_STATE_IE;
+				 session_id, tag = OSMO_GSUP_SESSION_ID_IE;
+				 ss_info, tag = OSMO_GSUP_SS_INFO_IE;
+				 sm_rp_mr, tag = OSMO_GSUP_SM_RP_MR_IE;
+				 sm_rp_da, tag = OSMO_GSUP_SM_RP_DA_IE;
+				 sm_rp_oa, tag = OSMO_GSUP_SM_RP_OA_IE;
+				 sm_rp_ui, tag = OSMO_GSUP_SM_RP_UI_IE;
+				 sm_rp_cause, tag = OSMO_GSUP_SM_RP_CAUSE_IE;
+				 sm_rp_mms, tag = OSMO_GSUP_SM_RP_MMS_IE;
+				 sm_alert_rsn, tag = OSMO_GSUP_SM_ALERT_RSN_IE;
+				 imei, tag = OSMO_GSUP_IMEI_IE;
+				 imei_result, tag = OSMO_GSUP_IMEI_RESULT_IE;
+				 num_auth_vectors, tag = OSMO_GSUP_NUM_VECTORS_REQ_IE;
+				 message_class, tag = OSMO_GSUP_MESSAGE_CLASS_IE;
+				 source_name, tag = OSMO_GSUP_SOURCE_NAME_IE;
+				 destination_name, tag = OSMO_GSUP_DESTINATION_NAME_IE;
+				 an_apdu, tag = OSMO_GSUP_AN_APDU_IE;
+				 cause_rr, tag = OSMO_GSUP_CAUSE_RR_IE;
+				 cause_bssap, tag = OSMO_GSUP_CAUSE_BSSAP_IE;
+				 cause_sm, tag = OSMO_GSUP_CAUSE_SM_IE;
+				 supported_rat_types, tag = OSMO_GSUP_SUPPORTED_RAT_TYPES_IE;
+				 current_rat_type, tag = OSMO_GSUP_CURRENT_RAT_TYPE_IE;
+			)"
+};
+
+type record of GSUP_IE GSUP_IEs;
+
+type enumerated GSUP_RatType {
+	RAT_TYPE_UNKNOWN	(0),
+	RAT_TYPE_GERAN_A	(1),
+	RAT_TYPE_UTRAN_Iu	(2),
+	RAT_TYPE_EUTRAN_SGs	(3)
+} with { variant "FIELDLENGTH(8)" };
+
+type record of GSUP_RatType GSUP_RatTypes;
+
+type union GSUP_IeValue {
+	hexstring	imsi,
+	integer		cause,
+	GSUP_CancelType	cancel_type,
+	octetstring	pdp_info_compl,
+	//octetstring		freeze_ptmsi,
+	GSUP_IEs	auth_tuple,
+	octetstring	auts,
+	octetstring	rand,
+	octetstring	sres,
+	octetstring	kc,
+	octetstring	ik,
+	octetstring	ck,
+	octetstring	autn,
+	octetstring	res,
+	GSUP_MSISDN	msisdn,
+	octetstring	hlr_number,
+	GSUP_CnDomain	cn_domain,
+	/* PDP context + nested IEs */
+	GSUP_IEs	pdp_info,
+	OCT1		pdp_ctx_id,
+	octetstring	apn,
+	octetstring	pdp_qos,
+	GSUP_PDP_Address	pdp_address,
+	octetstring	charg_char,
+	PCO_DATA	pco,
+	/* Session information */
+	GSUP_SessionState	session_state,
+	OCT4			session_id,
+	/* Supplementary Services */
+	octetstring		ss_info,
+	/* Short Message Service */
+	OCT1			sm_rp_mr,
+	GSUP_SM_RP_DA		sm_rp_da,
+	GSUP_SM_RP_OA		sm_rp_oa,
+	octetstring		sm_rp_ui,
+	OCT1			sm_rp_cause,
+	OCT1			sm_rp_mms,
+	GSUP_SM_ALERT_RSN_Type	sm_alert_rsn,
+
+	GSUP_IMEI		imei,
+	GSUP_IMEIResult		imei_result,
+	OCT1			num_auth_vectors,
+
+	GSUP_Message_Class	message_class,
+
+	octetstring		source_name,
+	octetstring		destination_name,
+
+	GSUP_AN_APDU		an_apdu,
+
+	OCT1			cause_rr,
+	OCT1			cause_bssap,
+	OCT1			cause_sm,
+
+	GSUP_RatTypes		supported_rat_types,
+	GSUP_RatType		current_rat_type
+};
+
+type record GSUP_PDU {
+	GSUP_MessageType	msg_type,
+	GSUP_IEs		ies
+};
+
+type record of GSUP_PDU GSUP_PDUs;
+
+
+external function enc_GSUP_PDU(in GSUP_PDU msg) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+
+external function dec_GSUP_PDU(in octetstring msg) return GSUP_PDU
+	with { extension "prototype(convert) decode(RAW)" };
+
+/* See 3GPP TS 24.011, figures 8.5 and 8.6 */
+type record GSUP_SM_RP_Addr {
+	BIT1		ext, /* Extension? */
+	BIT3		ton, /* Type of Number */
+	BIT4		npi, /* Numbering Plan Identification */
+	hexstring	number length (1..20)
+} with {
+	variant "PADDING(yes)";
+	variant "PADDING_PATTERN('1111'B)"
+};
+
+/**
+ * SM-RP-DA represents the SM Destination Address, see 7.6.8.1.
+ * It can be either of the following:
+ *  - IMSI
+ *  - LMSI (not implemented)
+ *  - MSISDN
+ *  - roaming number (not implemented)
+ *  - service centre address
+ */
+type union GSUP_SM_RP_DA_ID {
+	hexstring		imsi,
+	GSUP_SM_RP_Addr		msisdn,
+	GSUP_SM_RP_Addr		smsc_addr
+};
+
+type record GSUP_SM_RP_DA {
+	GSUP_SM_RP_ODA_IdType	id_type,
+	GSUP_SM_RP_DA_ID	id_enc optional
+} with { variant (id_enc) "CROSSTAG(
+		imsi, id_type = OSMO_GSUP_SM_RP_ODA_ID_IMSI;
+		msisdn, id_type = OSMO_GSUP_SM_RP_ODA_ID_MSISDN;
+		smsc_addr, id_type = OSMO_GSUP_SM_RP_ODA_ID_SMSC_ADDR;
+		/* FIXME: how to handle noSM-RP-DA? */
+	)"
+};
+
+/**
+ * SM-RP-OA represents the SM Originating Address, see 7.6.8.2.
+ * It can be either of the following:
+ *  - MSISDN
+ *  - service centre address
+ */
+type union GSUP_SM_RP_OA_ID {
+	GSUP_SM_RP_Addr		msisdn,
+	GSUP_SM_RP_Addr		smsc_addr
+};
+
+type record GSUP_SM_RP_OA {
+	GSUP_SM_RP_ODA_IdType	id_type,
+	GSUP_SM_RP_OA_ID	id_enc optional
+} with { variant (id_enc) "CROSSTAG(
+		msisdn, id_type = OSMO_GSUP_SM_RP_ODA_ID_MSISDN;
+		smsc_addr, id_type = OSMO_GSUP_SM_RP_ODA_ID_SMSC_ADDR;
+		/* FIXME: how to handle noSM-RP-OA? */
+	)"
+};
+
+/* SM Alert Reason types, see 7.6.8.8 */
+type enumerated GSUP_SM_ALERT_RSN_Type {
+	GSUP_SM_ALERT_RSN_TYPE_NONE		('00'O),
+	GSUP_SM_ALERT_RSN_TYPE_MS_PRESENT	('01'O),
+	GSUP_SM_ALERT_RSN_TYPE_MEM_AVAIL	('02'O)
+} with { variant "FIELDLENGTH(8)" };
+
+/* Possible identity types for SM-RP-{OA|DA} IEs */
+type enumerated GSUP_SM_RP_ODA_IdType {
+	OSMO_GSUP_SM_RP_ODA_ID_NONE		('00'O),
+	OSMO_GSUP_SM_RP_ODA_ID_IMSI		('01'O),
+	OSMO_GSUP_SM_RP_ODA_ID_MSISDN		('02'O),
+	OSMO_GSUP_SM_RP_ODA_ID_SMSC_ADDR	('03'O),
+	/* Special value for noSM-RP-DA and noSM-RP-OA */
+	OSMO_GSUP_SM_RP_ODA_ID_NULL		('FF'O)
+} with { variant "FIELDLENGTH(8)" };
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" }

@@ -1,0 +1,1333 @@
+module BSSGP_ConnHdlr {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from GSM_Types all;
+import from Native_Functions all;
+import from Misc_Helpers all;
+import from NS_Types all;
+import from NS_Emulation all;
+import from BSSGP_Types all;
+import from BSSGP_Emulation all;
+import from Osmocom_Gb_Types all;
+import from SCCPasp_Types all;
+
+import from MobileL3_CommonIE_Types all;
+import from MobileL3_GMM_SM_Types all;
+import from MobileL3_Types all;
+import from L3_Templates all;
+import from L3_Common all;
+import from ITU_X213_Types all;
+
+import from GSUP_Types all;
+import from GSUP_Templates all;
+import from GSUP_Emulation all;
+import from IPA_Emulation all;
+
+import from RAN_Adapter all;
+import from RANAP_Constants all;
+import from RANAP_PDU_Descriptions all;
+import from RANAP_PDU_Contents all;
+import from RANAP_IEs all;
+import from RAN_Emulation all;
+import from RANAP_Templates all;
+
+import from GTPv1C_CodecPort all;
+import from GTPv1U_CodecPort all;
+import from GTPC_Types all;
+import from GTPU_Types all;
+import from GTPv1C_Templates all;
+import from GTPv1U_Templates all;
+import from GTP_Emulation all;
+
+import from LLC_Types all;
+import from LLC_Templates all;
+
+import from SNDCP_Types all;
+
+import from TELNETasp_PortType all;
+import from Osmocom_VTY_Functions all;
+
+import from MobileL3_MM_Types all;
+
+const integer NUM_GB := 3;
+type record length(NUM_GB) of BssgpCellId BssgpCellIds;
+
+/* Emulated GGSN is at GTP_ConnHdlr.GTP[0] */
+const integer GTP_GGSN_IDX := 0;
+function ran2gtp_idx(integer ran_index) return integer {
+	return ran_index + 1 - NUM_GB;
+}
+
+type component BSSGP_ConnHdlr extends BSSGP_Client_CT, GSUP_ConnHdlr, GTP_ConnHdlr, RAN_ConnHdlr {
+	var BSSGP_ConnHdlrPars g_pars;
+	timer g_Tguard;
+	var LLC_Entities llc;
+}
+
+type record SGSN_ConnHdlrNetworkPars {
+	boolean expect_ptmsi,
+	boolean expect_auth,
+	boolean expect_ciph
+};
+
+template (value) SGSN_ConnHdlrNetworkPars t_NetPars(
+                template (value) boolean expect_ptmsi := true,
+	        template (value) boolean expect_auth := true,
+	        template (value) boolean expect_ciph := false) := {
+	expect_ptmsi := expect_ptmsi,
+	expect_auth := expect_auth,
+	expect_ciph := expect_ciph
+};
+
+type record BSSGP_ConnHdlrPars {
+	/* IMEI of the simulated ME */
+	hexstring imei,
+	/* IMSI of the simulated MS */
+	hexstring imsi,
+	/* MSISDN of the simulated MS (probably unused) */
+	hexstring msisdn,
+	/* P-TMSI allocated to the simulated MS */
+	OCT4 p_tmsi optional,
+	OCT3 p_tmsi_sig optional,
+	/* TLLI of the simulated MS */
+	OCT4 tlli,
+	OCT4 tlli_old optional,
+	RoutingAreaIdentificationV ra optional,
+	BssgpCellIds bssgp_cell_id,
+	/* Tracks the RNC state. If true next L3 message will be sent with InitiualUe */
+	boolean rnc_send_initial_ue,
+	AuthVector vec optional,
+	SGSN_ConnHdlrNetworkPars net,
+	float t_guard,
+	/* only in IuPS / RANAP case */
+	SCCP_PAR_Address sccp_addr_local optional,
+	SCCP_PAR_Address sccp_addr_peer optional,
+	/* Whether to expect an specific addr format in RAB Ass Req: true = X.213, false = raw IPv4, omit = don't care */
+	boolean ranap_exp_itu_x213_addr_format optional,
+	/* Whether to encode HNBGW addr with ITU X.213 format when sending RAB Ass Resp: */
+	boolean ranap_use_itu_x213_addr_format,
+	octetstring ranap_itu_x213_addr_format_padding
+};
+
+function f_new_BSSGP_ConnHdlrPars(integer imsi_suffix,
+				  template (value) BssgpCellIds cell_ids,
+				  template (value) SGSN_ConnHdlrNetworkPars net_pars := t_NetPars(),
+				  float t_guard := 30.0) return BSSGP_ConnHdlrPars {
+	var template (value) BSSGP_ConnHdlrPars pars;
+	pars := {
+		imei := f_gen_imei(imsi_suffix),
+		imsi := f_gen_imsi(imsi_suffix),
+		msisdn := f_gen_msisdn(imsi_suffix),
+		p_tmsi := omit,
+		p_tmsi_sig := omit,
+		tlli := f_gprs_tlli_random(),
+		tlli_old := omit,
+		ra := omit,
+		bssgp_cell_id := cell_ids,
+		rnc_send_initial_ue := true,
+		vec := omit,
+		net := net_pars,
+		t_guard := t_guard,
+		sccp_addr_local := omit,
+		sccp_addr_peer := omit,
+		ranap_exp_itu_x213_addr_format := omit,
+		ranap_use_itu_x213_addr_format := false,
+		ranap_itu_x213_addr_format_padding := ''O
+	}
+	return valueof(pars);
+}
+
+private altstep as_Tguard() runs on BSSGP_ConnHdlr {
+	[] g_Tguard.timeout {
+		setverdict(fail, "Tguard timeout");
+		mtc.stop;
+	}
+}
+
+type function bssgp_connhdlr_void_fn(charstring id) runs on BSSGP_ConnHdlr;
+
+/* first function called in every ConnHdlr */
+function f_handler_init(bssgp_connhdlr_void_fn fn, charstring id, BSSGP_ConnHdlrPars pars)
+runs on BSSGP_ConnHdlr {
+	/* do some common stuff like setting up g_pars */
+	g_pars := pars;
+
+	llc := f_llc_create(false);
+
+	/* register with BSSGP core */
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli);
+	/* tell GSUP dispatcher to send this IMSI to us */
+	f_create_gsup_expect(hex2str(g_pars.imsi));
+	/* tell GTP dispatcher to send this IMSI to us */
+	f_gtp_register_imsi(g_pars.imsi, GTP_GGSN_IDX);
+
+	g_Tguard.start(pars.t_guard);
+	activate(as_Tguard());
+
+	/* call the user-supplied test case function */
+	fn.apply(id);
+	f_bssgp_client_unregister(g_pars.imsi);
+}
+
+private function is_gb(integer ran_index) return boolean {
+	return ran_index < NUM_GB;
+}
+private function is_iu(integer ran_index) return boolean {
+	return ran_index >= NUM_GB;
+}
+
+function f_send_llc(template (value) PDU_LLC llc_pdu, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var octetstring llc_enc := enc_PDU_LLC(valueof(llc_pdu));
+	BSSGP[ran_index].send(ts_BSSGP_UL_UD(g_pars.tlli, g_pars.bssgp_cell_id[ran_index], llc_enc));
+}
+
+function f_send_l3_gmm_llc(template (value) PDU_L3_MS_SGSN l3_mo, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var octetstring l3_enc := enc_PDU_L3_MS_SGSN(valueof(l3_mo));
+	var BIT4 sapi := f_llc_sapi_by_l3_mo(valueof(l3_mo));
+	var integer n_u := f_llc_get_n_u_tx(llc[bit2int(sapi)]);
+	f_send_llc(ts_LLC_UI(l3_enc, sapi, '0'B, n_u), ran_index);
+}
+
+/* trigger sending of a RANAP InitialUE and wait for SCCP connection confirmation */
+function f_send_l3_initial_ue(template (value) PDU_L3_MS_SGSN l3_mo) runs on BSSGP_ConnHdlr {
+	log("Sending InitialUE: ", l3_mo);
+	var octetstring l3_enc := enc_PDU_L3_MS_SGSN(valueof(l3_mo));
+	var RANAP_PDU ranap;
+	var LAI lai := {
+		pLMNidentity := '62F224'O,
+		lAC := '1234'O,
+		iE_Extensions := omit
+	};
+	var RANAP_IEs.RAC rac := '00'O;
+	var SAI sai := {
+		pLMNidentity := lai.pLMNidentity,
+		lAC := lai.lAC,
+		sAC := '0000'O, /* FIXME */
+		iE_Extensions := omit
+	};
+	var IuSignallingConnectionIdentifier sigc_id := int2bit(23, 24); /* FIXME */
+	var GlobalRNC_ID grnc_id := {
+		pLMNidentity := lai.pLMNidentity,
+		rNC_ID := 2342 /* FIXME */
+	};
+
+	ranap := valueof(ts_RANAP_initialUE_PS(lai, rac, sai, l3_enc, sigc_id, grnc_id));
+	BSSAP.send(ts_RANAP_Conn_Req(g_pars.sccp_addr_peer, g_pars.sccp_addr_local, ranap));
+	alt {
+	[] BSSAP.receive(tr_MSC_CONN_PRIM_CONF_IND) {}
+	[] BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND) {
+		setverdict(fail, "DISC.ind from SCCP");
+		mtc.stop;
+		}
+	}
+}
+
+/* send a L3 (GMM/SM) message over whatever is the appropriate lower-layer bearer */
+function f_send_l3(template (value) PDU_L3_MS_SGSN l3_mo, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	if (is_iu(ran_index)) {
+		if (g_pars.rnc_send_initial_ue) {
+			g_pars.rnc_send_initial_ue := false;
+			f_send_l3_initial_ue(l3_mo);
+		} else {
+			BSSAP.send(ts_PDU_DTAP_PS_MO(l3_mo));
+		}
+	} else {
+		f_send_l3_gmm_llc(l3_mo, ran_index);
+	}
+}
+
+altstep as_mm_identity_imei(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var MobileIdentityLV mi;
+	[is_gb(ran_index)] BSSGP[ran_index].receive(tr_GMM_ID_REQ('010'B)) {
+		mi := valueof(ts_MI_IMEI_LV(g_pars.imei));
+		f_send_l3(ts_GMM_ID_RESP(mi), ran_index);
+		repeat;
+	}
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_ID_REQ('010'B))) {
+		mi := valueof(ts_MI_IMEI_LV(g_pars.imei));
+		f_send_l3(ts_GMM_ID_RESP(mi), ran_index);
+		repeat;
+	}
+}
+
+altstep as_mm_identity_imsi(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var MobileIdentityLV mi;
+	[is_gb(ran_index)] BSSGP[ran_index].receive(tr_GMM_ID_REQ('001'B)) {
+		mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+		f_send_l3(ts_GMM_ID_RESP(mi), ran_index);
+		repeat;
+	}
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_ID_REQ('001'B))) {
+		mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+		f_send_l3(ts_GMM_ID_RESP(mi), ran_index);
+		repeat;
+	}
+}
+
+altstep as_mm_identity(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	[] as_mm_identity_imsi(ran_index);
+	[] as_mm_identity_imei(ran_index);
+}
+
+/* receive a L3 (GMM/SM) message over whatever is the appropriate lower-layer bearer */
+altstep as_receive_l3(template PDU_L3_SGSN_MS rx_tpl, inout PDU_L3_SGSN_MS l3_mt, integer ran_index := 0)
+runs on BSSGP_ConnHdlr {
+	var PDU_DTAP_PS_MT mt;
+	[is_gb(ran_index)] BSSGP[ran_index].receive(rx_tpl) -> value l3_mt { }
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(rx_tpl)) -> value mt {
+		l3_mt := mt.dtap;
+	}
+}
+
+/* (copied from msc/BSC_ConnectionHandler.ttcn) */
+private altstep as_ciph_utran() runs on BSSGP_ConnHdlr
+{
+	[g_pars.net.expect_ciph] BSSAP.receive(tr_RANAP_SecurityModeCmdEnc(uia_algs := ?,
+									   uia_key := oct2bit(g_pars.vec.ik),
+									   key_sts := ?,
+									   uea_algs := ?,
+									   uea_key := oct2bit(g_pars.vec.ck))) {
+		var IntegrityProtectionAlgorithm uia_chosen := 0; /*standard_UMTS_integrity_algorithm_UIA1*/
+		var EncryptionAlgorithm uea_chosen := 1; /*standard_UMTS_encryption_algorith_UEA1*/
+		BSSAP.send(ts_RANAP_SecurityModeCompleteEnc(uia_chosen, uea_chosen));
+		}
+	[g_pars.net.expect_ciph] BSSAP.receive(tr_RANAP_SecurityModeCmdEnc(?,?,?,?,?)) {
+		setverdict(fail, "Invalid SecurityModeCommand (ciphering case)");
+		mtc.stop;
+		}
+	[not g_pars.net.expect_ciph] BSSAP.receive(tr_RANAP_SecurityModeCmd(uia_algs := ?,
+									    uia_key := oct2bit(g_pars.vec.ik),
+									    key_sts := ?)) {
+		var IntegrityProtectionAlgorithm uia_chosen := 0; /*standard_UMTS_integrity_algorithm_UIA1;*/
+		BSSAP.send(ts_RANAP_SecurityModeComplete(uia_chosen));
+		}
+	[not g_pars.net.expect_ciph] BSSAP.receive(tr_RANAP_SecurityModeCmd(?,?,?)) {
+		setverdict(fail, "Invalid SecurityModeCommand (non-ciphering case)");
+		mtc.stop;
+		}
+}
+
+/* expect a GSUP Send Auth Information */
+altstep as_gsup_sai(boolean umts_aka_challenge := false) runs on BSSGP_ConnHdlr
+{
+	[g_pars.net.expect_auth] GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi)) {
+		var GSUP_IE auth_tuple;
+
+		if (umts_aka_challenge) {
+			g_pars.vec := f_gen_auth_vec_3g();
+			auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G3G(g_pars.vec.rand,
+							    g_pars.vec.sres,
+							    g_pars.vec.kc,
+							    g_pars.vec.ik,
+							    g_pars.vec.ck,
+							    g_pars.vec.autn,
+							    g_pars.vec.res));
+		} else {
+			g_pars.vec := f_gen_auth_vec_2g();
+			auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G(g_pars.vec.rand,
+								     g_pars.vec.sres,
+								     g_pars.vec.kc));
+		}
+
+		GSUP.send(ts_GSUP_SAI_RES(g_pars.imsi, auth_tuple));
+	}
+}
+
+/* Only used by as_gmm_auth to support same code path for Gb and Iu */
+private function f_gmm_auth_as(PDU_L3_SGSN_MS l3_mt, boolean umts_aka_challenge := true, boolean force_gsm_sres := false, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_L3_MS_SGSN l3_mo;
+	var BIT4 ac_ref := l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.acReferenceNumber.valueField;
+	var template (value) PDU_L3_MS_SGSN auth_ciph_resp := ts_GMM_AUTH_RESP_2G(ac_ref, g_pars.vec.sres);
+
+	if (umts_aka_challenge and not force_gsm_sres) {
+		/* set UMTS response instead */
+		auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationParResp := {
+			valueField := substr(g_pars.vec.res, 0, 4)
+		};
+		auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationRespParExt := {
+			elementIdentifier := '21'O,
+			lengthIndicator := lengthof(g_pars.vec.res) - 4,
+			valueField := substr(g_pars.vec.res, 4, lengthof(g_pars.vec.res) - 4)
+		};
+	}
+
+	l3_mo := valueof(auth_ciph_resp);
+	if (ispresent(l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest) and
+		l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest.valueField == '001'B) {
+		l3_mo.msgs.gprs_mm.authenticationAndCipheringResponse.imeisv :=
+					valueof(ts_MI_IMEISV_TLV(g_pars.imei & '00'H));
+	}
+	f_send_l3(l3_mo, ran_index);
+}
+
+/* Handles GMM Auth and supplies auth tuples via GSUP if expect_sai is true. */
+altstep as_gmm_auth(boolean umts_aka_challenge := false, boolean force_gsm_sres := false, integer ran_index := 0,
+					boolean expect_sai := false) runs on BSSGP_ConnHdlr {
+	var PDU_DTAP_PS_MT mt;
+	var PDU_L3_SGSN_MS l3_mt;
+
+	/* Ignoring autn for now */
+	[is_gb(ran_index)] BSSGP[ran_index].receive(tr_GMM_AUTH_REQ(g_pars.vec.rand)) -> value l3_mt {
+		f_gmm_auth_as(l3_mt, umts_aka_challenge, force_gsm_sres, ran_index);
+	}
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_AUTH_REQ(g_pars.vec.rand))) -> value mt {
+		l3_mt := mt.dtap;
+		f_gmm_auth_as(l3_mt, umts_aka_challenge, force_gsm_sres, ran_index);
+	}
+	[expect_sai] as_gsup_sai(umts_aka_challenge := umts_aka_challenge) { repeat; };
+}
+
+/* perform GMM authentication (if expected).
+ * Note, for umts_aka_challenge to work, the revisionLevelIndicatior needs to
+ * be 1 to mark R99 capability, in the GMM Attach Request, see f_gmm_attach().
+ *
+ * Requires the order to be:
+ * SAI Req
+ * SAI Resp
+ * Auth Req
+ * Auth Resp
+ * CommonId
+ * (out of order: GMM ID Req)
+ */
+function f_gmm_auth (boolean umts_aka_challenge := false, boolean force_gsm_sres := false, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_L3_MS_SGSN l3_mo;
+	var PDU_L3_SGSN_MS l3_mt;
+	var default di := activate(as_mm_identity(ran_index));
+	if (g_pars.net.expect_auth) {
+		var GSUP_IE auth_tuple;
+		var template AuthenticationParameterAUTNTLV autn;
+
+		if (umts_aka_challenge) {
+			g_pars.vec := f_gen_auth_vec_3g();
+			autn := {
+				elementIdentifier := '28'O,
+				lengthIndicator := lengthof(g_pars.vec.autn),
+				autnValue := g_pars.vec.autn
+				};
+
+			auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G3G(g_pars.vec.rand,
+								       g_pars.vec.sres,
+								       g_pars.vec.kc,
+								       g_pars.vec.ik,
+								       g_pars.vec.ck,
+								       g_pars.vec.autn,
+								       g_pars.vec.res));
+			log("GSUP sends 2G and 3G auth tuples", auth_tuple);
+		} else {
+			g_pars.vec := f_gen_auth_vec_2g();
+			autn := omit;
+			auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G(g_pars.vec.rand,
+								     g_pars.vec.sres,
+								     g_pars.vec.kc));
+			log("GSUP sends only 2G auth tuple", auth_tuple);
+		}
+
+		GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi));
+		GSUP.send(ts_GSUP_SAI_RES(g_pars.imsi, auth_tuple));
+
+		var template PDU_L3_SGSN_MS auth_ciph_req := tr_GMM_AUTH_REQ(g_pars.vec.rand);
+		auth_ciph_req.msgs.gprs_mm.authenticationAndCipheringRequest.authenticationParameterAUTN := autn;
+		as_receive_l3(auth_ciph_req, l3_mt, ran_index);
+		var BIT4 ac_ref := l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.acReferenceNumber.valueField;
+		var template (value) PDU_L3_MS_SGSN auth_ciph_resp := ts_GMM_AUTH_RESP_2G(ac_ref, g_pars.vec.sres);
+
+		if (umts_aka_challenge and not force_gsm_sres) {
+			/* set UMTS response instead */
+			auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationParResp := {
+				valueField := substr(g_pars.vec.res, 0, 4)
+			};
+			auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationRespParExt := {
+				elementIdentifier := '21'O,
+				lengthIndicator := lengthof(g_pars.vec.res) - 4,
+				valueField := substr(g_pars.vec.res, 4, lengthof(g_pars.vec.res) - 4)
+			};
+		}
+
+		l3_mo := valueof(auth_ciph_resp);
+		if (ispresent(l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest) and
+		    l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest.valueField == '001'B) {
+			l3_mo.msgs.gprs_mm.authenticationAndCipheringResponse.imeisv :=
+						valueof(ts_MI_IMEISV_TLV(g_pars.imei & '00'H));
+		}
+		f_send_l3(l3_mo, ran_index);
+
+		/* Security Mode Command + Complete on Iu case */
+		if (is_iu(ran_index)) {
+			as_ciph_utran();
+			BSSAP.receive(tr_RANAP_CommonId(imsi_hex2oct(g_pars.imsi)));
+		}
+	} else {
+		/* wait for identity procedure */
+		f_sleep(1.0);
+	}
+
+	deactivate(di);
+}
+
+function f_upd_ptmsi_and_tlli(OCT4 p_tmsi, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	g_pars.p_tmsi := p_tmsi;
+	/* update TLLI */
+	g_pars.tlli_old := g_pars.tlli;
+	g_pars.tlli := g_pars.p_tmsi or4b 'c0000000'O;
+	if (is_gb(ran_index)) {
+		f_bssgp_client_llgmm_assign(g_pars.tlli_old, g_pars.tlli, BSSGP_PROC[ran_index]);
+	}
+}
+
+function f_process_attach_accept(PDU_GMM_AttachAccept aa, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	/* mandatory IE */
+	var hexstring aa_plmn := f_RAI_to_plmn_hexstr(aa.routingAreaIdentification);
+	/* we cannot use ran_index here, as it would overflow the cell_id object, since ran_idx > NUM_GB
+	 * indicates an Iu RAN connection.  All cells are expected to run the same MCC/MNC anyway... */
+	if (not (g_pars.bssgp_cell_id[0].ra_id.lai.mcc_mnc == aa_plmn)) {
+		  setverdict(fail, "mismatching PLMN in Attach Accept: " & hex2str(aa_plmn)
+				   & "; expected " & hex2str(g_pars.bssgp_cell_id[ran_index].ra_id.lai.mcc_mnc));
+		  mtc.stop;
+	}
+	g_pars.ra := aa.routingAreaIdentification;
+	if (ispresent(aa.allocatedPTMSI)) {
+		if (not g_pars.net.expect_ptmsi) {
+			setverdict(fail, "unexpected P-TMSI allocation");
+			mtc.stop;
+		}
+		f_upd_ptmsi_and_tlli(aa.allocatedPTMSI.mobileIdentityLV.mobileIdentityV.oddEvenInd_identity.tmsi_ptmsi.octets,
+				     ran_index);
+	}
+	if (ispresent(aa.msIdentity)) {
+		setverdict(fail, "unexpected TMSI allocation in non-combined attach");
+		mtc.stop;
+	}
+	/* P-TMSI.sig */
+	if (ispresent(aa.ptmsiSignature)) {
+		g_pars.p_tmsi_sig := aa.ptmsiSignature.valueField;
+	}
+	/* updateTimer */
+	// aa.readyTimer
+	/* T3302, T3319, T3323, T3312_ext, T3324 */
+}
+
+function f_process_rau_accept(PDU_GMM_RoutingAreaUpdateAccept ra, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	/* mandatory IE */
+	g_pars.ra := ra.routingAreaId;
+	if (ispresent(ra.allocatedPTMSI)) {
+		if (not g_pars.net.expect_ptmsi) {
+			setverdict(fail, "unexpected P-TMSI allocation");
+			mtc.stop;
+		}
+		f_upd_ptmsi_and_tlli(ra.allocatedPTMSI.mobileIdentityLV.mobileIdentityV.oddEvenInd_identity.tmsi_ptmsi.octets,
+				     ran_index);
+	}
+	if (ispresent(ra.msIdentity)) {
+		setverdict(fail, "unexpected TMSI allocation in non-combined attach");
+		mtc.stop;
+	}
+	/* P-TMSI.sig */
+	if (ispresent(ra.ptmsiSignature)) {
+		g_pars.p_tmsi_sig := ra.ptmsiSignature.valueField;
+	}
+	/* updateTimer */
+	// aa.readyTimer
+	/* T3302, T3319, T3323, T3312_ext, T3324 */
+}
+
+function f_random_RAI(HEX0_3n mcc := '262'H, HEX0_3n mnc := '42'H) return RoutingAreaIdentificationV {
+	return f_RAI(mcc, mnc, f_rnd_octstring(2), f_rnd_octstring(1));
+}
+
+/* return a MobileIdentityLV: P-TMSI if we have one, IMSI otherwise */
+function f_mi_get_lv() runs on BSSGP_ConnHdlr return MobileIdentityLV {
+	if (ispresent(g_pars.p_tmsi)) {
+		return valueof(ts_MI_TMSI_LV(g_pars.p_tmsi));
+	} else {
+		return valueof(ts_MI_IMSI_LV(g_pars.imsi));
+	}
+}
+
+altstep as_gmm_gsup_lu_isd() runs on BSSGP_ConnHdlr {
+	[] GSUP.receive(tr_GSUP_UL_REQ(g_pars.imsi)) {
+		var GSUP_PDU gsup := valueof(ts_GSUP_ISD_REQ(g_pars.imsi, g_pars.msisdn));
+		gsup.ies := gsup.ies & { valueof(ts_GSUP_IE_PdpInfo('00'O, char2oct("*"), ts_EuaIPv4Dyn, ''O)) };
+		GSUP.send(gsup);
+		GSUP.receive(tr_GSUP_ISD_RES(g_pars.imsi));
+		GSUP.send(ts_GSUP_UL_RES(g_pars.imsi));
+	}
+}
+
+function f_gmm_attach(boolean umts_aka_challenge, boolean force_gsm_sres, integer ran_index := 0,
+			     template (omit) RoutingAreaIdentificationV old_ra := omit,
+			     boolean allow_id_imei_req := false) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra_val;
+	var template (value) PDU_L3_MS_SGSN attach_req;
+	var PDU_L3_SGSN_MS l3_mt;
+
+	if (istemplatekind(old_ra, "omit")) {
+		old_ra_val := f_random_RAI();
+	} else {
+		old_ra_val := valueof(old_ra);
+	}
+
+	attach_req := ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra_val, false, false, omit, omit);
+	/* indicate R99 capability of the MS to enable UMTS AKA in presence of
+	 * 3G auth vectors */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.revisionLevelIndicatior := '1'B;
+	/* The thing is, if the solSACapability is 'omit', then the
+	 * revisionLevelIndicatior is at the wrong place! */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.solSACapability := '0'B;
+
+	f_send_l3(attach_req, ran_index);
+	f_gmm_auth(umts_aka_challenge, force_gsm_sres, ran_index);
+	/* Expect SGSN to perform LU with HLR */
+	as_gmm_gsup_lu_isd();
+
+	alt {
+		[allow_id_imei_req] as_mm_identity_imei(ran_index) { repeat; }
+		[] as_receive_l3(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?), l3_mt, ran_index) {
+			f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept, ran_index)
+			}
+	}
+
+	/* FIXME: Extract P-TMSI, if any. Only send Complete if necessary */
+	f_send_l3(ts_GMM_ATTACH_COMPL, ran_index);
+
+	/* IuPS case: Expect Iu Release */
+	if (is_iu(ran_index)) {
+		as_iu_release_compl_disc_ext();
+	}
+
+	/* Race condition
+	 * It has shown, that GMM_ATTACH_COMPL might take some time to arrive at the SGSN through the layers.
+	 * In TC hlr_location_cancel_request_update, the GMM_ATTACH_COMPL came 2ms too late, so that the Location Cancel Request
+	 * arrived before it. This results in a test case failure.
+	 * Delay execution by 50 ms
+	 */
+	f_sleep(0.05);
+}
+
+function f_bssgp_suspend(integer ran_idx := 0) runs on BSSGP_ConnHdlr return OCT1 {
+	timer T := 5.0;
+	var PDU_BSSGP rx_pdu;
+	BSSGP_GLOBAL[ran_idx].send(ts_BSSGP_SUSPEND(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id));
+	T.start;
+	alt {
+	[] BSSGP_GLOBAL[ran_idx].receive(tr_BSSGP_SUSPEND_ACK(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id, ?)) -> value rx_pdu {
+		return rx_pdu.pDU_BSSGP_SUSPEND_ACK.suspend_Reference_Number.suspend_Reference_Number_value;
+		}
+	[] BSSGP_GLOBAL[ran_idx].receive(tr_BSSGP_SUSPEND_NACK(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id, ?)) -> value rx_pdu {
+		setverdict(fail, "SUSPEND-NACK in response to SUSPEND for TLLI ", g_pars.tlli);
+		mtc.stop;
+		}
+	[] T.timeout {
+		setverdict(fail, "No SUSPEND-ACK in response to SUSPEND for TLLI ", g_pars.tlli);
+		mtc.stop;
+		}
+	}
+	return '00'O;
+}
+
+function f_bssgp_resume(OCT1 susp_ref, integer ran_idx := 0) runs on BSSGP_ConnHdlr {
+	timer T := 5.0;
+	BSSGP_GLOBAL[ran_idx].send(ts_BSSGP_RESUME(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id, susp_ref));
+	T.start;
+	alt {
+	[] BSSGP_GLOBAL[ran_idx].receive(tr_BSSGP_RESUME_ACK(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id));
+	[] BSSGP_GLOBAL[ran_idx].receive(tr_BSSGP_RESUME_NACK(g_pars.tlli, g_pars.bssgp_cell_id[ran_idx].ra_id,
+?)) {
+		setverdict(fail, "RESUME-NACK in response to RESUME for TLLI ", g_pars.tlli);
+		mtc.stop;
+		}
+	[] T.timeout {
+		setverdict(fail, "No RESUME-ACK in response to SUSPEND for TLLI ", g_pars.tlli);
+		mtc.stop;
+		}
+	}
+}
+
+altstep as_routing_area_update_gb(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+
+	[] BSSGP[ran_index].receive(tr_GMM_RAU_ACCEPT) -> value l3_mt {
+		f_process_rau_accept(l3_mt.msgs.gprs_mm.routingAreaUpdateAccept, ran_index);
+		f_send_l3(ts_GMM_RAU_COMPL, ran_index);
+		setverdict(pass);
+		}
+	[] BSSGP[ran_index].receive(tr_GMM_RAU_REJECT) {
+		setverdict(fail, "Unexpected RAU Reject");
+		mtc.stop;
+	}
+}
+altstep as_routing_area_update_iu(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_DTAP_PS_MT mt;
+
+	[] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_RAU_ACCEPT)) -> value mt {
+		f_process_rau_accept(mt.dtap.msgs.gprs_mm.routingAreaUpdateAccept, ran_index);
+		f_send_l3(ts_GMM_RAU_COMPL, ran_index);
+		setverdict(pass);
+		}
+	[] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_RAU_REJECT)) {
+		setverdict(fail, "Unexpected RAU Reject");
+		mtc.stop;
+		}
+	[] BSSAP.receive(tr_RANAP_SecurityModeCmd(uia_algs := ?,
+						  uia_key := oct2bit(g_pars.vec.ik),
+						  key_sts := ?)) {
+		var IntegrityProtectionAlgorithm uia_chosen := 0; /* 0 = standard_UMTS_integrity_algorithm_UIA1 */
+		BSSAP.send(ts_RANAP_SecurityModeComplete(uia_chosen));
+		BSSAP.receive(tr_RANAP_CommonId(imsi_hex2oct(g_pars.imsi)))
+		repeat;
+	}
+}
+altstep as_routing_area_update(integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	[is_gb(ran_index)] as_routing_area_update_gb(ran_index);
+	[is_iu(ran_index)] as_routing_area_update_iu(ran_index);
+}
+
+function f_routing_area_update(RoutingAreaIdentificationV old_ra,
+			       GprsUpdateType upd_type := GPRS_UPD_T_RA,
+			       integer ran_index := 0,
+			       float Tval := 2.0) runs on BSSGP_ConnHdlr {
+	var template (omit) OCT4 p_tmsi := omit;
+	timer T := Tval;
+
+	if (is_iu(ran_index)) {
+		p_tmsi := g_pars.p_tmsi;
+	}
+
+	f_send_l3(ts_GMM_RAU_REQ(f_mi_get_lv(), upd_type, old_ra, p_tmsi := p_tmsi), ran_index);
+
+	T.start;
+	alt {
+	[] as_routing_area_update(ran_index) { setverdict(pass); }
+	[is_gb(ran_index)] BSSGP[ran_index].receive { repeat; }
+	[is_iu(ran_index)] BSSAP.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout completing the RAU procedure");
+		mtc.stop;
+		}
+	}
+}
+
+/* Iu only
+ *
+ * Handle a service request for a UE in PMM_IDLE or PMM_CONNECTED depending on exp_service_acc
+ * Depending on the PMM state:
+ * a) PMM_IDLE: The network will do a SecurityModeCommand on Iu, which the UE will treat as an implicit Service Accept
+ * b) PMM_CONNECTED: The Iu connection is already secured, do an explicit Service Accept
+ *
+ * NOTE: The old osmo-sgsn will always respond with a ServiceAccept even when the spec is clear this is not needed.
+ */
+altstep as_service_request(boolean exp_service_acc := true, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_DTAP_PS_MT mt;
+
+	[exp_service_acc] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_SERVICE_ACC)) -> value mt {
+		setverdict(pass);
+		}
+	[not exp_service_acc] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_SERVICE_ACC)) -> value mt {
+		setverdict(fail, "Unexpected Service Accept");
+		mtc.stop;
+		}
+	[] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_SERVICE_REJ)) {
+		setverdict(fail, "Unexpected Service Reject");
+		mtc.stop;
+		}
+	/* 24.008 4.7.13.3: a SecurityModeCommand is an implicit Service Accept if UE was in PMM-IDLE */
+	[] BSSAP.receive(tr_RANAP_SecurityModeCmd(uia_algs := ?,
+						  uia_key := oct2bit(g_pars.vec.ik),
+						  key_sts := ?)) {
+		var IntegrityProtectionAlgorithm uia_chosen := 0; /* 0 = standard_UMTS_integrity_algorithm_UIA1 */
+		BSSAP.send(ts_RANAP_SecurityModeComplete(uia_chosen));
+		if (not exp_service_acc) {
+			/* Because we stop processing early, we need to consume the CommonID */
+			BSSAP.receive(tr_RANAP_CommonId(imsi_hex2oct(g_pars.imsi)));
+			setverdict(pass);
+		} else {
+			/* This repeat would be wrong if you follow the spec correct. Because:
+			 * a) the UE is in PMM Idle and in this case the exp_service_acc would be true
+			 * b) the UE is in PMM Connected and in this case the Iu Connection should be already secure and this would fail.
+			 * The old osmo-sgsn is doing for UE in PMM Idle both a Security Command and a Service Accept, after the VLR change, the
+			 * osmo-sgsn will follow the spec correct.
+			 */
+			repeat;
+		}
+	}
+}
+
+function f_service_request(inout PdpActPars apars,
+			   ServiceType service_type := SERVICE_TYPE_Signalling,
+			   template (value) OCT2 pdp_status := '0000'O,
+			   boolean exp_ggsn_pdp_del := false,
+			   boolean expect_auth := false,
+			   integer ran_index := 0,
+			   float Tval := 5.0) runs on BSSGP_ConnHdlr {
+	timer T := Tval;
+
+	if (not is_iu(ran_index)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+					"GMM Service Request called on non-Iu RAN index");
+	}
+
+
+	f_send_l3(ts_GMM_SERVICE_REQ(service_type,
+				     p_tmsi := g_pars.p_tmsi,
+				     pdp_status := pdp_status),
+		  ran_index);
+
+	T.start;
+
+	if (exp_ggsn_pdp_del) {
+		alt {
+		[] as_ggsn_gtp_ctx_del_req(apars) { setverdict(pass); }
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				"Timeout completing the DeletePDPCtx procedure");
+			}
+		}
+	}
+
+	if (expect_auth) {
+		f_gmm_auth(umts_aka_challenge := true, ran_index := ran_index);
+	}
+
+	alt {
+	[] as_service_request(exp_service_acc := true, ran_index := ran_index) { setverdict(pass); }
+	[not expect_auth] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_GMM_AUTH_REQ)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			"Service Request: Unexpected GMM Auth Req");
+		}
+	[not expect_auth] GSUP.receive(tr_GSUP_SAI_REQ(*)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			"Service Request: Unexpected GSUP SAI Req");
+		}
+	[] BSSAP.receive { repeat; }
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			"Timeout completing the Service Request procedure");
+		}
+	}
+}
+
+/* expect a IuReleaseCommand; Confirm that; expect SCCP-level N-DISCONNET.ind */
+altstep as_iu_release_compl_disc_ext() runs on BSSGP_ConnHdlr {
+	[] as_iu_release_compl_disc() {
+		/* Next message will be an InitialUE since conn was torn down */
+		g_pars.rnc_send_initial_ue := true;
+	}
+}
+
+function f_iu_release_req(template (value) Cause cause) runs on BSSGP_ConnHdlr {
+	timer T := 5.0;
+	BSSAP.send(ts_RANAP_IuReleaseRequest(cause));
+	T.start;
+	alt {
+	[] as_iu_release_compl_disc_ext() { T.stop; };
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			"Timeout completing the Iu Release procedure");
+	}
+	}
+}
+
+/* Validate received IP address + TEID from SGSN is the one we
+ * did set up from the GGSN, since the SGSN is expected to do
+ * Direct Tunnel: */
+private function f_ranap_rab_ass_req_validate_tli(RANAP_PDU rab_ass_req, PdpActPars apars)
+runs on BSSGP_ConnHdlr {
+	var TransportLayerInformation tli := f_ranap_rab_ass_req_extract_tli(rab_ass_req);
+	var template (present) TransportLayerAddress exp_tla_x213 := decmatch tr_NSAP_Address_IANA_BIN_IPv4(apars.ggsn_ip_u);
+	var template (present) TransportLayerAddress exp_tla_raw := oct2bit(apars.ggsn_ip_u);
+	var template (present) TransportLayerAddress exp_tla;
+	var template (present) TransportLayerInformation exp_tli;
+	if (ispresent(g_pars.ranap_exp_itu_x213_addr_format)) {
+		if (g_pars.ranap_exp_itu_x213_addr_format) {
+			exp_tla := exp_tla_x213;
+		} else {
+			exp_tla := exp_tla_raw;
+		}
+	} else { /* Accept any of the known formats: */
+		exp_tla := (exp_tla_x213, exp_tla_raw);
+	}
+	exp_tli := tr_TLI_ps(exp_tla, apars.ggsn_tei_u);
+	if (not match(tli, exp_tli)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("Rx RAB Ass Req with TLI ", tli, " vs exp ", exp_tli));
+	}
+}
+
+altstep as_ranap_rab_ass_req(inout PdpActPars apars) runs on BSSGP_ConnHdlr {
+	var RANAP_PDU ranap;
+	[] BSSAP.receive(tr_RANAP_RabAssReq(?)) -> value ranap {
+		var RAB_ID rab_id := f_ranap_rab_ass_req_extract_rab_id(ranap);
+
+		f_ranap_rab_ass_req_validate_tli(ranap, apars);
+
+		var template (value) RAB_SetupOrModifiedList l;
+		var bitstring tla_bits;
+		if (g_pars.ranap_use_itu_x213_addr_format) {
+			tla_bits := oct2bit(enc_NSAP_Address(valueof(ts_NSAP_Address_IANA_BIN_IPv4(apars.rnc_ip_u, g_pars.ranap_itu_x213_addr_format_padding))));
+		} else {
+			tla_bits := oct2bit(apars.rnc_ip_u);
+		}
+		l := ts_RAB_SMdL_ps(rab_id, tla_bits, apars.rnc_tei_u);
+		BSSAP.send(ts_RANAP_RabAssResp(l));
+	}
+}
+
+type record PdpActPars {
+	BIT3			tid,				/* L3 Transaction ID */
+	BIT4			nsapi,				/* SNDCP NSAPI */
+	BIT4			sapi,				/* LLC SAPI */
+	QoSV			qos,				/* QoS parameters */
+	PDPAddressV		addr,				/* IP address */
+	octetstring		apn optional,			/* APN name */
+	ProtocolConfigOptionsV	pco optional,			/* protoco config opts */
+	OCT1			exp_rej_cause optional,		/* expected SM reject cause */
+	GTP_Cause		gtp_resp_cause,			/* GTP response cause */
+	OCT4			chg_id,				/* GTP Charging Identifier */
+
+	OCT4			ggsn_tei_c,			/* GGSN TEI Control*/
+	OCT4			ggsn_tei_u,			/* GGSN TEI User */
+	octetstring		ggsn_ip_c,			/* GGSN IP Control */
+	octetstring		ggsn_ip_u,			/* GGSN IP User */
+	OCT1			ggsn_restart_ctr,		/* GGSN Restart Counter */
+	boolean			direct_tunnel_requested,	/* Did SGSN request Direct Tunnel to the GGSN ?*/
+
+	OCT4			rnc_tei_u,			/* SGSN TEI User */
+	octetstring		rnc_ip_u,			/* SGSN IP USer */
+
+	OCT4			sgsn_tei_c optional,		/* SGSN TEI Control */
+	OCT4			sgsn_tei_u optional,		/* SGSN TEI User */
+	octetstring		sgsn_ip_c optional,		/* SGSN IP Control */
+	octetstring		sgsn_ip_u optional		/* SGSN IP USer */
+};
+
+
+function f_process_gtp_ctx_act_req(inout PdpActPars apars, PDU_GTPC gtpc) runs on BSSGP_ConnHdlr {
+	var GTPC_PDUs gtpc_rx := gtpc.gtpc_pdu;
+	apars.sgsn_tei_c := gtpc_rx.createPDPContextRequest.teidControlPlane.teidControlPlane;
+	apars.sgsn_tei_u := gtpc_rx.createPDPContextRequest.teidDataI.teidDataI;
+	apars.sgsn_ip_c := gtpc_rx.createPDPContextRequest.sgsn_addr_signalling.addressf;
+	apars.sgsn_ip_u := gtpc_rx.createPDPContextRequest.sgsn_addr_traffic.addressf;
+	f_gtp_register_teid(apars.ggsn_tei_c, GTP_GGSN_IDX);
+	f_gtp_register_teid(apars.ggsn_tei_u, GTP_GGSN_IDX);
+}
+altstep as_ggsn_gtp_ctx_act_req(inout PdpActPars apars, boolean send_recovery := false) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+	var template Recovery_gtpc recovery := omit;
+
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, createPDPContextRequest, ?)) -> value g_ud {
+		f_process_gtp_ctx_act_req(apars, g_ud.gtpc);
+		if (send_recovery) {
+			recovery := ts_Recovery(apars.ggsn_restart_ctr);
+		}
+		var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_CreatePdpResp(g_ud.peer, seq_nr,
+						apars.sgsn_tei_c, apars.gtp_resp_cause,
+						apars.ggsn_tei_c, apars.ggsn_tei_u,
+						apars.nsapi,
+						apars.ggsn_ip_c, apars.ggsn_ip_u, apars.chg_id,
+						omit, recovery));
+	}
+}
+
+function f_process_gtp_ctx_upd_req(inout PdpActPars apars,
+				   PDU_GTPC gtpc,
+				   boolean exp_dir_tun := true,
+				   integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var UpdatePDPContextRequestSGSN upd := gtpc.gtpc_pdu.updatePDPContextRequest.updatePDPContextRequestSGSN;
+	var boolean dti := ispresent(upd.directTunnelFlags) and upd.directTunnelFlags.dTI == '1'B;
+	if (dti != exp_dir_tun) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				log2str("Rx UpdatePDPCtxReq with Direct Tunnel Flags ",
+					upd.directTunnelFlags, " vs exp DTI=", dti));
+	}
+
+	if (ispresent(upd.teidControlPlane.teidControlPlane)) {
+		apars.sgsn_tei_c := upd.teidControlPlane.teidControlPlane;
+	}
+	apars.sgsn_ip_c := upd.sgsn_addr_controlPlane.addressf;
+	if (dti) {
+		if (apars.rnc_ip_u != upd.sgsn_addr_traffic.addressf or
+		    apars.rnc_tei_u != upd.teidDataI.teidDataI) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				log2str("Rx UpdatePDPCtxReq with DTI=1 and wrong RNC IP+TEID: ",
+					upd.sgsn_addr_traffic.addressf, ":", upd.teidDataI.teidDataI,
+					" vs exp ", apars.rnc_ip_u, ":", apars.rnc_tei_u));
+		}
+		f_gtp_register_teid(apars.rnc_tei_u, ran2gtp_idx(ran_index));
+	} else {
+		apars.sgsn_ip_u := upd.sgsn_addr_traffic.addressf;
+		apars.sgsn_tei_u := upd.teidDataI.teidDataI;
+	}
+	apars.direct_tunnel_requested := dti;
+}
+altstep as_ggsn_gtp_ctx_upd_req(inout PdpActPars apars,
+				boolean send_recovery := false,
+				boolean exp_dir_tun := true,
+				integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, updatePDPContextRequest, ?)) -> value g_ud {
+		f_process_gtp_ctx_upd_req(apars, g_ud.gtpc,
+					  exp_dir_tun := exp_dir_tun,
+					  ran_index := ran_index);
+		var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_UpdatePdpRespGGSN(g_ud.peer, seq_nr,
+						apars.sgsn_tei_c, apars.gtp_resp_cause,
+						apars.ggsn_tei_c, apars.ggsn_tei_u,
+						apars.ggsn_ip_c, apars.ggsn_ip_u, apars.chg_id,
+						omit, omit));
+	}
+}
+
+altstep as_ggsn_gtp_ctx_del_req(inout PdpActPars apars) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextRequest, apars.ggsn_tei_c)) -> value g_ud {
+		var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePdpResp(g_ud.peer, seq_nr,
+							     apars.sgsn_tei_c,
+							     GTP_CAUSE_REQUEST_ACCEPTED));
+	}
+}
+
+altstep as_pdp_ctx_act_gb(inout PdpActPars apars, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var boolean exp_rej := ispresent(apars.exp_rej_cause);
+
+	[exp_rej] BSSGP[ran_index].receive(tr_SM_ACT_PDP_REJ(apars.tid, apars.exp_rej_cause)) {
+		setverdict(pass);
+		}
+	[exp_rej] BSSGP[ran_index].receive(tr_SM_ACT_PDP_ACCEPT) {
+		setverdict(fail, "Unexpected PDP CTX ACT ACC");
+		mtc.stop;
+		}
+	[not exp_rej] BSSGP[ran_index].receive(tr_SM_ACT_PDP_REJ(apars.tid, ?)) {
+		setverdict(fail, "Unexpected PDP CTX ACT FAIL");
+		mtc.stop;
+		}
+	[not exp_rej] BSSGP[ran_index].receive(tr_SM_ACT_PDP_REJ(apars.tid, ?)) {
+		setverdict(fail, "Unexpected PDP CTX ACT FAIL");
+		mtc.stop;
+		}
+	[not exp_rej] BSSGP[ran_index].receive(tr_SM_ACT_PDP_ACCEPT(apars.tid, apars.sapi)) {
+		setverdict(pass);
+		}
+	[] as_xid(apars, ran_index);
+}
+altstep as_pdp_ctx_act_iu(inout PdpActPars apars, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var boolean exp_rej := ispresent(apars.exp_rej_cause);
+
+	[exp_rej] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_ACT_PDP_REJ(apars.tid, apars.exp_rej_cause))) {
+		setverdict(pass);
+		}
+	[exp_rej] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_ACT_PDP_ACCEPT)) {
+		setverdict(fail, "Unexpected PDP CTX ACT ACC");
+		mtc.stop;
+		}
+	[not exp_rej] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_ACT_PDP_REJ(apars.tid, ?))) {
+		setverdict(fail, "Unexpected PDP CTX ACT FAIL");
+		mtc.stop;
+		}
+	[not exp_rej] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_ACT_PDP_REJ(apars.tid, ?))) {
+		setverdict(fail, "Unexpected PDP CTX ACT FAIL");
+		mtc.stop;
+		}
+	[not exp_rej] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_ACT_PDP_ACCEPT(apars.tid, apars.sapi))) {
+		setverdict(pass);
+		}
+}
+altstep as_pdp_ctx_act(inout PdpActPars apars, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	[is_gb(ran_index)] as_pdp_ctx_act_gb(apars, ran_index);
+	[is_iu(ran_index)] as_pdp_ctx_act_iu(apars, ran_index);
+}
+
+function f_pdp_tx_ctx_act(inout PdpActPars apars, integer ran_index := 0)
+runs on BSSGP_ConnHdlr {
+	f_send_l3(ts_SM_ACT_PDP_REQ(apars.tid, apars.nsapi, apars.sapi, apars.qos, apars.addr,
+				    apars.apn, apars.pco), ran_index);
+}
+
+function f_pdp_ctx_act(inout PdpActPars apars, boolean send_recovery := false, integer ran_index := 0, float Tval := 5.0)
+runs on BSSGP_ConnHdlr {
+	timer T := Tval;
+
+	f_pdp_tx_ctx_act(apars, ran_index);
+	as_ggsn_gtp_ctx_act_req(apars, send_recovery := send_recovery);
+
+	T.start;
+	if (is_iu(ran_index)) {
+		alt {
+		[] as_ranap_rab_ass_req(apars) {
+			as_ggsn_gtp_ctx_upd_req(apars,
+					        send_recovery := send_recovery,
+						ran_index := ran_index);
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				"Timeout waiting for RANAP RAB AssReq");
+			}
+		}
+	}
+
+	alt {
+	[] as_pdp_ctx_act(apars, ran_index) { T.stop; setverdict(pass); }
+	[is_gb(ran_index)] BSSGP[ran_index].receive { repeat; }
+	[is_iu(ran_index)] BSSAP.receive { repeat; }
+	[] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			"Timeout completing the PDP ACT");
+		}
+	}
+}
+
+function f_pdp_ctx_deact_mo(inout PdpActPars apars, OCT1 cause, integer ran_index := 0)
+runs on BSSGP_ConnHdlr {
+	var boolean exp_rej := ispresent(apars.exp_rej_cause);
+	var Gtp1cUnitdata g_ud;
+
+	f_send_l3(ts_SM_DEACT_PDP_REQ_MO(apars.tid, cause, false, omit), ran_index);
+	if (is_gb(ran_index)) {
+		BSSGP[ran_index].clear;
+	}
+	as_ggsn_gtp_ctx_del_req(apars);
+	alt {
+	[is_gb(ran_index)] BSSGP[ran_index].receive(tr_SM_DEACT_PDP_ACCEPT_MT(apars.tid));
+	[is_gb(ran_index)] as_xid(apars, ran_index);
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_DEACT_PDP_ACCEPT_MT(apars.tid)));
+	}
+	setverdict(pass);
+}
+
+altstep as_pdp_ctx_deact_mt(inout PdpActPars apars, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	[is_gb(ran_index)] BSSGP[ran_index].receive(tr_SM_DEACT_PDP_REQ_MT(apars.tid, ?, true)) {
+		f_send_l3(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid), ran_index);
+		}
+	[is_iu(ran_index)] BSSAP.receive(tr_PDU_DTAP_PS_MT(tr_SM_DEACT_PDP_REQ_MT(apars.tid, ?, true))) {
+		f_send_l3(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid), ran_index);
+		}
+}
+
+function f_pdp_ctx_deact_mt(inout PdpActPars apars, boolean error_ind := false, integer ran_index := 0)
+runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+	var integer seq_nr := 23;
+
+	BSSGP[ran_index].clear;
+	if (error_ind) {
+		var Gtp1uPeer peer := valueof(ts_GtpPeerU(apars.sgsn_ip_c));
+		GTP[GTP_GGSN_IDX].send(ts_GTPU_ErrorIndication(peer, 0 /* seq */, apars.ggsn_tei_u, apars.ggsn_ip_u));
+	} else {
+		var Gtp1cPeer peer := valueof(ts_GtpPeerC(apars.sgsn_ip_c));
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePDP(peer, seq_nr, apars.sgsn_tei_c, apars.nsapi, '1'B));
+	}
+
+	timer T := 5.0;
+	T.start;
+
+	alt {
+	[] as_pdp_ctx_deact_mt(apars, ran_index := ran_index);
+	[not error_ind] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextResponse, apars.ggsn_tei_c)) {
+		repeat;
+		}
+	[] T.timeout {
+		setverdict(fail, "Waiting for SM_DEACT_PDP_REQ_MT");
+		}
+	}
+}
+
+
+/* Table 10.5.156/3GPP TS 24.008 */
+template (value) QoSV t_QosDefault := {
+	reliabilityClass := '011'B, /* unacknowledged GTP+LLC, acknowledged RLC */
+	delayClass := '100'B,	/* best effort */
+	spare1 := '00'B,
+	precedenceClass := '010'B, /* normal */
+	spare2 := '0'B,
+	peakThroughput := '0000'B, /* subscribed */
+	meanThroughput := '00000'B, /* subscribed */
+	spare3 := '000'B,
+	deliverErroneusSDU := omit,
+	deliveryOrder := omit,
+	trafficClass := omit,
+	maxSDUSize := omit,
+	maxBitrateUplink := omit,
+	maxBitrateDownlink := omit,
+	sduErrorRatio := omit,
+	residualBER := omit,
+	trafficHandlingPriority := omit,
+	transferDelay := omit,
+	guaranteedBitRateUplink := omit,
+	guaranteedBitRateDownlink := omit,
+	sourceStatisticsDescriptor := omit,
+	signallingIndication := omit,
+	spare4 := omit,
+	maxBitrateDownlinkExt := omit,
+	guaranteedBitRateDownlinkExt := omit,
+	maxBitrateUplinkExt := omit,
+	guaranteedBitRateUplinkExt := omit,
+	maxBitrateDownlinkExt2 := omit,
+	guaranteedBitRateDownlinkExt2 := omit,
+	maxBitrateUplinkExt2 := omit,
+	guaranteedBitRateUplinkExt2 := omit
+}
+
+/* 10.5.6.4 / 3GPP TS 24.008 */
+template (value) PDPAddressV t_AddrIPv4dyn := {
+	pdpTypeOrg := '0001'B, /* IETF */
+	spare := '0000'B,
+	pdpTypeNum := '21'O, /* IPv4 */
+	addressInfo := omit
+}
+template (value) PDPAddressV t_AddrIPv6dyn := {
+	pdpTypeOrg := '0001'B, /* IETF */
+	spare := '0000'B,
+	pdpTypeNum := '53'O, /* IPv6 */
+	addressInfo := omit
+}
+
+template (value) PdpActPars t_PdpActPars(charstring ggsn_ip,
+					 charstring rnc_ip := "127.0.0.1") := {
+	tid := '000'B,
+	nsapi := '0101'B, /* < 5 are reserved */
+	sapi := '0011'B, /* 3/5/9/11 */
+	qos := t_QosDefault,
+	addr := t_AddrIPv4dyn,
+	apn := omit,
+	pco := omit,
+	exp_rej_cause := omit,
+	gtp_resp_cause := GTP_CAUSE_REQUEST_ACCEPTED,
+	chg_id := f_rnd_octstring(4),
+
+	/* FIXME: make below dynamic !! */
+	ggsn_tei_c := f_rnd_octstring(4),
+	ggsn_tei_u := f_rnd_octstring(4),
+	ggsn_ip_c := f_inet_addr(ggsn_ip),
+	ggsn_ip_u := f_inet_addr(ggsn_ip),
+	ggsn_restart_ctr := int2oct(2, 1),
+	direct_tunnel_requested := false,
+
+	rnc_tei_u := f_rnd_octstring(4),
+	rnc_ip_u := f_inet_addr(rnc_ip),
+
+	sgsn_tei_c := omit,
+	sgsn_tei_u := omit,
+	sgsn_ip_c := omit,
+	sgsn_ip_u := omit
+}
+
+template (value) Gtp1uPeer ts_GtpPeerU(octetstring ip) := {
+	connId := 1,
+	remName := f_inet_ntoa(ip),
+	remPort := GTP1U_PORT
+}
+
+template (value) Gtp1cPeer ts_GtpPeerC(octetstring ip) := {
+	connId := 1,
+	remName := f_inet_ntoa(ip),
+	remPort := GTP1C_PORT
+}
+
+/* Send data from GGSN to SGSN/RNC (depending on apars.f_ggsn_gtpu_send) */
+function f_ggsn_gtpu_send(inout PdpActPars apars, octetstring payload) runs on BSSGP_ConnHdlr {
+	var Gtp1uPeer peer;
+	var OCT4 rem_teid;
+	if (apars.direct_tunnel_requested) {
+		peer := valueof(ts_GtpPeerU(apars.rnc_ip_u));
+		rem_teid := apars.rnc_tei_u;
+	} else {
+		peer := valueof(ts_GtpPeerU(apars.sgsn_ip_u));
+		rem_teid := apars.sgsn_tei_u;
+	}
+	GTP[GTP_GGSN_IDX].send(ts_GTP1U_GPDU(peer, omit /*opt_part*/, rem_teid, payload));
+}
+
+altstep as_xid(PdpActPars apars, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	[] BSSGP[ran_index].receive(tr_LLC_XID_MT_CMD(?, apars.sapi)) {
+		repeat;
+	}
+}
+
+template PDU_SN tr_SN_UD(template BIT4 nsapi, template octetstring payload) := {
+	pDU_SN_UNITDATA := {
+		nsapi := nsapi,
+		moreBit := ?,
+		snPduType := '1'B,
+		firstSegmentIndicator := ?,
+		spareBit := ?,
+		pcomp := ?,
+		dcomp := ?,
+		npduNumber := ?,
+		segmentNumber := ?,
+		npduNumberContinued := ?,
+		dataSegmentSnUnitdataPdu := payload
+	}
+}
+
+/* simple case: single segment, no compression */
+template (value) PDU_SN ts_SN_UD(BIT4 nsapi, octetstring payload) := {
+	pDU_SN_UNITDATA := {
+		nsapi := nsapi,
+		moreBit := '0'B,
+		snPduType := '1'B,
+		firstSegmentIndicator := '1'B,
+		spareBit := '0'B,
+		pcomp := '0000'B,
+		dcomp := '0000'B,
+		npduNumber := '0000'B,
+		segmentNumber := '0000'B,
+		npduNumberContinued := '00'O,
+		dataSegmentSnUnitdataPdu := payload
+	}
+}
+
+/* Transceive given 'payload' as MT message from GTP -> OsmoSGSN -> {Gb,Iu} */
+function f_gtpu_xceive_mt(inout PdpActPars apars, octetstring payload, integer ran_index := 0, boolean expect_fwd := true)
+runs on BSSGP_ConnHdlr {
+	timer T := 5.0;
+	/* Send PDU via GTP from our simulated GGSN to the SGSN */
+	f_ggsn_gtpu_send(apars, payload);
+	T.start;
+
+	alt {
+	/* Expect PDU via BSSGP/LLC on simulated PCU from SGSN: */
+	[is_gb(ran_index)] as_xid(apars, ran_index);
+	//[] BSSGP[ran_index].receive(tr_BD_SNDCP(apars.sapi, tr_SN_UD(apars.nsapi, payload)));
+	[is_gb(ran_index) and expect_fwd] BSSGP[ran_index].receive(tr_SN_UD(apars.nsapi, payload));
+	[is_gb(ran_index) and not expect_fwd] BSSGP[ran_index].receive(tr_SN_UD(apars.nsapi, payload)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "GTP-U forwarded to BSSGP but not expected");
+		}
+	/* Expect PDU directly from RNC (Direct Tunnel): */
+	[is_iu(ran_index) and expect_fwd] GTP[ran2gtp_idx(ran_index)].receive(tr_GTPU_GPDU(valueof(ts_GtpPeerU(apars.ggsn_ip_u)), apars.rnc_tei_u, payload));
+	[is_iu(ran_index) and not expect_fwd] GTP[ran2gtp_idx(ran_index)].receive(tr_GTPU_GPDU(valueof(ts_GtpPeerU(apars.ggsn_ip_u)), apars.rnc_tei_u, payload)) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "GTP-U forwarded to BSSGP but not expected")
+		}
+	[expect_fwd] T.timeout {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Timeout waiting for GTP-U to appear on Gb/Iu");
+		}
+	[not expect_fwd] T.timeout {}
+	}
+}
+
+/* Transceive given 'payload' as MO message from {Gb,Iu} -> OsmoSGSN -> GTP */
+function f_gtpu_xceive_mo(inout PdpActPars apars, octetstring payload, integer ran_index := 0, uint9_t n_u := 0)
+runs on BSSGP_ConnHdlr {
+	var Gtp1uPeer rx_peer;
+
+	if (is_gb(ran_index)) {
+		/* Send PDU via SNDCP/LLC/BSSGP/NS via simulated MS/PCU to the SGSN: */
+		rx_peer := valueof(ts_GtpPeerU(apars.sgsn_ip_u));
+		var PDU_SN sndcp := valueof(ts_SN_UD(apars.nsapi, payload));
+		BSSGP[ran_index].send(ts_LLC_UI(enc_PDU_SN(sndcp), apars.sapi, '0'B, n_u));
+	} else if (is_iu(ran_index)) {
+		/* Send PDU via GTPv1U from simulated MS/RNC directly to the simulated GGSN: */
+		rx_peer := valueof(ts_GtpPeerU(apars.rnc_ip_u));
+		GTP[ran2gtp_idx(ran_index)].send(ts_GTP1U_GPDU(valueof(ts_GtpPeerU(apars.ggsn_ip_u)), omit /*opt_part*/, apars.ggsn_tei_u, payload));
+	}
+	/* Expect PDU via GTP from RNC/SGSN on simulated GGSN */
+	alt {
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPU_GPDU(rx_peer, apars.ggsn_tei_u, payload));
+	}
+}
+
+
+
+}

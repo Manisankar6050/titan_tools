@@ -1,0 +1,16 @@
+[DEFINE]
+TCPDUMP_START := $TTCN3_HACKS_PATH"/ttcn3-dumpcap-start.sh"
+TCPDUMP_STOP := $TTCN3_HACKS_PATH"/ttcn3-dumpcap-stop.sh"
+
+[LOGGING]
+#*.FileMask := LOG_ALL
+ConsoleMask := ERROR | WARNING | TESTCASE | USER
+
+[MODULE_PARAMETERS]
+
+[TESTPORT_PARAMETERS]
+*.FR.sleep_on_enobufs := "2000"
+
+[MAIN_CONTROLLER]
+
+[EXECUTE]

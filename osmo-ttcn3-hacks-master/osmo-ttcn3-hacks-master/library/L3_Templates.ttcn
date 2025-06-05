@@ -1,0 +1,3847 @@
+module L3_Templates {
+
+/* L3 Templates, building on top of MobileL3*_Types from Ericsson.
+ *
+ * (C) 2017-2018 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from MobileL3_Types all;
+import from MobileL3_CommonIE_Types all;
+import from MobileL3_MM_Types all;
+import from MobileL3_RRM_Types all;
+import from MobileL3_CC_Types all;
+import from MobileL3_GMM_SM_Types all;
+import from MobileL3_SMS_Types all;
+
+/* TS 24.007 Table 11.3 TI Flag */
+const BIT1 c_TIF_ORIG := '0'B;
+const BIT1 c_TIF_REPL := '1'B;
+
+type enumerated CmServiceType {
+	CM_TYPE_MO_CALL		('0001'B),
+	CM_TYPE_EMERG_CALL	('0010'B),
+	CM_TYPE_MO_SMS		('0100'B),
+	CM_TYPE_SS_ACT		('1000'B),
+	CM_TYPE_VGCS		('1001'B),
+	CM_TYPE_VBS		('1010'B),
+	CM_TYPE_LCS		('1011'B)
+}
+
+/* TS 24.008 10.5.3.4 Identity Type */
+type enumerated CmIdentityType {
+	CM_ID_TYPE_IMSI			('001'B),
+	CM_ID_TYPE_IMEI			('010'B),
+	CM_ID_TYPE_IMEISV		('011'B),
+	CM_ID_TYPE_TMSI			('100'B),
+	CM_ID_TYPE_PTMSI_RAI_PTMSI_SIG	('101'B)
+}
+
+/* TS 24.008 10.5.5.20 Service type */
+type enumerated ServiceType {
+	SERVICE_TYPE_Signalling				('000'B),
+	SERVICE_TYPE_Data				('001'B),
+	SERVICE_TYPE_Paging_Response			('010'B),
+	SERVICE_TYPE_MBMS_Multicast_Service_Reception	('011'B),
+	SERVICE_TYPE_MBMS_Broadcast_Service_Reception	('100'B)
+}
+
+template ML3_Cause_TLV ts_ML3_Cause(BIT7 cause, BIT4 loc := '0001'B, BIT2 std := '11'B) := {
+	elementIdentifier := '08'O,
+	lengthIndicator := 0, /* overwritten */
+	oct3 := {
+		location := loc,
+		spare1_1 := '0'B,
+		codingStandard := std,
+		ext1 := '0'B,
+		recommendation := omit,
+		ext2 := omit
+	},
+	oct4 := {
+		causeValue := cause,
+		ext3 := '1'B
+	},
+	diagnostics := omit
+}
+
+template ML3_Cause_LV ts_ML3_Cause_LV(BIT7 cause, BIT4 loc := '0001'B, BIT2 std := '11'B) := {
+	lengthIndicator := 0, /* overwritten */
+	oct3 := {
+		location := loc,
+		spare1_1 := '0'B,
+		codingStandard := std,
+		ext1 := '0'B,
+		recommendation := omit,
+		ext2 := omit
+	},
+	oct4 := {
+		causeValue := cause,
+		ext3 := '1'B
+	},
+	diagnostics := omit
+}
+
+
+/* 3GPP TS 24.008, section 10.5.1.4 "Mobile Identity" */
+template (value) MobileIdentityTLV ts_MI_TLV(template (value) MobileIdentityV mi) := {
+	elementIdentifier := '0010111'B,
+	spare1 := '0'B,
+	mobileIdentityLV := ts_MI_LV(mi)
+};
+template MobileIdentityTLV tr_MI_TLV(template MobileIdentityV mi) := {
+	elementIdentifier := '0010111'B,
+	spare1 := '0'B,
+	mobileIdentityLV := tr_MI_LV(mi)
+};
+
+template (value) MobileIdentityLV ts_MI_LV(template (value) MobileIdentityV mi) := {
+	lengthIndicator := 0, /* overwritten */
+	mobileIdentityV := mi
+};
+template MobileIdentityLV tr_MI_LV(template MobileIdentityV mi) := {
+	lengthIndicator := ?,
+	mobileIdentityV := mi
+};
+
+/* Universal (send & receive) template for No Identity */
+template MobileIdentityV t_MI_NoIdentity(template (present) hexstring filler := 'F'H) := {
+	typeOfIdentity := '000'B,
+	oddEvenInd_identity := {
+		no_identity := {
+			/* Always old, since length can be 1, 3, or 5 */
+			oddevenIndicator := '0'B,
+			fillerDigits := filler
+		}
+	}
+};
+
+/* Universal (send & receive) template for TMSI/P-TMSI */
+template MobileIdentityV t_MI_TMSI(template (present) OCT4 tmsi) := {
+	typeOfIdentity := '100'B,
+	oddEvenInd_identity := {
+		tmsi_ptmsi := {
+			oddevenIndicator := '0'B,
+			fillerDigit := '1111'B,
+			octets := tmsi
+		}
+	}
+};
+
+private function f_tr_MI_IMSI(template (present) hexstring digits)
+return template (present) IMSI_L3 {
+	if (istemplatekind(digits, "?")) {
+		return ?;
+	} else {
+		return f_enc_IMSI_L3(valueof(digits))
+	}
+}
+template MobileIdentityV tr_MI_IMSI(template (present) hexstring imsi) := {
+	typeOfIdentity := '001'B,
+	oddEvenInd_identity := {
+		imsi := f_tr_MI_IMSI(imsi)
+	}
+};
+template (value) MobileIdentityV ts_MI_IMSI(hexstring imsi) := {
+	typeOfIdentity := '001'B,
+	oddEvenInd_identity := {
+		imsi := f_enc_IMSI_L3(imsi)
+	}
+};
+
+
+/* send template for Mobile Identity (TMSI) */
+template MobileIdentityLV ts_MI_TMSI_LV(template (value) OCT4 tmsi) := {
+	lengthIndicator := 0, /* overwritten */
+	mobileIdentityV := {
+		typeOfIdentity := '000'B,	/* overwritten */
+		oddEvenInd_identity := {
+			tmsi_ptmsi := {
+				oddevenIndicator := '0'B,
+				fillerDigit := '1111'B,
+				octets := tmsi
+			}
+		}
+	}
+}
+
+function ts_GMM_MsNetCapTLV(template (omit) MSNetworkCapabilityV ms_network_cap) return template (omit) MSNetworkCapabilityTLV {
+	var template (omit) MSNetworkCapabilityTLV ret;
+	if (istemplatekind(ms_network_cap, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			elementIdentifier := '31'O,
+			mSNetworkCapabilityLV := {
+				lengthIndicator := 0, /* overwritten */
+				msNetworkCapabilityV := ms_network_cap
+			}
+		}
+		return ret;
+	}
+}
+
+/* send template for Mobile Identity (TMSI) */
+function ts_MI_TMSI_TLV(template (omit) OCT4 tmsi) return template (omit) MobileIdentityTLV {
+	var template (omit) MobileIdentityTLV ret;
+	if (istemplatekind(tmsi, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			elementIdentifier := '0100011'B,
+			spare1 := '0'B,
+			mobileIdentityLV := ts_MI_TMSI_LV(valueof(tmsi))
+		}
+		return ret;
+	}
+}
+
+template MobileIdentityLV ts_MI_TMSI_NRI_LV(integer nri_v, integer nri_bitlen := 10) :=
+	ts_MI_TMSI_LV(tmsi := f_gen_tmsi(suffix := 0, nri_v := nri_v, nri_bitlen := nri_bitlen));
+
+template MobileIdentityTLV ts_MI_IMEISV_TLV(hexstring imeisv) := {
+	elementIdentifier := '0100011'B,
+	spare1 := '0'B,
+	mobileIdentityLV := ts_MI_IMEISV_LV(imeisv)
+}
+
+private function f_enc_IMSI_L3(hexstring digits) return IMSI_L3 {
+	var IMSI_L3 l3;
+	var integer len := lengthof(digits);
+	if (len rem 2 == 1) {	/* modulo remainder */
+		l3.oddevenIndicator := '1'B;
+		l3.fillerDigit := omit;
+	} else {
+		l3.oddevenIndicator := '0'B;
+		l3.fillerDigit := '1111'B;
+	}
+	l3.digits := digits;
+	return l3;
+}
+
+private function f_enc_IMEI_L3(hexstring digits) return IMEI_L3 {
+	var IMEI_L3 l3;
+	var integer len := lengthof(digits);
+	/* IMEI_L3 is always 15 digits. That is actually a 14 digit IMEI + a Luhn checksum digit (see
+	 * libosmocore/include/osmocom/gsm/protocol/gsm_23_003.h)
+	 *
+	 * Here, we must not make the oddevenIndicator depend on the 'digits' parameter, because:
+	 * - The IMEI_L3 template assumes always 15 digits.
+	 * - The 'digits' parameter, however, may also contain less digits, 14 in the case of
+	 *   f_gen_imei().
+	 * - The IMEI_L3 template will then fill up with zeros to make 15 digits.
+	 * Hence oddevenIndicator must always indicate 'odd' == '1'B.
+	 *
+	 * FIXME: if the caller passes less than 15 digits, the Luhn checksum digit then ends up zero == most probably
+	 * wrong.
+	 */
+	l3.oddevenIndicator := '1'B;
+	l3.digits := digits;
+	return l3;
+}
+
+private function f_enc_IMEI_SV(hexstring digits) return IMEI_SV {
+	var IMEI_SV l3;
+	var integer len := lengthof(digits);
+	if (len rem 2 == 1) {	/* modulo remainder */
+		l3.oddevenIndicator := '1'B;
+	} else {
+		l3.oddevenIndicator := '0'B;
+	}
+	l3.digits := digits;
+	l3.fillerDigit := '1111'B;
+	return l3;
+}
+
+/* send template for Mobile Identity (IMSI) */
+template (value) MobileIdentityLV ts_MI_IMSI_LV(hexstring imsi_digits) := {
+	lengthIndicator := 0, /* overwritten */
+	mobileIdentityV := {
+		typeOfIdentity := '001'B,
+		oddEvenInd_identity := {
+			imsi := f_enc_IMSI_L3(imsi_digits)
+		}
+	}
+}
+
+/* send template for Mobile Identity (IMEI) */
+template (value) MobileIdentityLV ts_MI_IMEI_LV(hexstring imei_digits) := {
+	lengthIndicator := 0, /* overwritten */
+	mobileIdentityV := {
+		typeOfIdentity := '010'B,
+		oddEvenInd_identity := {
+			imei := f_enc_IMEI_L3(imei_digits)
+		}
+	}
+}
+
+/* send template for Mobile Identity (IMEISV) */
+template (value) MobileIdentityLV ts_MI_IMEISV_LV(hexstring imei_digits) := {
+	lengthIndicator := 0, /* overwritten */
+	mobileIdentityV := {
+		typeOfIdentity := '011'B,
+		oddEvenInd_identity := {
+			imei_sv := f_enc_IMEI_SV(imei_digits)
+		}
+	}
+}
+
+
+/* Send template for Classmark 2 */
+template (value) MobileStationClassmark2_LV ts_CM2 := {
+	lengthIndicator := 0,
+	rf_PowerCapability := '000'B,
+	a5_1 := '0'B,
+	esind := '1'B,
+	revisionLevel := '10'B,
+	spare1_1 := '0'B,
+	mobileStationClassmark2_oct4 := {
+		fc := '1'B,
+		vgcs := '0'B,
+		vbs := '0'B,
+		sm_Capability := '1'B,
+		ss_ScreenIndicator := '01'B,
+		ps_Capability := '1'B,
+		spare2_1 := '0'B
+	},
+	mobileStationClassmark2_oct5 := {
+		a5_2 := '0'B,
+		a5_3 := '1'B,
+		cmsp := '0'B,
+		solsa := '0'B,
+		ucs2 := '0'B,
+		lcsva_cap := '0'B,
+		spare5_7 :='0'B,
+		cm3 := '0'B
+	}
+};
+
+template LocationUpdatingType LU_Type_Normal := {
+	lut := '00'B,
+	spare1_1 := '0'B,
+	fop := '0'B
+};
+
+template LocationUpdatingType LU_Type_Periodic := {
+	lut := '01'B,
+	spare1_1 := '0'B,
+	fop := '0'B
+};
+
+template LocationUpdatingType LU_Type_IMSI_Attach := {
+	lut := '10'B,
+	spare1_1 := '0'B,
+	fop := '0'B
+};
+
+/* TS 24.008 10.5.7.1 PDPContextStatus */
+template (value) PDPContextStatusTLV ts_PDPContextStatusTLV(template (value) OCT2 status := '0000'O /* all inactive */) := {
+	elementIdentifier := '32'O,
+	lengthIndicator := 0, /* overwritten */
+	valueField := status
+};
+
+
+/* Send template for LOCATION UPDATING REQUEST */
+template (value) PDU_ML3_MS_NW ts_LU_REQ(template (value) LocationUpdatingType lu_type,
+					 template (value) MobileIdentityLV mi_lv,
+					 template (value) OCT3 mcc_mnc := '123456'O) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			locationUpdateRequest := {
+				messageType := '000000'B, /* overwritten */
+				nsd := '00'B,
+				locationUpdatingType := lu_type,
+				cipheringKeySequenceNumber := { '000'B, '0'B },
+				locationAreaIdentification := {
+						mcc_mnc := mcc_mnc,
+						lac := '172A'O
+					},
+				mobileStationClassmark1 := ts_CM1,
+				mobileIdentityLV := mi_lv,
+				classmarkInformationType2_forUMTS := omit,
+				additionalUpdateParameterTV := omit,
+				deviceProperties := omit,
+				mS_NetworkFeatureSupport := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS ts_LU_ACCEPT(template MobileIdentityTLV mi_tlv := omit) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			locationUpdateAccept := {
+				messageType := '000000'B, /* overwritten */
+				nsd := '00'B,
+				locationAreaIdentification := {
+						mcc_mnc := '123456'O,
+						lac := '172A'O
+					},
+				mobileIdentityTLV := mi_tlv,
+				followOnProceed := omit,
+				cTS_Permission := omit,
+				equivalentPLMNs := omit,
+				emergencyNumberList := omit,
+				perMS_T3212 := omit
+			}
+		}
+	}
+}
+
+/* Send template for CM SERVICE REQUEST */
+template (value) PDU_ML3_MS_NW ts_CM_SERV_REQ(CmServiceType serv_type, MobileIdentityLV mi_lv) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMServiceRequest := {
+				messageType := '000000'B, /* overwritten */
+				nsd := '00'B,
+				cm_ServiceType := int2bit(enum2int(serv_type), 4),
+				cipheringKeySequenceNumber := { '000'B, '0'B },
+				mobileStationClassmark2 := ts_CM2,
+				mobileIdentity := mi_lv,
+				priorityLevel := omit,
+				additionalUpdateParameterTV := omit,
+				deviceProperties := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_CM_SERV_REJ(OCT1 rejectCause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMServiceReject := {
+				messageType := '000000'B, /* overwritten */
+				nsd := '00'B,
+				rejectCause := rejectCause,
+				t3246_Value := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_CM_REESTABL_REQ(MobileIdentityLV mi_lv) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMReEstablReq := {
+				messageType := '000000'B, /* overwritten */
+				nsd := '00'B,
+				cipheringKeySequenceNumber := { '000'B, '0'B },
+				spare := '0000'B,
+				mobileStationClassmark2 := ts_CM2,
+				mobileIdentityLV := mi_lv,
+				locationAreaIdentification := omit,
+				deviceProperties := omit
+			}
+		}
+	}
+}
+
+template (value) CipheringKeySequenceNumberV ts_CKSN(template (value) integer key_seq) := {
+	keySequence := int2bit(valueof(key_seq), 3),
+	spare := '0'B
+}
+
+/* Send template for CM RE-ESTABLISH REQUEST */
+template (value) PDU_ML3_MS_NW ts_CM_REEST_REQ(integer cksn, MobileIdentityLV mi_lv) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMReEstablReq := {
+				messageType := '101000'B, /* overwritten */
+				nsd := '00'B,
+				cipheringKeySequenceNumber := ts_CKSN(cksn),
+				spare := '0000'B,
+				mobileStationClassmark2 := ts_CM2,
+				mobileIdentityLV := mi_lv,
+				locationAreaIdentification := omit,
+				deviceProperties := omit
+			}
+		}
+	}
+}
+
+
+template PDU_ML3_NW_MS tr_MT_simple(template BIT4 discr := ?) := {
+	discriminator := discr,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := ?
+}
+
+
+template PDU_ML3_NW_MS tr_CM_SERV_ACC := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMServiceAccept := {
+				messageType := '100001'B,
+				nsd := ?
+			}
+		}
+	}
+}
+
+
+template PDU_ML3_NW_MS tr_CM_SERV_REJ(template OCT1 rej_cause := ?) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			cMServiceReject := {
+				messageType := '100010'B,
+				nsd := ?,
+				rejectCause := rej_cause,
+				t3246_Value := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_PAGING_REQ1(template MobileIdentityLV mi1 := ?,
+				      template MobileIdentityTLV mi2 := *) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			pagingReq_Type1 := {
+				messageType := '00100001'B,
+				pageMode := ?,
+				channelNeeded := ?,
+				mobileIdentity1 := mi1,
+				mobileIdentity2 := mi2,
+				p1RestOctets := ?
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_PAGING_REQ2(template TMSIP_TMSI_V mi1 := ?,
+				      template TMSIP_TMSI_V mi2 := ?,
+				      template MobileIdentityTLV mi3 := *) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			pagingReq_Type2 := {
+				messageType := '00100010'B,
+				pageMode := ?,
+				channelNeeded := ?,
+				mobileIdentity1 := mi1,
+				mobileIdentity2 := mi2,
+				mobileIdentity3 := mi3,
+				p2RestOctets := ?
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_PAGING_REQ3(template TMSIP_TMSI_V mi1 := ?,
+				      template TMSIP_TMSI_V mi2 := ?,
+				      template TMSIP_TMSI_V mi3 := ?,
+				      template TMSIP_TMSI_V mi4 := ?) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			pagingReq_Type3 := {
+				messageType := '00100100'B,
+				pageMode := ?,
+				channelNeeded := ?,
+				mobileIdentity1 := mi1,
+				mobileIdentity2 := mi2,
+				mobileIdentity3 := mi3,
+				mobileIdentity4 := mi4,
+				p3RestOctets := ?
+			}
+		}
+	}
+}
+
+
+
+/* Send template for PAGING RESPONSE */
+template (value) PDU_ML3_MS_NW ts_PAG_RESP(template (value) MobileIdentityLV mi_lv) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			pagingResponse := {
+				messageType := '00000000'B, /* overwritten */
+				cipheringKeySequenceNumber := { '000'B, '0'B },
+				spare1_4 := '0000'B,
+				mobileStationClassmark := ts_CM2,
+				mobileIdentity := mi_lv,
+				additionalUpdateParameters := omit
+			}
+		}
+	}
+}
+
+template ChannelDescription2_V tr_ChannelDescription2_V(template BIT3 timeslotNumber := ?,
+							template BIT5 channelTypeandTDMAOffset := ?) := {
+	timeslotNumber := timeslotNumber,
+	channelTypeandTDMAOffset := channelTypeandTDMAOffset,
+	octet3 := ?,
+	octet4 := ?
+}
+
+template ChannelMode_V tr_ChannelMode_V(template OCT1 mode) := {
+	mode := mode
+}
+
+template ExtendedTSCSet_TV tr_ExtendedTSCSet_TV(template BIT2 cSDomainTSCSet := ?) := {
+	elementIdentifier := '6D'O,
+	cSDomainTSCSet := cSDomainTSCSet,
+	secondPSDomainTSCAssigned := ?,
+	primaryPSDomainTSCSet := ?,
+	secondaryPSDomainTSCSet := ?,
+	secondaryPSDomainTSCValue := ?
+}
+
+template PDU_ML3_NW_MS tr_RRM_ModeModify(template ChannelDescription2_V desc := ?,
+					 template ChannelMode_V mode := ?,
+					 template ExtendedTSCSet_TV extendedTSCSet) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			channelModeModify := {
+				messageType := '00010000'B,
+				channelDescription := desc,
+				channelMode := mode,
+				vGCS_TargetModeIndication := omit,
+				multiRateConfiguration := omit,
+				vGCS_Ciphering_Parameters := omit,
+				extendedTSCSet := extendedTSCSet
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_ModeModifyAck(ChannelDescription2_V desc, ChannelMode_V mode,
+						    template (omit) ExtendedTSCSet_TV extendedTSCSet := omit) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			channelModeModifyAck := {
+				messageType := '00010111'B,
+				channelDescription := desc,
+				channelMode := mode,
+				extendedTSCSet := extendedTSCSet
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_RRM_CiphModeCmd(BIT3 alg_id) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			cipheringModeCommand := {
+				messageType := '00110101'B,
+				cipherModeSetting := {
+					sC := '1'B,
+					algorithmIdentifier := alg_id
+				},
+				cipherModeResponse := {
+					cR := '0'B,
+					spare := '000'B
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_CiphModeCompl := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			cipheringModeComplete := {
+				messageType := '00110010'B,
+				mobileEquipmentIdentity := omit
+			}
+		}
+	}
+}
+
+template ChannelMode_TV tr_ChannelMode_TV(template OCT1 mode) := {
+	elementIdentifier := '63'O,
+	mode := mode
+}
+
+template (present) PDU_ML3_NW_MS tr_RR_AssignmentCommand(
+		template ChannelDescription2_V desc := ?,
+		template ChannelMode_TV mode := ?,
+		template ExtendedTSCSet_TV extendedTSCSet := omit
+) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			assignmentCommand := {
+				messageType := '00101110'B,
+				descrOf1stChAfterTime := desc,
+				PowerCommand := ?,
+				frequencyList_at := omit,
+				cellChannelDescr := omit,
+				descrMultislotAllocation := omit,
+				modeOf1stChannel := mode,
+				channelSet2 := omit,
+				channelSet3 := omit,
+				channelSet4 := omit,
+				channelSet5 := omit,
+				channelSet6 := omit,
+				channelSet7 := omit,
+				channelSet8 := omit,
+				descrOf2ndChAfterTime := omit,
+				modeOf2ndChannel := omit,
+				mobileAllocation_at := omit,
+				startingTime := omit,
+				frequencyList_bt := omit,
+				descrOf1stCh_bt := omit,
+				descrOf2ndCh_bt := omit,
+				frequencyChannelSequence := omit,
+				mobileAllocation_bt := omit,
+				cipherModeSetting := omit,
+				vGCS_TargetModeIndication := omit,
+				multiRateConfiguration := omit,
+				vGCS_Ciphering_Parameters := omit,
+				extendedTSCSet_afterTime := extendedTSCSet,
+				extendedTSCSet_beforeTime := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_AssignmentComplete(OCT1 cause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			assignmentComplete := {
+				messageType := '00101001'B,
+				rR_Cause := {
+					valuePart := cause
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_AssignmentFailure(OCT1 cause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			assignmentFailure := {
+				messageType := '00101111'B,
+				rR_Cause := {
+					valuePart := cause
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_HandoverFailure(OCT1 cause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			handoverFailure := {
+				messageType := '00101000'B,
+				rRCause := {
+					valuePart := cause
+				},
+				pSCause := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_HandoverComplete(OCT1 cause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			handoverComplete := {
+				messageType := '00101100'B,
+				rRCause := {
+					valuePart := cause
+				},
+				mobileObsservedTimeDiff := omit,
+				mobileTimeDifferenceHyperframe := omit
+			}
+		}
+	}
+}
+
+template (present) PDU_ML3_NW_MS tr_RR_APP_INFO(template (present) BIT4 apdu_id,
+						template (present) octetstring data,
+						template (present) APDU_Flags_V flags := ?) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			applicationInformation := {
+				messageType := '00111000'B,
+				aPDU_ID := apdu_id,
+				aPDU_Flags := flags,
+				aPDU_Data := {
+					lengthIndicator := ?,
+					aPDU_DataValue := data
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_RR_HandoverCommand := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			handoverCommand := {
+				messageType := '00101011'B,
+				cellDescription := {
+					bcc := '001'B,
+					ncc := '010'B,
+					BCCHArfcn_HighPart := '11'B,
+					BCCHArfcn_LowPart := '04'O
+				},
+				channelDescription2 := {
+					timeslotNumber := '110'B,
+					channelTypeandTDMAOffset := '00001'B,
+					octet3 := '00'O,
+					octet4 := '09'O
+				},
+				handoverReference := {
+					handoverReferenceValue := '00'O
+				},
+				powerCommandAndAccesstype := {
+					powerlevel := '00000'B,
+					fPC_EP := '0'B,
+					ePC_Mode := '0'B,
+					aTC := '0'B
+				},
+				synchronizationIndication := omit,
+				frequencyShortListAfterTime := omit,
+				frequencyListAfterTime := omit,
+				cellChannelDescription := omit,
+				multislotAllocation := omit,
+				modeOfChannelSet1 := omit,
+				modeOfChannelSet2 := omit,
+				modeOfChannelSet3 := omit,
+				modeOfChannelSet4 := omit,
+				modeOfChannelSet5 := omit,
+				modeOfChannelSet6 := omit,
+				modeOfChannelSet7 := omit,
+				modeOfChannelSet8 := omit,
+				descrOf2ndCh_at := omit,
+				modeOf2ndChannel := omit,
+				frequencyChannelSequence_at := omit,
+				mobileAllocation_at := omit,
+				startingTime := omit,
+				timeDifference := omit,
+				timingAdvance := omit,
+				frequencyShortListBeforeTime := omit,
+				frequencyListBeforeTime := omit,
+				descrOf1stCh_bt := omit,
+				descrOf2ndCh_bt := omit,
+				frequencyChannelSequence_bt := omit,
+				mobileAllocation_bt := omit,
+				cipherModeSetting := omit,
+				vGCS_TargetModeIndication := omit,
+				multiRateConfiguration := omit,
+				dynamicARFCN_Mapping := omit,
+				vGCS_Ciphering_Parameters := omit,
+				dedicatedServiceInformation := omit,
+				pLMNIndex := omit,
+				extendedTSCSet_afterTime := omit,
+				extendedTSCSet_beforeTime := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_RR_HandoverCommand := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			handoverCommand := {
+				messageType := '00101011'B,
+				cellDescription := ?,
+				channelDescription2 := ?,
+				handoverReference := ?,
+				powerCommandAndAccesstype := ?,
+				synchronizationIndication := *,
+				frequencyShortListAfterTime := *,
+				frequencyListAfterTime := *,
+				cellChannelDescription := *,
+				multislotAllocation := *,
+				modeOfChannelSet1 := *,
+				modeOfChannelSet2 := *,
+				modeOfChannelSet3 := *,
+				modeOfChannelSet4 := *,
+				modeOfChannelSet5 := *,
+				modeOfChannelSet6 := *,
+				modeOfChannelSet7 := *,
+				modeOfChannelSet8 := *,
+				descrOf2ndCh_at := *,
+				modeOf2ndChannel := *,
+				frequencyChannelSequence_at := *,
+				mobileAllocation_at := *,
+				startingTime := *,
+				timeDifference := *,
+				timingAdvance := *,
+				frequencyShortListBeforeTime := *,
+				frequencyListBeforeTime := *,
+				descrOf1stCh_bt := *,
+				descrOf2ndCh_bt := *,
+				frequencyChannelSequence_bt := *,
+				mobileAllocation_bt := *,
+				cipherModeSetting := *,
+				vGCS_TargetModeIndication := *,
+				multiRateConfiguration := *,
+				dynamicARFCN_Mapping := *,
+				vGCS_Ciphering_Parameters := *,
+				dedicatedServiceInformation := *,
+				pLMNIndex := *,
+				extendedTSCSet_afterTime := *,
+				extendedTSCSet_beforeTime := *
+			}
+		}
+	}
+}
+
+function ts_CM3_TLV(template (omit) OCTN cm3) return template MobileStationClassmark3_TLV {
+	if (not isvalue(cm3)) {
+		return omit;
+	}
+	var template MobileStationClassmark3_TLV ret := {
+		elementIdentifier := '20'O,
+		lengthIndicator := 0, /* overwritten */
+		valuePart := cm3
+	}
+	return ret;
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_CM_CHG(MobileStationClassmark2_LV cm2,
+					     template (omit) MobileStationClassmark3_TLV cm3 := omit) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			classmarkChange := {
+				messageType := '00010110'B,
+				mobileStationClassmark2 := cm2,
+				mobileStationClassmark3 := cm3
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_RRM_CM_ENQUIRY := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			classmarkEnquiry := {
+				messageType := '00010011'B,
+				classmarkEnquiryMask := *
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_UL_REL(OCT1 cause) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			uplinkRelease := {
+				messageType := '00001110'B,
+				rR_Cause := {
+					valuePart := cause
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_DTM_ASS_FAIL(OCT1 cause) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			dTM_AssignmentFailure := {
+				messageType := '01001000'B,
+				rR_Cause := {
+					valuePart := cause
+				}
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW tr_RRM_RR_STATUS(template OCT1 cause := ?) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			rR_Status := {
+				messageType := '00010010'B,
+				rR_Cause := {
+					valuePart := cause
+				}
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_RRM_RR_RELEASE(template OCT1 cause := ?) := {
+	discriminator := '0110'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			channelRelease := {
+				messageType := '00001101'B,
+				rRCause := {
+					valuePart := cause
+				},
+				bARange := *,
+				groupChannelDescription := *,
+				groupCipherKeyNumber := *,
+				gPRSResumption := *,
+				bAListPref := *,
+				uTRANFrequencyList := *,
+				cellChannelDescr := *,
+				cellSelectionIndicator := *,
+				enhanced_DTM_CS_Release_Indication := *,
+				vGCS_Ciphering_Parameters := *,
+				group_Channel_Description_2 := *,
+				talkerIdentity := *,
+				talkerPriorityStatus := *,
+				vGCS_AMR_Configuration := *,
+				individual_Priorities := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_RRM_RR_RELEASE_CellSelectInd(template OCT1 cause := ?) modifies tr_RRM_RR_RELEASE := {
+	msgs := {
+		rrm := {
+			channelRelease := {
+				cellSelectionIndicator := {
+					elementIdentifier := '77'O,
+					lengthIndicator := ?,
+					cellSelectionIndicatorValue := ?
+				}
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO := {
+	discriminator := '0000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := ?
+}
+
+template LocationUpdatingType ts_ML3_IE_LuType := {
+	lut := ?,
+	spare1_1 := '0'B,
+	fop := '0'B
+}
+
+template LocationUpdatingType ts_ML3_IE_LuType_Normal modifies ts_ML3_IE_LuType := {
+	lut := '00'B
+}
+
+template LocationUpdatingType ts_ML3_IE_LuType_Periodic modifies ts_ML3_IE_LuType := {
+	lut := '01'B
+}
+
+template LocationUpdatingType ts_ML3_IE_LuType_Attach modifies ts_ML3_IE_LuType := {
+	lut := '10'B
+}
+
+template CipheringKeySequenceNumberV ts_ML3_IE_CKSN(integer cksn) := {
+	keySequence := int2bit(cksn, 3),
+	spare := '0'B
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_LU_Req(LocationUpdatingType lu_type, LocationAreaIdentification_V lai,
+					MobileIdentityLV mi, MobileStationClassmark1_V cm1)
+modifies ts_ML3_MO := {
+	msgs := {
+		mm := {
+			locationUpdateRequest := {
+				messageType := '001000'B,
+				nsd := '00'B, /* ? */
+				locationUpdatingType := lu_type,
+				cipheringKeySequenceNumber := ts_ML3_IE_CKSN(0),
+				locationAreaIdentification := lai,
+				mobileStationClassmark1 := cm1,
+				mobileIdentityLV := mi,
+				classmarkInformationType2_forUMTS := omit,
+				additionalUpdateParameterTV := omit,
+				deviceProperties := omit,
+				mS_NetworkFeatureSupport := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_TmsiRealloc_Cmpl modifies ts_ML3_MO := {
+	msgs := {
+		mm := {
+			tmsiReallocComplete := {
+				messageType := '011011'B,
+				nsd := '00'B
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_LU_Acc := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			locationUpdateAccept := {
+				messageType := '000010'B,
+				nsd := '00'B,
+				locationAreaIdentification := ?,
+				mobileIdentityTLV := *,
+				followOnProceed := *,
+				cTS_Permission := *,
+				equivalentPLMNs := *,
+				emergencyNumberList := *,
+				perMS_T3212 := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_LU_Rej(template OCT1 cause := ?) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			locationUpdateReject := {
+				messageType := '000100'B,
+				nsd := '00'B,
+				rejectCause := cause,
+				t3246_Value := *
+			}
+		}
+	}
+}
+
+private function f_id_type_or_any(template CmIdentityType id_type) return template bitstring {
+	if (istemplatekind(id_type, "?")) {
+		return ?;
+	} else {
+		return int2bit(enum2int(valueof(id_type)), 3);
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_MM_ID_Req(template CmIdentityType id_type := ?) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			identityRequest := {
+				messageType := '011000'B,
+				nsd := '00'B,
+				identityType := f_id_type_or_any(id_type),
+				spare1_5 := ?
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_MM_ID_Rsp(MobileIdentityLV mi) modifies ts_ML3_MO := {
+	msgs := {
+		mm := {
+			identityResponse := {
+				messageType := '011001'B,
+				nsd := '00'B,
+				mobileIdentityLV := mi,
+				p_TMSI_TypeTV := omit,
+				routingAreaIdentification2TLV := omit,
+				p_TMSISignature2TLV := omit
+			}
+		}
+	}
+}
+template PDU_ML3_MS_NW ts_ML3_MO_MM_ID_Rsp_IMSI(hexstring imsi) :=
+					ts_ML3_MO_MM_ID_Rsp(valueof(ts_MI_IMSI_LV(imsi)));
+template PDU_ML3_MS_NW ts_ML3_MO_MM_ID_Rsp_IMEI(hexstring imei) :=
+					ts_ML3_MO_MM_ID_Rsp(valueof(ts_MI_IMEI_LV(imei)));
+
+
+template (value) MobileStationClassmark1_V ts_CM1(BIT1 a5_1_unavail := '0'B, BIT2 rev := '10'B, BIT1 esind := '1'B) := {
+	rf_PowerCapability := '010'B,
+	a5_1 := a5_1_unavail,
+	esind := esind,
+	revisionLevel := rev,
+	spare1_1 := '0'B
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_MM_IMSI_DET_Ind(MobileIdentityLV mi,
+						 template MobileStationClassmark1_V cm1 := ts_CM1)
+modifies ts_ML3_MO := {
+	msgs := {
+		mm := {
+			imsiDetachIndication := {
+				messageType := '000001'B,
+				nsd := '00'B,
+				mobileStationClassmark1 := cm1,
+				mobileIdentityLV := mi
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := -
+}
+
+template (value) CalledPartyBCD_Number ts_Called(hexstring digits) := {
+	elementIdentifier := '5E'O,
+	lengthIndicator := 0,			/* overwritten */
+	numberingPlanIdentification := '0000'B,
+	typeOfNumber := '000'B,			/* unknown */
+	ext1 := '1'B, /* no extension */
+	digits := digits
+}
+
+template CalledPartyBCD_Number tr_Called(template hexstring digits) := {
+	elementIdentifier := '5E'O,
+	lengthIndicator := ?,
+	numberingPlanIdentification := ?,
+	typeOfNumber := ?,
+	ext1 := '1'B, /* no extension */
+	digits := digits
+}
+
+private function f_pad_digits(hexstring digits) return hexstring {
+	if (lengthof(digits) mod 2 != 0) {
+		/* Add trailing nibble of 1-bit padding, like the CallingPartyBCD_Number encoder would do.
+		 * Otherwise our template won't match the data received (see OS#2930). */
+		return digits & 'F'H;
+	}
+	return digits;
+}
+
+template CallingPartyBCD_Number tr_Calling(template hexstring digits) := {
+	elementIdentifier := '5C'O,
+	lengthIndicator := ?,
+	oct3 := ?,
+	digits := f_pad_digits(valueof(digits))
+}
+
+type integer SpeechVer;
+
+template (value) Speech_AuxiliarySpeech ts_SpeechAux(SpeechVer ver, BIT1 suffix) := {
+	speechVersionIndication := int2bit(ver-1,3) & suffix,
+	spare1_1 := '0'B,
+	cTM_or_Spare := '0'B,
+	coding := '0'B,
+	extension_octet_3a_3b := '0'B
+}
+
+template (value) Speech_AuxiliarySpeech ts_SpeechAuxFR(SpeechVer ver) := ts_SpeechAux(ver, '0'B);
+template (value) Speech_AuxiliarySpeech ts_SpeechAuxHR(SpeechVer ver) := ts_SpeechAux(ver, '1'B);
+
+/* TS 3GPP 24.008 § 10.5.4.5 */
+template (value) BearerCapability_TLV ts_Bcap_voice := {
+	elementIdentifier := '04'O,
+	lengthIndicator := 0, /* overwritten */
+	octet3 := {
+		informationTransferCapability := '000'B,
+		transferMode := '0'B,
+		codingStandard := '0'B,
+		radioChannelRequirement := '11'B, /* FR preferred */
+		extension_octet_3 := '0'B,	/* overwritten */
+		speech_aux_3a_3b := {
+			valueof(ts_SpeechAuxHR(3)),
+			valueof(ts_SpeechAuxFR(3)),
+			valueof(ts_SpeechAuxFR(2)),
+			valueof(ts_SpeechAuxFR(1)),
+			valueof(ts_SpeechAuxHR(1))
+		}
+	},
+	octet4 := omit,
+	octet5 := omit,
+	octet6 := omit,
+	octet7 := omit
+}
+
+/* TS 3GPP 24.008 § 10.5.4.5 */
+template (value) BearerCapability_TLV ts_Bcap_csd := {
+	elementIdentifier := '04'O,
+	lengthIndicator := 0, /* overwritten */
+	octet3 := {
+		informationTransferCapability := '001'B,
+		transferMode := '0'B,
+		codingStandard := '0'B,
+		radioChannelRequirement := '11'B,
+		extension_octet_3 := '0'B,
+		speech_aux_3a_3b := omit
+	},
+	octet4 := {
+		establishment := '0'B,
+		nirr := '1'B,
+		configuration := '0'B,
+		duplexMode := '1'B,
+		structure := '00'B,
+		compression := '0'B,
+		extension_octet_4 := '1'B
+	},
+	octet5 := {
+		signallingAccessProtocol := '001'B,
+		rateAdaptation := '01'B, /* V.110 */
+		accessId := '00'B,
+		extension_octet_5 := '0'B,
+		spare2_3 := omit,
+		otherRateAdaptation := omit,
+		otherInformationTransferCapability := omit,
+		extension_octet_5a := omit,
+		spare3_1 := omit,
+		inbandNegotiation := omit,
+		assignor_assignee := omit,
+		lli := omit,
+		mode := omit,
+		multiframe := omit,
+		hdrNohdr := omit,
+		extension_octet_5b := omit
+	},
+	octet6 := {
+		synchronous_asynchronous := '1'B, /* 0: sync, 1: async */
+		userInformationLayer1Protocol := '0000'B,
+		layer1Id := '01'B,
+		extension_octet_6 := '0'B,
+		/* octet 6a */
+		userRate := '0100'B, /* 4.8 kbit/s */
+		numberDataBits := '0'B,
+		negotiation := '0'B,
+		numberStopBits := '0'B,
+		extension_octet_6a := '1'B,
+		/* octet 6b */
+		parity := '000'B,
+		nicOnRX := '0'B,
+		nicOnTX := '0'B,
+		intermediateRate := '10'B,
+		extension_octet_6b := '1'B,
+		/* octet 6c */
+		modemType := '00000'B,
+		connectionElement := '00'B, /* 00: T / 01: NT */
+		extension_octet_6c := '0'B,
+		/* octet 6d */
+		fixedNetworkUserRate := omit,
+		otherModemType := omit,
+		extension_octet_6d := omit,
+		/* octet 6e */
+		maxNumberOfTrafficChannels := omit,
+		acceptableChannelCodings := omit,
+		extension_octet_6e := omit,
+		wantedAirInterfaceUserRate := omit,
+		uimi := omit,
+		/* octet 6f */
+		extension_octet_6f := omit,
+		spare := omit,
+		asymetryIndication := omit,
+		acceptableChannelCodingsExt := omit,
+		extension_octet_6g := omit
+	},
+	octet7 := omit
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_SETUP(integer tid, hexstring called, template BearerCapability_TLV bcap := ts_Bcap_voice) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			setup_MS_NW := {
+				messageType := '000101'B,
+				nsd := '00'B,
+				bcRepeatIndicator := omit,
+				bearerCapability1 := bcap,
+				bearerCapability2 := omit,
+				facility := omit,
+				callingPartySubAddress := omit,
+				calledPartyBCD_Number := ts_Called(called),
+				calledPartySubAddress := omit,
+				llc_RepeatIndicator := omit,
+				lowLayerCompatibility1 := omit,
+				lowLayerCompatibility2 := omit,
+				hlc_RepeatIndicator := omit,
+				highLayerCompatibility1 := omit,
+				highLayerCompatibility2 := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit,
+				clir_Suppression := omit,
+				clir_Invocation := omit,
+				cC_Capabilities := omit,
+				facility_ccbs1 := omit,
+				facility_ccbs2 := omit,
+				streamIdentifier := omit,
+				supportedCodecs := omit,
+				redial := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_EMERG_SETUP(integer tid, template BearerCapability_TLV bcap := ts_Bcap_voice) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			emergencySetup := {
+				messageType := '001110'B,
+				nsd := '00'B,
+				bearerCapability := bcap,
+				streamIdentifier := omit,
+				supportedCodecs := omit,
+				emergencyCategory := omit
+			}
+		}
+	}
+}
+
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_CALL_PROC(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ?,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			callProceeding := {
+				messageType := '000010'B,
+				nsd := '00'B,
+				repeatIndicator := *,
+				bearerCapability1 := *,
+				bearerCapability2 := *,
+				facility := *,
+				progressIndicator := *,
+				priorityGranted := *,
+				networkCCCapabilities := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_ALERTING(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ?,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			alerting_NW_MS := {
+				messageType := '000001'B,
+				nsd := '00'B,
+				facility := *,
+				progressIndicator := *,
+				user_user := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_ALERTING(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			alerting_MS_NW := {
+				messageType := '000001'B,
+				nsd := '00'B,
+				facility := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MT_CC_ALERTING(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			alerting_MS_NW := {
+				messageType := '000001'B,
+				nsd := '00'B,
+				facility := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_CONNECT(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			connect_MS_NW := {
+				messageType := '000111'B,
+				nsd := '00'B,
+				facility := omit,
+				connectedSubAddress := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit,
+				streamIdentifier := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_CONNECT(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			connect_NW_MS := {
+				messageType := '000111'B,
+				nsd := '00'B,
+				facility := *,
+				progressIndicator := *,
+				connectedNumber := *,
+				connectedSubAddress := *,
+				user_user := *
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_CC_CONNECT_ACK(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			connectAck := {
+				messageType := '001111'B,
+				nsd := '00'B
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_CC_START_DTMF(integer tid, charstring number) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			startDTMF := {
+				messageType := '110101'B,
+				nsd := '00'B,
+				keypadFacility := {
+					elementIdentifier := '2C'O,
+					keypadInformation := int2bit(char2int(number), 7),
+					spare_1 := '0'B
+				}
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_DISC(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ?,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			disconnect_NW_MS := {
+				messageType := '100101'B,
+				nsd := '00'B,
+				cause := ?,
+				facility := *,
+				progressIndicator := *,
+				user_user := *,
+				allowedActions := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_DISC(integer tid, BIT1 tid_remote, BIT7 cause) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := tid_remote,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			disconnect_MS_NW := {
+				messageType := '100101'B,
+				nsd := '00'B,
+				cause := ts_ML3_Cause_LV(cause),
+				facility := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_RELEASE(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ?,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			release_NW_MS := {
+				messageType := '101101'B,
+				nsd := '00'B,
+				cause := ?,
+				secondCause := *,
+				facility := *,
+				user_user := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_RELEASE(integer tid, BIT1 tid_remote, BIT7 cause) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := tid_remote,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			release_MS_NW := {
+				messageType := '101101'B,
+				nsd := '00'B,
+				cause := ts_ML3_Cause(cause),
+				secondCause := omit,
+				facility := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit
+			}
+		}
+	}
+}
+
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_CC_REL_COMPL(integer tid, BIT1 tid_remote := '0'B) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := tid_remote,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			releaseComplete_MS_NW := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := omit,
+				facility := omit,
+				user_user := omit,
+				ss_VersionIndicator := omit
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_REL_COMPL(integer tid) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ?,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			releaseComplete_NW_MS := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := *,
+				facility := *,
+				user_user := *
+			}
+		}
+	}
+}
+
+
+
+template PDU_ML3_NW_MS tr_ML3_MT_MM_AUTH_REQ(template OCT16 rand := ?) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			authenticationRequest := {
+				messageType := '010010'B,
+				nsd := '00'B,
+				cipheringKeySequenceNumber := ?,
+				spare2_4 := ?,
+				authenticationParRAND := rand,
+				authenticationParAUTN := *
+			}
+		}
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_MM_AUTH_REQ_3G(template OCT16 rand := ?, template OCT16 autn) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			authenticationRequest := {
+				messageType := '010010'B,
+				nsd := '00'B,
+				cipheringKeySequenceNumber := ?,
+				spare2_4 := ?,
+				authenticationParRAND := rand,
+				authenticationParAUTN := {
+					elementIdentifier := '20'O,
+					lengthIndicator := ?,
+					autnValue := autn
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MT_MM_AUTH_RESP_2G(OCT4 sres) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			authenticationResponse := {
+				messageType := '010100'B,
+				nsd := '00'B,
+				authenticationParSRES := sres,
+				authenticationParSRESext := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MT_MM_AUTH_RESP_3G(OCT4 sres, octetstring res) := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			authenticationResponse := {
+				messageType := '010100'B,
+				nsd := '00'B,
+				authenticationParSRES := sres,
+				authenticationParSRESext := {
+					elementIdentifier := '21'O,
+					lengthIndicator := 0, /* overwritten */
+					valueField := res
+				}
+			}
+		}
+	}
+}
+
+template PDU_ML3_MS_NW ts_ML3_MO_CC_CALL_CONF(integer tid,
+						template BearerCapability_TLV bcap := omit) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL, /* response from destination */
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			callConfirmed := {
+				messageType := '001000'B,
+				nsd := '00'B,
+				repeatIndicator := omit,
+				bearerCapability1 := bcap,
+				bearerCapability2 := omit,
+				cause := omit,
+				cC_Capabilities := omit,
+				streamIdentifier := omit,
+				supportedCodecs := omit
+			}
+		}
+	}
+}
+
+
+template PDU_ML3_NW_MS tr_ML3_MT_CC_SETUP(integer tid, template hexstring called := *,
+					template hexstring calling := *,
+					template BearerCapability_TLV bcap := *) := {
+	discriminator := '0011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG, /* from originator */
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		cc := {
+			setup_NW_MS := {
+				messageType := '000101'B,
+				nsd := '00'B,
+				bcRepeatIndicator := *,
+				bearerCapability1 := bcap,
+				bearerCapability2 := *,
+				facility := *,
+				progressIndicator := *,
+				signal := *,
+				callingPartyBCD_Number := tr_Calling(calling) ifpresent,
+				callingPartySubAddress := *,
+				calledPartyBCD_Number := tr_Called(called) ifpresent,
+				calledPartySubAddress := *,
+				redirectingPartyBCDNumber := *,
+				redirectingPartySubaddress := *,
+				llc_RepeatIndicator := *,
+				lowLayerCompatibility1 := *,
+				lowLayerCompatibility2 := *,
+				hlc_RepeatIndicator := *,
+				highLayerCompatibility1 := *,
+				highLayerCompatibility2 := *,
+				user_user := *,
+				priority := *,
+				alert := *,
+				networkCCCapabilities := *,
+				causeofNoCli := *,
+				backupBearerCapacity := *
+			}
+		}
+	}
+}
+
+/***********************************************************************
+ * Supplementary Services
+ ***********************************************************************/
+
+private template (value) Facility_TLV ts_FacTLV(OCTN facility) := {
+	elementIdentifier := '1C'O,
+	lengthIndicator := lengthof(facility),
+	facilityInformation := facility
+}
+private template Facility_TLV tr_FacTLV(template OCTN facility) := {
+	elementIdentifier := '1C'O,
+	lengthIndicator := ?,
+	facilityInformation := facility
+}
+
+private template (value) Facility_LV ts_FacLV(OCTN facility) := {
+	lengthIndicator := lengthof(facility),
+	facilityInformation := facility
+}
+private template Facility_LV tr_FacLV(template OCTN facility) := {
+	lengthIndicator := ?,
+	facilityInformation := facility
+}
+
+private function f_facility_or_omit(template (omit) OCTN facility)
+return template (omit) Facility_TLV {
+	if (istemplatekind(facility, "omit")) {
+		return omit;
+	} else {
+		return ts_FacTLV(valueof(facility));
+	}
+}
+private function f_facility_or_wc(template OCTN facility)
+return template Facility_TLV {
+	if (istemplatekind(facility, "*")) {
+		return *;
+	} else if (istemplatekind(facility, "?")) {
+		return ?;
+	} else if (istemplatekind(facility, "omit")) {
+		return omit;
+	} else {
+		return tr_FacTLV(facility);
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_SS_REGISTER(
+	uint3_t tid, BIT1 ti_flag,
+	OCTN facility,
+	template (omit) SS_VersionIndicator ss_ver := omit
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			register := {
+				messageType := '111011'B,
+				nsd := '00'B,
+				facility := ts_FacTLV(facility),
+				ss_version := ss_ver
+			}
+		}
+	}
+}
+template PDU_ML3_MS_NW tr_ML3_MO_SS_REGISTER(
+	template uint3_t tid, template BIT1 ti_flag,
+	template OCTN facility,
+	template SS_VersionIndicator ss_ver := omit
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			register := {
+				messageType := '111011'B,
+				nsd := '00'B,
+				facility := tr_FacTLV(facility),
+				ss_version := ss_ver
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_ML3_MT_SS_REGISTER(
+	uint3_t tid, BIT1 ti_flag,
+	OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			register := {
+				messageType := '111011'B,
+				nsd := '00'B,
+				facility := ts_FacTLV(facility)
+			}
+		}
+	}
+}
+template PDU_ML3_NW_MS tr_ML3_MT_SS_REGISTER(
+	template uint3_t tid, template BIT1 ti_flag,
+	template OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			register := {
+				messageType := '111011'B,
+				nsd := '00'B,
+				facility := tr_FacTLV(facility)
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_SS_FACILITY(
+	uint3_t tid, BIT1 ti_flag,
+	OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			facility := {
+				messageType := '111010'B,
+				nsd := '00'B,
+				facility := ts_FacLV(facility)
+			}
+		}
+	}
+}
+template PDU_ML3_MS_NW tr_ML3_MO_SS_FACILITY(
+	template uint3_t tid, template BIT1 ti_flag,
+	template OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			facility := {
+				messageType := '111010'B,
+				nsd := '00'B,
+				facility := tr_FacLV(facility)
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_ML3_MT_SS_FACILITY(
+	uint3_t tid, BIT1 ti_flag,
+	OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			facility := {
+				messageType := '111010'B,
+				nsd := '00'B,
+				facility := ts_FacLV(facility)
+			}
+		}
+	}
+}
+template PDU_ML3_NW_MS tr_ML3_MT_SS_FACILITY(
+	template uint3_t tid, template BIT1 ti_flag,
+	template OCTN facility
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			facility := {
+				messageType := '111010'B,
+				nsd := '00'B,
+				facility := tr_FacLV(facility)
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_SS_RELEASE_COMPLETE(
+	uint3_t tid, BIT1 ti_flag,
+	template (omit) ML3_Cause_TLV cause := omit,
+	template (omit) OCTN facility := omit
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			releaseComplete_MS_NW := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := cause,
+				facility := f_facility_or_omit(facility)
+			}
+		}
+	}
+}
+template PDU_ML3_MS_NW tr_ML3_MO_SS_RELEASE_COMPLETE(
+	template uint3_t tid, template BIT1 ti_flag,
+	template ML3_Cause_TLV cause := *,
+	template OCTN facility := *
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			releaseComplete_MS_NW := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := cause,
+				facility := f_facility_or_wc(facility)
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS ts_ML3_MT_SS_RELEASE_COMPLETE(
+	uint3_t tid, BIT1 ti_flag,
+	template (omit) ML3_Cause_TLV cause := omit,
+	template (omit) OCTN facility := omit
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			releaseComplete_NW_MS := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := cause,
+				facility := f_facility_or_omit(facility)
+			}
+		}
+	}
+}
+template PDU_ML3_NW_MS tr_ML3_MT_SS_RELEASE_COMPLETE(
+	template uint3_t tid, template BIT1 ti_flag,
+	template ML3_Cause_TLV cause := *,
+	template OCTN facility := *
+) := {
+	discriminator := '1011'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		ss := {
+			releaseComplete_NW_MS := {
+				messageType := '101010'B,
+				nsd := '00'B,
+				cause := cause,
+				facility := f_facility_or_wc(facility)
+			}
+		}
+	}
+}
+
+/***********************************************************************
+ * GPRS Mobility Management
+ ***********************************************************************/
+
+template (value) MSNetworkCapabilityV ts_GMM_MsNetCapV := {
+	gea1bit := '1'B,
+	smCapabilitiesviaDedicatedChannels := '1'B,
+	smCapabilitiesviaGPRSChannels := '0'B,
+	ucs2Support := '1'B,
+	ssScreeningIndicator := '01'B,
+	solSACapability := '0'B,
+	revisionLevelIndicatior := '1'B,
+	pFCFeatureMode := omit,
+	extendedGEAbits := omit,
+	lcsVAcapability := omit,
+	pSInterRATHOtoUTRANIuModeCapability := omit,
+	pSInterRATHOtoEUTRANS1ModeCapability := omit,
+	eMMCombinedProceduresCapability := omit,
+	iSRSupport := omit,
+	sRVCCtoGERANUTRANCapability := omit,
+	ePCCapability := omit,
+	nFCapability := omit,
+	gERANNertworkSharingCapability := omit,
+	spare_octets := omit
+};
+
+template (value) MSNetworkCapabilityLV ts_GMM_MsNetCapLV := {
+	lengthIndicator := 0, /* overwritten */
+	msNetworkCapabilityV := ts_GMM_MsNetCapV
+};
+
+type enumerated GprsAttachType {
+	GPRS_ATT_T_GPRS,
+	GPRS_ATT_T_GPRS_IMSI_COMBINED
+};
+
+function ts_GMM_AttachType(boolean combined := false, boolean follow_on_pending := false)
+return AttachTypeV {
+	var AttachTypeV att;
+	if (combined) {
+		att.attachType := '011'B;
+	} else {
+		att.attachType := '001'B;
+	}
+	att.for_l3 := bool2bit(combined);
+	return att;
+}
+
+type enumerated GprsUpdateType {
+	GPRS_UPD_T_RA	('000'B),
+	GPRS_UPD_T_RA_LA_COMBINED ('001'B),
+	GPRS_UPD_T_RA_LA_COMBINED_IMSI_ATT ('010'B),
+	GPRS_UPD_T_PERIODIC ('011'B)
+};
+
+/* 10.5.5.18 Update Type */
+template UpdateTypeV ts_GMM_UpdateType(GprsUpdateType upd_t, boolean combined := false,
+				       boolean follow_on_pending := false) := {
+	valueField := int2bit(enum2int(upd_t), 3),
+	for_l3 := bool2bit(combined)
+}
+
+template (value) DRXParameterV ts_DrxParameterV := {
+	splitPGCycleCode := '00'O, /* no DRX */
+	nonDRXTimer := '000'B, /* no non-DRX mode */
+	splitOnCCCH := '0'B, /* not supported */
+	cnSpecificDRXCycleLength := '0000'B /* SI value used */
+};
+
+private function f_presence_bit_MultislotCap_GPRS(template (omit) MultislotCap_GPRS mscap_gprs) return BIT1 {
+	if (istemplatekind(mscap_gprs, "omit")) {
+		return '0'B;
+	}
+	return '1'B;
+}
+private function f_presence_bit_MultislotCap_EGPRS(template (omit) MultislotCap_EGPRS mscap_egprs) return BIT1 {
+	if (istemplatekind(mscap_egprs, "omit")) {
+		return '0'B;
+	}
+	return '1'B;
+}
+
+template (value) A5BITS ts_a5bits_a51a53 := {
+	a51 := '1'B,
+	a52 := '0'B,
+	a53 := '1'B,
+	a54 := '0'B,
+	a55 := '0'B,
+	a56 := '0'B,
+	a57 := '0'B
+};
+
+template (value) MSRACapabilityValuesRecord ts_RaCapRec(BIT4 att := '0001'B /* E-GSM */, template (omit) MultislotCap_GPRS mscap_gprs := omit, template (omit) MultislotCap_EGPRS mscap_egprs := omit) := {
+	mSRACapabilityValues := {
+		mSRACapabilityValuesExclude1111 := {
+			accessTechnType := att, /* E-GSM */
+			accessCapabilities := {
+				lengthIndicator := 0, /* overwritten */
+				accessCapabilities := {
+					rfPowerCapability := '001'B, /* FIXME */
+					presenceBitA5 := '0'B,
+					a5bits := ts_a5bits_a51a53,
+					esind := '1'B,
+					psbit := '0'B,
+					vgcs := '0'B,
+					vbs := '0'B,
+					presenceBitMultislot := '1'B,
+					multislotcap := {
+						presenceBitHscsd := '0'B,
+						hscsdmultislotclass := omit,
+						presenceBitGprs := f_presence_bit_MultislotCap_GPRS(mscap_gprs),
+						gprsmultislot := mscap_gprs,
+						presenceBitSms := '0'B,
+						multislotCap_SMS := omit,
+						multislotCapAdditionsAfterRel97 := {
+								presenceBitEcsdmulti := '0'B,
+								ecsdmultislotclass := omit,
+								presenceBitEgprsmulti := f_presence_bit_MultislotCap_EGPRS(mscap_egprs),
+								multislotCap_EGPRS := mscap_egprs,
+								presenceBitDtmGprsmulti := '0'B,
+								multislotCapdtmgprsmultislotsubclass := omit
+						}
+					},
+					accessCapAdditionsAfterRel97 := omit
+				},
+				spare_bits := omit
+			}
+		}
+	},
+	presenceBitMSRACap := '0'B
+};
+
+template (value) MSRadioAccessCapabilityLV ts_MS_RaCapa := {
+	lengthIndicator := 0, /* overwritten */
+	msRadioAccessCapabilityV := {
+		ts_RaCapRec('0001'B) /* E-GSM */
+	}
+}
+
+template (value) NetworkResourceIdentifierContainerTLV ts_GMM_NRI(integer nri) := {
+	elementIdentifier := '10'O,
+	networkResourceIdentifierContainerLV := {
+		lengthIndicator := 2,
+		networkResourceIdentifierContainerV := {
+			nRIContainerValue := f_bits_reversed(int2bit(nri, 10)),
+			spare := '000000'B
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN
+	ts_GMM_ATTACH_REQ(MobileIdentityLV mi_lv, RoutingAreaIdentificationV old_ra,
+			  boolean combined := false, boolean follow_on_pending := false,
+			  template (omit) MobileStationClassmark2_TLV cm2_tlv := omit,
+			  template (omit) MobileStationClassmark3_TLV cm3_tlv := omit,
+			  template (omit) NetworkResourceIdentifierContainerTLV nri := omit,
+			  template (omit) P_TMSISignatureTV p_tmsi_sig := omit,
+			  template (omit) P_TMSI_TypeTV p_tmsi_type := omit,
+			  template (omit) MobileIdentityTLV add_p_tmsi := omit,
+			  template (omit) RoutingAreaIdentification2TLV add_rai := omit
+		) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			attachRequest := {
+				messageType := '00000000'B, /* overwritten */
+				msNetworkCapability := ts_GMM_MsNetCapLV,
+				attachType := valueof(ts_GMM_AttachType(combined, follow_on_pending)),
+				gprsCKSN := { '111'B, '0'B },
+				drxParam := ts_DrxParameterV,
+				mobileIdentity := mi_lv,
+				oldRoutingAreaID := old_ra,
+				msRACap := ts_MS_RaCapa,
+				ptmsiSignature := p_tmsi_sig,
+				reqGPRStimer := omit,
+				tmsiStatus := omit,
+				pC_LCSCapability := omit,
+				mobileStationClassmark2 := cm2_tlv,
+				mobileStationClassmark3 := cm3_tlv,
+				supportedCodecs := omit,
+				uENetworkCapability := omit,
+				additionalMobileIdentity := add_p_tmsi,
+				routingAreaIdentification2 := add_rai,
+				voiceDomainandUEsUsageSetting := omit,
+				deviceProperties := omit,
+				p_TMSI_Type := p_tmsi_type,
+				mS_NetworkFeatureSupport := omit,
+				oldLocationAreaIdentification := omit,
+				additionalUpdateType := omit,
+				tMSIBasedNRIcontainer := nri,
+				t3324 := omit,
+				t3312_ExtendedValue := omit,
+				extendedDRXParameters := omit
+			}
+		}
+	}
+}
+
+private function tr_MI_TMSI_TLV(template OCT4 tmsi) return template MobileIdentityTLV {
+	if (istemplatekind(tmsi, "*")) {
+		return *;
+	} else if (istemplatekind(tmsi, "?")) {
+		return ?;
+	} else {
+		var template MobileIdentityTLV mi := {
+			elementIdentifier := '0011000'B,
+			spare1 := '0'B,
+			mobileIdentityLV := {
+				lengthIndicator := 4,
+				mobileIdentityV := {
+					typeOfIdentity := '100'B,
+					oddEvenInd_identity := {
+						tmsi_ptmsi := {
+							oddevenIndicator := '1'B,
+							fillerDigit := '1111'B,
+							octets := tmsi
+						}
+					}
+				}
+			}
+		};
+		return mi;
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_ATTACH_ACCEPT(template BIT3 res := ?,
+					     template RoutingAreaIdentificationV ra := ?,
+					     template OCT4 ptmsi := *) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			attachAccept := {
+				messageType := '00000010'B,
+				attachResult := { res, ? },
+				forceToStandby := ?,
+				updateTimer := ?,
+				radioPriority := ?,
+				radioPriorityTOM8 := ?,
+				routingAreaIdentification := ra,
+				ptmsiSignature := *,
+				readyTimer := *,
+				allocatedPTMSI := tr_MI_TMSI_TLV(ptmsi),
+				msIdentity := *,
+				gmmCause := *,
+				t3302 := *,
+				cellNotification := *,
+				equivalentPLMNs := *,
+				networkFeatureSupport := *,
+				emergencyNumberList := *,
+				requestedMSInformation := *,
+				t3319 := *,
+				t3323 := *,
+				t3312_ExtendedValue := *,
+				additionalNetworkFeatureSupport := *,
+				t3324 := *,
+				extendedDRXParameters := *
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_ATTACH_REJECT(template OCT1 cause) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			attachReject := {
+				messageType := '00000100'B,
+				gmmCause := {
+					causeValue := cause
+				},
+				t3302 := *,
+				t3346 := *
+			}
+		}
+	}
+}
+
+
+template (value) PDU_L3_MS_SGSN ts_GMM_ATTACH_COMPL := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			attachComplete := {
+				messageType := '00000000'B, /* overwritten */
+				interRATHandoverInformation := omit,
+				eUTRANinterRATHandoverInformation := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN
+	ts_GMM_RAU_REQ(MobileIdentityLV mi_lv, GprsUpdateType upd_type,
+			  RoutingAreaIdentificationV old_ra,
+			  boolean follow_on_pending := false,
+			  template (omit) MobileStationClassmark2_TLV cm2_tlv := omit,
+			  template (omit) MobileStationClassmark3_TLV cm3_tlv := omit,
+			  template (omit) OCT4 p_tmsi := omit,
+			  template (omit) NetworkResourceIdentifierContainerTLV nri := omit,
+			  template (omit) P_TMSISignatureTV p_tmsi_sig := omit,
+			  template (omit) P_TMSI_TypeTV p_tmsi_type := omit,
+			  template (omit) MobileIdentityTLV add_p_tmsi := omit,
+			  template (omit) RoutingAreaIdentification2TLV add_rai := omit,
+			  template (omit) MSNetworkCapabilityV ms_network_cap := omit
+		) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			routingAreaUpdateRequest := {
+				messageType := '00000000'B, /* overwritten */
+				updateType := ts_GMM_UpdateType(upd_type, follow_on_pending),
+				gprsCKSN := { '111'B, '0'B },
+				oldRoutingAreaId := old_ra,
+				msRACap := ts_MS_RaCapa,
+				oldPTMSISignature := p_tmsi_sig,
+				readyTimerValue := omit,
+				drxParameter := omit,
+				tmsiStatus := omit,
+				ptmsi := ts_MI_TMSI_TLV(p_tmsi),
+				mSNetworkCapability := ts_GMM_MsNetCapTLV(ms_network_cap),
+				pdpContextStatus := omit, /* TODO */
+				pC_LCSCapability := omit,
+				mBMS_ContextStatus := omit,
+				uENetworkCapability := omit,
+				additionalMobileIdentity := add_p_tmsi,
+				oldRoutingAreaIdentification2 := add_rai,
+				mobileStationClassmark2 := cm2_tlv,
+				mobileStationClassmark3 := cm3_tlv,
+				supportedCodecs := omit,
+				voiceDomainUEUsageSetting := omit,
+				p_TMSI_Type := p_tmsi_type,
+				deviceProperties := omit,
+				mS_NetworkFeatureSupport := omit,
+				oldLocationAreaIdentification := omit,
+				additionalUpdateType := omit,
+				tMSIBasedNRIcontainer := nri,
+				t3324 := omit,
+				t3312_ExtendedValue := omit,
+				extendedDRXParameters := omit
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_RAU_REJECT(template OCT1 cause := ?) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			routingAreaUpdateReject := {
+				messageType := '00001011'B,
+				gmmCause := {
+					causeValue := cause
+				},
+				forceToStandby := ?,
+				spare := '0000'B,
+				t3302 := *,
+				t3346 := *
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_RAU_ACCEPT(template BIT3 res := ?,
+					  template RoutingAreaIdentificationV ra := ?,
+					  template OCT4 ptmsi := *) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			routingAreaUpdateAccept := {
+				messageType := '00001001'B,
+				forceToStandby := ?,
+				updateResult := { res, ? },
+				raUpdateTimer := ?,
+				routingAreaId := ra,
+				ptmsiSignature := *,
+				allocatedPTMSI := tr_MI_TMSI_TLV(ptmsi),
+				msIdentity := *,
+				receiveNPDUNumbers := *,
+				readyTimer := *,
+				gmmCause := *,
+				t3302 := *,
+				cellNotification := *,
+				equivalentPLMNs := *,
+				pdpContextStatus := *,
+				networkFeatureSupport := *,
+				emergencyNumberList := *,
+				mBMS_ContextStatus := *,
+				requestedMSInformation := *,
+				t3319 := *,
+				t3323 := *,
+				t3312_ExtendedValue := *,
+				additionalNetworkFeatureSupport := *,
+				t3324 := *,
+				extendedDRXParameters := *
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_RAU_COMPL := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			routingAreaUpdateComplete := {
+				messageType := '00000000'B, /* overwritten */
+				receiveNPDUNumbers := omit,
+				interRATHandoverInformation := omit,
+				eUTRANinterRATHandoverInformation := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_PTMSI_REALL_COMPL := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			p_TMSIReallocationComplete := {
+				messageType := '00000000'B /* overwritten */
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_AUTH_CIPH_COMPL(ACReferenceNumberV ref, OCT4 res) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			authenticationAndCipheringResponse := {
+				messageType := '00000000'B, /* overwritten */
+				acReferenceNumber := ref,
+				spare := '0000'B,
+				authenticationParResp := {
+					elementIdentifier := '22'O,
+					valueField := res
+				},
+				imeisv := omit,
+				authenticationRespParExt := omit
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_ID_REQ(template BIT3 id_type := ?) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			identityRequest := {
+				messageType := '00010101'B,
+				identityType := { id_type, '0'B },
+				forceToStandby := ?
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_ID_RESP(MobileIdentityLV mi_lv) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			identityResponse := {
+				messageType := '00000000'B, /* overwritten */
+				mobileIdentity := mi_lv
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_AUTH_REQ(template OCT16 rand := ?, template BIT3 ciph_alg := ?) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			authenticationAndCipheringRequest := {
+				messageType := '00010010'B,
+				cipheringAlgorithm := { ciph_alg, '0'B },
+				imeisvRequest := ?,
+				forceToStandby := ?,
+				acReferenceNumber := ?,
+				authenticationParameterRAND := {
+					elementIdentifier := '21'O,
+					randValue := rand
+				},
+				cipheringKeySequenceNumber := *,
+				authenticationParameterAUTN := *
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_AUTH_RESP_2G(BIT4 ac_ref, OCT4 sres) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			authenticationAndCipheringResponse := {
+				messageType := '00010011'B,
+				acReferenceNumber := { valueField := ac_ref },
+				spare := '0000'B,
+				authenticationParResp := {
+					elementIdentifier := '22'O,
+					valueField := sres
+				},
+				imeisv := omit,
+				authenticationRespParExt := omit
+			}
+		}
+	}
+}
+
+template PDU_L3_MS_SGSN ts_GMM_AUTH_FAIL_UMTS_AKA_RESYNC(octetstring auts) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			authenticationAndCipheringFailure := {
+				messageType := '00011100'B,
+				gmmCause := {
+					causeValue := '15'O /* GMM_CAUSE_SYNC_FAIL 10.5.3.2.2 */
+				},
+				authenticationFailureParam := {
+					elementIdentifier := '30'O,
+					lengthIndicator := 14,
+					valueField := auts
+				}
+			}
+		}
+	}
+}
+
+
+const BIT3 c_GMM_DTT_MO_GPRS := '001'B;
+const BIT3 c_GMM_DTT_MO_IMSI := '010'B;
+const BIT3 c_GMM_DTT_MO_GPRS_IMSI_COMBINED := '011'B;
+
+const BIT3 c_GMM_DTT_MT_REATTACH_REQUIRED := '001'B;
+const BIT3 c_GMM_DTT_MT_REATTACH_NOT_REQUIRED := '010'B;
+const BIT3 c_GMM_DTT_MT_IMSI_DETACH := '011'B;
+
+template (value) DetachTypeV ts_GMM_DetType(BIT3 dtt, boolean power_off := false) := {
+	detachType := dtt,
+	powerOffFlag := bool2bit(power_off)
+}
+
+function ts_PtmsiSigTV(template (omit) OCT3 val) return template (omit) P_TMSISignatureTV {
+	var template (omit) P_TMSISignatureTV ret;
+	if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			elementIdentifier := '19'O,
+			valueField := valueof(val)
+		}
+		return ret;
+	}
+}
+
+function ts_PtmsiSigTLV(template (omit) OCT3 val) return template (omit) P_TMSISignature2TLV {
+	var template (omit) P_TMSISignature2TLV ret;
+	if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			elementIdentifier := '19'O,
+			lengthIndicator := 3,
+			valueField := valueof(val)
+		}
+		return ret;
+	}
+}
+
+
+const BIT1 c_GMM_PMTSI_TYPE_NATIVE := '0'B;
+const BIT1 c_GMM_PMTSI_TYPE_MAPPED := '1'B;
+
+function ts_PtmsiTypeTV(template (omit) BIT1 val) return template (omit) P_TMSI_TypeTV {
+	var template (omit) P_TMSI_TypeTV ret;
+	if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			pTMSI_TypeValue := valueof(val),
+			spare := '000'B,
+			elementIdentifier := '1110'B
+		}
+		return ret;
+	}
+}
+
+function ts_RoutingAreaIdentification2TLV(template (omit) OCT6 val) return template (omit) RoutingAreaIdentification2TLV {
+	var template (omit) RoutingAreaIdentification2TLV ret;
+	if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		ret := {
+			elementIdentifier := '1B'O,
+			lengthIndicator := 6,
+			routingAreaIdentification2 := valueof(val)
+		}
+		return ret;
+	}
+}
+
+
+template (value) PDU_L3_MS_SGSN ts_GMM_DET_REQ_MO(BIT3 dtt := c_GMM_DTT_MO_GPRS,
+						  boolean power_off := false,
+						  template (omit) OCT4 p_tmsi := omit,
+						  template (omit) OCT3 p_tmsi_sig := omit) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			detachRequest_MS_SGSN := {
+				messageType := '00000000'B, /* overwritten */
+				detachType := valueof(ts_GMM_DetType(dtt, power_off)),
+				spare := '0000'B,
+				ptmsi := ts_MI_TMSI_TLV(p_tmsi),
+				ptmsiSignature := ts_PtmsiSigTLV(p_tmsi_sig)
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_GMM_DET_REQ_MO_mi(BIT3 dtt := c_GMM_DTT_MO_GPRS,
+						     boolean power_off := false,
+						     template (value) MobileIdentityTLV p_tmsi,
+						     template (omit) OCT3 p_tmsi_sig := omit) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			detachRequest_MS_SGSN := {
+				messageType := '00000000'B, /* overwritten */
+				detachType := valueof(ts_GMM_DetType(dtt, power_off)),
+				spare := '0000'B,
+				ptmsi := p_tmsi,
+				ptmsiSignature := ts_PtmsiSigTLV(p_tmsi_sig)
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_DET_ACCEPT_MT := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			detachAccept_SGSN_MS := {
+				messageType := '00000110'B,
+				forceToStandby := ?,
+				spare := '0000'B
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_GMM_DET_REQ_MT(
+		template BIT3 dtt := *,
+		template BIT3 forceToStandby := ?,
+		template OCT1 cause := *) := {
+	discriminator := '1000'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			detachRequest_SGSN_MS := {
+				messageType := '00000101'B,
+				detachType := { dtt, ? },
+				forceToStandby := { forceToStandby, '0'B },
+				gmmCause := {
+					elementIdentifier := '25'O,
+					causeValue := { cause }
+				}
+			}
+		}
+	}
+}
+
+template (value) ServiceTypeV ts_ServiceTypeV(template (value) ServiceType serviceType) := {
+	serviceType := int2bit(enum2int(valueof(serviceType)), 3),
+	spare := '0'B
+}
+template (present) ServiceTypeV tr_ServiceTypeV(template (present) BIT3 serviceType := ?) := {
+	serviceType := serviceType,
+	spare := '0'B
+}
+
+/* 3GPP TS 24.008 9.4.20 Service Request (Iu mode only) */
+template (value) PDU_L3_MS_SGSN ts_GMM_SERVICE_REQ(template (value) ServiceType service_type,
+						   template (value) OCT4 p_tmsi,
+						   template (value) integer cksn := 0,
+						   template (value) OCT2 pdp_status := '0000'O) := {
+	discriminator := '1000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			serviceRequest := {
+				messageType := '00001100'B, /* overwritten */
+				cipheringKeySeqNum := ts_CKSN(cksn),
+				serviceType := ts_ServiceTypeV(service_type),
+				ptmsi := ts_MI_TMSI_LV(p_tmsi),
+				pdpContextStatus := ts_PDPContextStatusTLV(pdp_status),
+				mBMS_ContextStatus := omit,
+				uplinkDataStatus := omit,
+				deviceProperties := omit
+			}
+		}
+	}
+}
+
+/* 3GPP TS 24.008 9.4.21 Service Accept (Iu mode only) */
+template (present) PDU_L3_SGSN_MS tr_GMM_SERVICE_ACC(template PDPContextStatusTLV pdp_status := *) := {
+	discriminator := '1000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			serviceAccept := {
+				messageType := '00001101'B, /* overwritten */
+				pdpContextStatus := pdp_status,
+				mBMS_ContextStatus := *
+			}
+		}
+	}
+}
+
+/* 3GPP TS 24.008 9.4.22 Service Reject (Iu mode only) */
+template (present) PDU_L3_SGSN_MS tr_GMM_SERVICE_REJ(template (present) GMM_CauseV gmmCause := ?,
+						     template GPRSTimer2TLV t3346 := *) := {
+	discriminator := '1000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			serviceReject := {
+				messageType := '00001110'B, /* overwritten */
+				gmmCause := gmmCause,
+				t3346 := t3346
+			}
+		}
+	}
+}
+
+template PDU_L3_MS_SGSN ts_GMM_DET_ACCEPT_MO := {
+	discriminator := '1000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		gprs_mm := {
+			detachAccept_MS_SGSN := {
+				messageType := '00000000'B
+			}
+		}
+	}
+}
+
+function ts_ApnTLV(template (omit) octetstring apn) return template (omit) AccessPointNameTLV {
+	if (istemplatekind(apn, "omit")) {
+		return omit;
+	} else {
+		var template (omit) AccessPointNameTLV ret := {
+			elementIdentifier := '28'O,
+			lengthIndicator := 0, /* overwritten */
+			accessPointNameValue := apn
+		}
+		return ret;
+	}
+}
+
+function ts_PcoTLV(template (omit) ProtocolConfigOptionsV pco)
+					return template (omit) ProtocolConfigOptionsTLV {
+	if (istemplatekind(pco, "omit")) {
+		return omit;
+	} else {
+		var template (omit) ProtocolConfigOptionsTLV ret := {
+			elementIdentifier := '27'O,
+			lengthIndicator := 0, /* overwritten */
+			protocolConfigOptionsV := pco
+		}
+		return ret;
+	}
+}
+
+function ts_TearDownIndicatorTV(in template (omit) boolean ind)
+					return template (omit) TearDownIndicatorTV {
+	if (istemplatekind(ind, "omit")) {
+		return omit;
+	} else {
+		var template (omit) TearDownIndicatorTV ret := {
+			tearDownIndicatorV := {
+				tdi_flag := bool2bit(valueof(ind)),
+				spare := '000'B
+			},
+			elementIdentifier := '1001'B
+		}
+		return ret;
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_SM_ACT_PDP_REQ(BIT3 tid, BIT4 nsapi, BIT4 sapi, QoSV qos,
+						  PDPAddressV addr,
+						  template (omit) octetstring apn := omit,
+						  template (omit) ProtocolConfigOptionsV pco := omit
+						) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			activatePDPContextRequest := {
+				messageType := '00000000'B, /* overwritten */
+				requestedNSAPI := { nsapi, '0000'B },
+				requestedLLCSAPI := { sapi, '0000'B },
+				requestedQoS := {
+					lengthIndicator := 0, /* overwritten */
+					qoSV := qos
+				},
+				requestedPDPaddress := {
+					lengthIndicator := 0, /* overwritten */
+					pdpAddressV := addr
+				},
+				accessPointName := ts_ApnTLV(apn),
+				protocolConfigOpts := ts_PcoTLV(pco),
+				requestType := omit,
+				deviceProperties := omit,
+				nBIFOM_Container := omit
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_SM_ACT_PDP_REJ(template BIT3 tid := ?, template OCT1 cause := ?) := {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			activatePDPContextReject := {
+				messageType := '01000011'B,
+				smCause := cause,
+				protocolConfigOpts := *,
+				backOffTimer := *,
+				reAttemptIndicator := *,
+				nBIFOM_Container := *
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_SM_ACT_PDP_ACCEPT(template BIT3 tid := ?, template BIT4 sapi := ?,
+					     template QoSV qos := ?)
+:= {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			activatePDPContextAccept := {
+				messageType := '01000010'B,
+				negotiatedLLCSAPI := { sapi, '0000'B },
+				negotiatedQoS := {
+					lengthIndicator := ?,
+					qoSV := qos
+				},
+				radioPriority := ?,
+				spare := '0000'B,
+				pdpAddress := *,
+				protocolConfigOpts := *,
+				packetFlowID := *,
+				sMCause2 := *,
+				connectivityType := *,
+				wLANOffloadIndication := *,
+				nBIFOM_Container := *
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_SM_DEACT_PDP_REQ_MO(BIT3 tid, OCT1 cause,
+						  template (omit) boolean tdown := omit,
+						  template (omit) ProtocolConfigOptionsV pco := omit
+						) := {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextRequest := {
+				messageType := '01000110'B,
+				smCause := cause,
+				tearDownIndicator := ts_TearDownIndicatorTV(tdown),
+				protocolConfigOpts := ts_PcoTLV(pco),
+				mBMSprotocolConfigOptions := omit,
+				t3396 := omit,
+				wLANOffloadIndication := omit,
+				nBIFOM_Container := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_SGSN_MS ts_SM_DEACT_PDP_REQ_MT(BIT3 tid, OCT1 cause,
+						  template (omit) boolean tdown := omit,
+						  template (omit) ProtocolConfigOptionsV pco := omit
+						) := {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextRequest := {
+				messageType := '01000110'B,
+				smCause := cause,
+				tearDownIndicator := ts_TearDownIndicatorTV(tdown),
+				protocolConfigOpts := ts_PcoTLV(pco),
+				mBMSprotocolConfigOptions := omit,
+				t3396 := omit,
+				wLANOffloadIndication := omit,
+				nBIFOM_Container := omit
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_SM_DEACT_PDP_REQ_MT(template BIT3 tid, template OCT1 cause,
+						template (omit) boolean tdown := omit,
+						template (omit) ProtocolConfigOptionsV pco := omit
+					) := {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextRequest := {
+				messageType := '01000110'B,
+				smCause := cause,
+				tearDownIndicator := ts_TearDownIndicatorTV(tdown),
+				protocolConfigOpts := ts_PcoTLV(pco),
+				mBMSprotocolConfigOptions := *,
+				t3396 := *,
+				wLANOffloadIndication := *,
+				nBIFOM_Container := *
+			}
+		}
+	}
+}
+
+template PDU_L3_SGSN_MS tr_SM_DEACT_PDP_ACCEPT_MT(template BIT3 tid := ?)
+:= {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextAccept := {
+				messageType := '01000111'B,
+				protocolConfigOpts := *,
+				mBMSprotocolConfigOptions := *,
+				nBIFOM_Container := *
+			}
+		}
+	}
+}
+
+template PDU_L3_MS_SGSN tr_SM_DEACT_PDP_ACCEPT_MO(template BIT3 tid := ?)
+:= {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextAccept := {
+				messageType := '01000111'B,
+				protocolConfigOpts := *,
+				mBMSprotocolConfigOptions := *,
+				nBIFOM_Container := *
+			}
+		}
+	}
+}
+
+template (value) PDU_L3_MS_SGSN ts_SM_DEACT_PDP_ACCEPT_MO(BIT3 tid)
+:= {
+	discriminator := '1010'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := tid,
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gprs_sm := {
+			deactivatePDPContextAccept := {
+				messageType := '01000111'B,
+				protocolConfigOpts := omit,
+				mBMSprotocolConfigOptions := omit,
+				nBIFOM_Container := omit
+			}
+		}
+	}
+}
+
+
+
+external function enc_MobileIdentityLV(in MobileIdentityLV si) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+
+external function dec_MobileIdentityV(in octetstring mi) return MobileIdentityV
+	with { extension "prototype(convert) decode(RAW)" };
+
+
+
+/* SMS TPDU Layer */
+
+template (value) TPDU_RP_DATA_MS_SGSN ts_SMS_SUBMIT(OCT1 msg_ref, template (value) TP_DA dst_addr,
+					  template (value) OCT1 pid, template (value) OCT1 dcs,
+					  integer length_ind, octetstring user_data) := {
+	sMS_SUBMIT := {
+		tP_MTI := '01'B,	/* SUBMIT */
+		tP_RD := '1'B,		/* reject duplicates */
+		tP_VPF := '00'B,	/* not present */
+		tP_SRR := '0'B,		/* no status report requested */
+		tP_UDHI := '0'B,	/* no user data header in UD */
+		tP_RP := '0'B,		/* no reply path */
+		tP_MR := msg_ref,
+		tP_DA := dst_addr,
+		tP_PID := pid,
+		tP_DCS := dcs,
+		tP_VP := omit,
+		tP_UDL_UD := {
+			tP_LengthIndicator := length_ind,
+			tP_UD := user_data
+		}
+	}
+}
+
+template TPDU_RP_DATA_SGSN_MS tr_SMS_DELIVER(template TP_OA src_addr := ?,
+				    template octetstring user_data := ?,
+				    template OCT1 pid := ?, template OCT1 dcs := ?,
+				    template BIT1 mms := ?
+				) := {
+	sMS_DELIVER := {
+		tP_MTI := '00'B,	/* DELIVER */
+		tP_MMS := mms,		/* more messages to send */
+		tP_LP := ?,		/* ?!? */
+		tP_Spare := '0'B,
+		tP_SRI := '0'B,		/* status report indication */
+		tP_UDHI := '0'B,	/* no user data header in UD */
+		tP_RP := '0'B,		/* no reply path */
+		tP_OA := src_addr,
+		tP_PID := pid,
+		tP_DCS := dcs,
+		tP_SCTS := ?,
+		tP_UDL_UD := {
+			tP_LengthIndicator := ?,
+			tP_UD := user_data
+		}
+	}
+}
+
+/* RP Layer */
+
+private function ts_RpOrig(template (omit) RP_NumberingPlan_and_NumberDigits rp_orig)
+return RP_OriginatorAddressLV {
+	var RP_OriginatorAddressLV ret;
+	if (istemplatekind(rp_orig, "omit")) {
+		ret := { 0, omit };
+	} else {
+		ret := { 0, valueof(rp_orig) };
+	}
+	return ret;
+}
+
+private function ts_RpDst(template (omit) RP_NumberingPlan_and_NumberDigits rp_dst)
+return RP_DestinationAddressLV {
+	var RP_DestinationAddressLV ret;
+	if (istemplatekind(rp_dst, "omit")) {
+		ret := { 0, omit };
+	} else {
+		ret := { 0, valueof(rp_dst) };
+	}
+	return ret;
+}
+
+template (value) RPDU_MS_SGSN ts_RP_DATA_MO(OCT1 msg_ref,
+					    template (omit) RP_NumberingPlan_and_NumberDigits rp_orig,
+					    template (omit) RP_NumberingPlan_and_NumberDigits rp_dst,
+					    template (value) TPDU_RP_DATA_MS_SGSN tpdu) := {
+	rP_DATA_MS_SGSN := {
+		rP_MTI := '000'B,
+		rP_Spare := '00000'B,
+		rP_MessageReference := msg_ref,
+		rP_OriginatorAddress := ts_RpOrig(rp_orig),
+		rP_DestinationAddress := ts_RpDst(rp_dst),
+		rP_User_Data := {
+			rP_LengthIndicator := 0, /* overwritten */
+			rP_TPDU := tpdu
+		}
+	}
+}
+
+template RPDU_SGSN_MS tr_RP_DATA_MT(template OCT1 msg_ref,
+				    template RP_NumberingPlan_and_NumberDigits rp_orig,
+				    template RP_NumberingPlan_and_NumberDigits rp_dst,
+				    template TPDU_RP_DATA_SGSN_MS tpdu) := {
+	rP_DATA_SGSN_MS := {
+		rP_MTI := '001'B,
+		rP_Spare := '00000'B,
+		rP_MessageReference := msg_ref,
+		rP_OriginatorAddress := { ?, rp_orig },
+		rP_DestinationAddress := { ?, rp_dst },
+		rP_User_Data := {
+			rP_LengthIndicator := ?,
+			rP_TPDU := tpdu
+		}
+
+	}
+}
+
+template (value) RPDU_MS_SGSN ts_RP_ACK_MO(OCT1 msg_ref) := {
+	rP_ACK_MS_SGSN := {
+		rP_MTI := '010'B,
+		rP_Spare := '00000'B,
+		rP_MessageReference := msg_ref,
+		rP_User_Data := omit /* FIXME: report */
+	}
+}
+
+template RPDU_SGSN_MS tr_RP_ACK_MT(template OCT1 msg_ref) := {
+	rP_ACK_SGSN_MS := {
+		rP_MTI := '011'B,
+		rP_Spare := '00000'B,
+		rP_MessageReference := msg_ref,
+		rP_User_Data := omit /* FIXME: report */
+	}
+}
+
+template (value) RPDU_MS_SGSN ts_RP_ERROR_MO(OCT1 msg_ref, uint7_t cause) := {
+	rP_ERROR_MS_SGSN := {
+		rP_MTI := '100'B,
+		rP_Spare := '00000'B,
+		rP_Message_Reference := msg_ref,
+		rP_CauseLV := {
+			rP_LengthIndicator := 0, /* overwritten */
+			rP_CauseV := {
+				causeValue := int2bit(cause, 7),
+				ext := '0'B
+			},
+			rP_diagnisticField := omit
+		},
+		rP_User_Data := omit /* FIXME: report */
+	}
+}
+
+private function f_cause_or_wc(template uint7_t cause) return template BIT7 {
+	if (istemplatekind(cause, "?")) {
+		return ?;
+	} else if (istemplatekind(cause, "*")) {
+		return *;
+	} else {
+		return int2bit(valueof(cause), 7);
+	}
+}
+
+template RPDU_SGSN_MS tr_RP_ERROR_MT(template OCT1 msg_ref, template uint7_t cause) := {
+	rP_ERROR_SGSN_MS := {
+		rP_MTI := '101'B,
+		rP_Spare := '00000'B,
+		rP_Message_Reference := msg_ref,
+		rP_CauseLV := {
+			rP_LengthIndicator := ?,
+			rP_CauseV := {
+				causeValue := f_cause_or_wc(cause),
+				ext := '0'B
+			},
+			rP_diagnisticField := omit
+		},
+		rP_User_Data := omit /* FIXME: report */
+	}
+}
+
+
+template (value) RPDU_MS_SGSN ts_RP_SMMA_MO(OCT1 msg_ref) := {
+	rP_SMMA := {
+		rP_MTI := '110'B,
+		rP_Spare := '00000'B,
+		rP_MessageReference := msg_ref
+	}
+}
+
+
+
+
+/* CP Layer */
+
+template (value) L3_SMS_MS_SGSN ts_CP_DATA_MO(template (value) RPDU_MS_SGSN rpdu) := {
+	cP_DATA := {
+		cP_messageType := '00000001'B,
+		cP_User_Data := {
+			lengthIndicator := 0, /* overwritten */
+			cP_RPDU := rpdu
+		}
+	}
+}
+
+template (value) L3_SMS_MS_SGSN ts_CP_ACK_MO := {
+	cP_ACK := {
+		cP_messageType := '00000100'B
+	}
+}
+
+template (value) L3_SMS_MS_SGSN ts_CP_ERROR_MO(OCT1 cause) := {
+	cP_ERROR := {
+		cP_messageType := '00010000'B,
+		cP_Cause := {
+			causeValue := cause
+		}
+	}
+}
+
+template L3_SMS_SGSN_MS tr_CP_DATA_MT(template RPDU_SGSN_MS rpdu) := {
+	cP_DATA := {
+		cP_messageType := '00000001'B,
+		cP_User_Data := {
+			lengthIndicator := ?,
+			cP_RPDU := rpdu
+		}
+	}
+}
+
+template L3_SMS_SGSN_MS tr_CP_ACK_MT := {
+	cP_ACK := {
+		cP_messageType := '00000100'B
+	}
+}
+
+template L3_SMS_SGSN_MS tr_CP_ERROR_MT(template OCT1 cause) := {
+	cP_ERROR := {
+		cP_messageType := '00010000'B,
+		cP_Cause := {
+			causeValue := cause
+		}
+	}
+}
+
+/* L3 Wrapper */
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_SMS(uint3_t tid, BIT1 ti_flag,
+					     template (value) L3_SMS_MS_SGSN sms_mo) := {
+	discriminator := '1001'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		sms := sms_mo
+	}
+}
+
+private function f_tid_or_wc(template uint3_t tid) return template BIT3 {
+	var template BIT3 ret;
+	if (istemplatekind(tid, "*")) {
+		return *;
+	} else if (istemplatekind(tid, "?")) {
+		return ?;
+	} else {
+		return int2bit(valueof(tid), 3);
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_SMS(template uint3_t tid, template BIT1 ti_flag,
+				     template L3_SMS_SGSN_MS sms_mt) := {
+	discriminator := '1001'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := f_tid_or_wc(tid),
+			tiFlag := ti_flag,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		sms := sms_mt
+	}
+}
+
+template PDU_ML3_NW_MS tr_ML3_MT_MM_Info := {
+	discriminator := '0101'B,
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		mm := {
+			mMInformation := {
+				messageType := '110010'B,
+				nsd := '00'B,
+				fullNetworkName := *,
+				shortNetworkName := *,
+				localtimeZone := *,
+				univTime := *,
+				lSAIdentity := *,
+				networkDST := *
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_RRM_GprsSuspReq(template (value) OCT4 tlli,
+						  template (value) RoutingAreaIdentificationV rai,
+						  template (value) OCT1 cause) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+	skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			gPRS_suspensionRequest := {
+				messageType := '00110100'B,
+				tLLI := tlli,
+				routingAreaIdentification := rai,
+				suspensionCause := cause,
+				service_Support := omit
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_NW_MS
+ts_RRM_PhysicalInfo(template (value) OCT1 ta := '00'O) := {
+	discriminator := '0000'B, /* overwritten */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			physicalInformation := {
+				messageType := '00101101'B,
+				timingAdvance := ta
+			}
+		}
+	}
+}
+template PDU_ML3_NW_MS
+tr_RRM_PhysicalInfo(template (present) OCT1 ta := ?) := {
+	discriminator := '0110'B, /* RRM */
+	tiOrSkip := {
+		skipIndicator := '0000'B
+	},
+	msgs := {
+		rrm := {
+			physicalInformation := {
+				messageType := '00101101'B,
+				timingAdvance := ta
+			}
+		}
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_BCC(integer tid, octetstring bcc) := {
+	discriminator := '0001'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		bcc := bcc
+	}
+}
+template PDU_ML3_NW_MS tr_ML3_MT_BCC(integer tid, template octetstring bcc := ?) := {
+	discriminator := '0001'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		bcc := bcc
+	}
+}
+
+template (value) PDU_ML3_MS_NW ts_ML3_MO_GCC(integer tid, octetstring gcc) := {
+	discriminator := '0000'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_ORIG,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gcc := gcc
+	}
+}
+template PDU_ML3_NW_MS tr_ML3_MT_GCC(integer tid, template octetstring gcc := ?) := {
+	discriminator := '0000'B,
+	tiOrSkip := {
+		transactionId := {
+			tio := int2bit(tid, 3),
+			tiFlag := c_TIF_REPL,
+			tIExtension := omit
+		}
+	},
+	msgs := {
+		gcc := gcc
+	}
+}
+
+
+
+}

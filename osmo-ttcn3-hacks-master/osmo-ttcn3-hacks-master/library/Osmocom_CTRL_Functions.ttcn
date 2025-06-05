@@ -1,0 +1,412 @@
+module Osmocom_CTRL_Functions {
+
+/* Definition of helper functions for the Osmocom CTRL interface.
+ *
+ * As opposed to many other parts of the Osmocom TTCN-3 code base, this module
+ * implements blocking functions, instead of asynchronous functions.  The
+ * rationale for this is simple: One normally wants to inquire a value or set
+ * a value and not continue the main program until that operation is complete.
+ *
+ * CTRL is a machine-type protocol on how external programs can interact with
+ * an Osmocom program in a structured way.  It is intended for programmatic
+ * access (by other software), as opposed to the VTY interface intended for
+ * human consumption.
+ *
+ * (C) 2017 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ */
+
+
+	import from Osmocom_CTRL_Types all;
+	import from Misc_Helpers all;
+	import from IPA_Emulation all;
+
+	type record of charstring charstring_list;
+
+	private function f_gen_rand_id() return CtrlId {
+		return int2str(float2int(rnd()*999999999.0));
+	}
+
+	/* perform a given GET Operation */
+	function f_ctrl_get(IPA_CTRL_PT pt, CtrlVariable variable, template (omit) charstring on_err := omit) return CtrlValue {
+		timer T := 2.0;
+		var CtrlMessage rx;
+		var CtrlId id := f_gen_rand_id();
+		pt.send(ts_CtrlMsgGet(id, variable));
+		T.start;
+		alt {
+		[] pt.receive(tr_CtrlMsgGetRepl(id, variable)) -> value rx {
+			}
+		[] pt.receive(tr_CtrlMsgTrap) { repeat; }
+		[] pt.receive(tr_CtrlMsgError) -> value rx {
+			if (istemplatekind(on_err, "omit")) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Error in CTRL GET ", variable, ": ", rx.err.reason));
+			} else {
+				rx.resp.val := valueof(on_err);
+			}
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for CTRL GET REPLY ", variable));
+			}
+		}
+		return rx.resp.val;
+	}
+
+	/* perform a given SET Operation */
+	function f_ctrl_set(IPA_CTRL_PT pt, CtrlVariable variable, CtrlValue val) {
+		timer T := 2.0;
+		var CtrlMessage rx;
+		var CtrlId id := f_gen_rand_id();
+		pt.send(ts_CtrlMsgSet(id, variable, val));
+		T.start;
+		alt {
+		[] pt.receive(tr_CtrlMsgSetRepl(id, variable, val)) { }
+		[] pt.receive(tr_CtrlMsgTrap) { repeat; }
+		[] pt.receive(tr_CtrlMsgError) -> value rx {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Error in CTRL SET ", variable, ": ", rx.err.reason));
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for CTRL SET REPLY ", variable));
+			}
+		}
+	}
+
+	/* send a TRAP */
+	function f_ctrl_trap(IPA_CTRL_PT pt, CtrlVariable variable, CtrlValue val) {
+		pt.send(ts_CtrlMsgTrap(variable, val));
+	}
+
+	/* Expect a matching TRAP */
+	function f_ctrl_exp_trap(IPA_CTRL_PT pt, template CtrlVariable variable,
+				 template CtrlValue val := ?, float timeout_val := 2.0)
+	return CtrlValue {
+		timer T := timeout_val;
+		var CtrlMessage rx;
+		T.start;
+		alt {
+		[] pt.receive(tr_CtrlMsgTrap(variable, val)) -> value rx {
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for TRAP ", variable));
+			}
+		}
+		return rx.trap.val;
+	}
+
+	/* Expect a matching SET, optionally answer */
+	function f_ctrl_exp_set(IPA_CTRL_PT pt, template CtrlVariable variable,
+				 template CtrlValue val := ?,
+				 template (omit) CtrlValue rsp := omit,
+				 float timeout_val := 2.0)
+	return CtrlValue {
+		timer T := timeout_val;
+		var CtrlMessage rx;
+		T.start;
+		alt {
+		[] pt.receive(tr_CtrlMsgSet(?, variable, val)) -> value rx {
+			if (ispresent(rsp)) {
+				pt.send(ts_CtrlMsgSetRepl(rx.cmd.id, valueof(variable), valueof(rsp)));
+			}
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for SET ", variable));
+			}
+		}
+		return rx.cmd.val;
+	}
+
+	/* Expect a matching SET, optionally answer */
+	function f_ctrl_exp_get(IPA_CTRL_PT pt, template CtrlVariable variable,
+				 template (omit) CtrlValue rsp := omit,
+				 float timeout_val := 2.0) {
+		timer T := timeout_val;
+		var CtrlMessage rx;
+		T.start;
+		alt {
+		[] pt.receive(tr_CtrlMsgGet(?, variable)) -> value rx {
+			if (ispresent(rsp)) {
+				pt.send(ts_CtrlMsgGetRepl(rx.cmd.id, valueof(variable), valueof(rsp)));
+			}
+			}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for GET ", variable));
+			}
+		}
+	}
+
+	/* Expect a matching GET result */
+	function f_ctrl_get_exp(IPA_CTRL_PT pt, CtrlVariable variable, template CtrlValue exp) {
+		var charstring ctrl_resp;
+		ctrl_resp := f_ctrl_get(pt, variable);
+		if (not match(ctrl_resp, exp)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Unexpected ", variable, ":", ctrl_resp, " vs exp ", exp));
+		}
+	}
+
+	template charstring ts_ctrl_ratectr(CtrlVariable grp, integer instance, CtrlVariable name,
+					    CtrlVariable kind := "abs") :=
+		"rate_ctr." & kind & "." & grp & "." & int2str(instance) & "." & name;
+
+	function f_ctrl_get_ratectr_abs(IPA_CTRL_PT pt, CtrlVariable grp, integer instance,
+					CtrlVariable name) return integer {
+		return str2int(f_ctrl_get(pt, valueof(ts_ctrl_ratectr(grp, instance, name)), on_err := "-1"));
+	}
+
+	function f_ctrl_get_exp_ratectr_abs(IPA_CTRL_PT pt, CtrlVariable grp, integer instance,
+					    CtrlVariable name, template integer exp) {
+		var charstring ctrl_resp;
+		var CtrlVariable variable := valueof(ts_ctrl_ratectr(grp, instance, name));
+		ctrl_resp := f_ctrl_get(pt, variable);
+		if (not match(str2int(ctrl_resp), exp)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str(variable & " value " & ctrl_resp & " didn't match ", exp));
+		}
+	}
+
+
+	/* --- Retrieve and verify rate counter values in bulk ---
+	 *
+	 * BSC_Tests.ttcn shows a nice way to conveniently shorten the code needed to use these functions, see
+	 * f_ctrs_msc_init() and f_ctrs_msc_expect().
+	 *
+	 * Here also a full usage example:
+	 *
+	 * const CounterNameVals my_counternames := {
+	 *         { "mscpool:subscr:new", 0 },
+	 *         { "mscpool:subscr:known", 0 },
+	 *         { "mscpool:subscr:attach_lost", 0 },
+	 * };
+	 *
+	 * var CounterNameValsList my_counters := f_counter_name_vals_get_n(instance_name := "msc", instance_count := 3,
+	 *                                                                  counternames := my_counternames);
+	 *
+	 * // run some tests that increment rate counters in the program,
+	 * // and increment expected counters accordingly:
+	 * f_counter_name_vals_list_add(my_counters, instance_nr := 1, "mscpool:subscr:new", 7);
+	 * f_counter_name_vals_list_add(my_counters, instance_nr := 2, "mscpool:subscr:attach_lost", 3);
+	 *
+	 * // verify that the program reflects the expected counters:
+	 * f_counter_name_vals_expect_n(instance_name := "msc", my_counters);
+	 *
+	 * // run some more tests...
+	 * f_counter_name_vals_list_add(my_counters, instance_nr := 0, "mscpool:subscr:known");
+	 * // and verify again
+	 * f_counter_name_vals_expect_n(instance_name := "msc", my_counters);
+	 */
+
+	/* One counter value, e.g. { "name", 23 } */
+	type record CounterNameVal {
+		charstring name,
+		integer val
+	}
+
+	/* List of one instance's counters,
+	 * e.g. { {"foo",23}, {"bar",42} }
+	 */
+	type record of CounterNameVal CounterNameVals;
+
+	/* List of numerous instances' counters,
+	 * e.g. { { {"foo",23}, {"bar",42} },
+	 *        { {"foo",23}, {"bar",42} } }
+	 */
+	type record of CounterNameVals CounterNameValsList;
+
+	/* Retrieve one instance's rate counter values of the given names. */
+	function f_counter_name_vals_get(IPA_CTRL_PT pt, charstring instance_name, integer instance_nr,
+					 CounterNameVals counternames)
+	return CounterNameVals {
+		var CounterNameVals vals;
+		for (var integer i := 0; i < lengthof(counternames); i := i + 1) {
+			vals[i] := {
+				name := counternames[i].name,
+				val := f_ctrl_get_ratectr_abs(pt, instance_name, instance_nr, counternames[i].name)
+			};
+		}
+		return vals;
+	}
+
+	/* Retrieve the first N instances' rate counter values of the given names */
+	function f_counter_name_vals_get_n(IPA_CTRL_PT pt, charstring instance_name := "msc",
+					   integer instance_count, CounterNameVals counternames,
+					   integer start_idx := 0)
+	return CounterNameValsList {
+		var CounterNameValsList valslist;
+		for (var integer instance_nr := start_idx; instance_nr < start_idx + instance_count; instance_nr := instance_nr + 1) {
+			valslist[instance_nr] := f_counter_name_vals_get(pt, instance_name, instance_nr, counternames);
+		}
+		log("retrieved rate counters: ", instance_name, ": ", valslist);
+		return valslist;
+	}
+
+	/* In a list of one instance's counters, increment a specifically named counter. */
+	function f_counter_name_vals_add(inout CounterNameVals vals, charstring countername, integer val := 1)
+	{
+		for (var integer i := 0; i < lengthof(vals); i := i + 1) {
+			if (vals[i].name == countername) {
+				vals[i].val := vals[i].val + val;
+				return;
+			}
+		}
+		/* name not found, append */
+		vals[lengthof(vals)] := {
+			name := countername,
+			val := val
+		}
+	}
+
+	/* In a list of one instance's counters, set a specifically named counter to a specific value. */
+	function f_counter_name_vals_set(inout CounterNameVals vals, charstring countername, integer val := 1)
+	{
+		for (var integer i := 0; i < lengthof(vals); i := i + 1) {
+			if (vals[i].name == countername) {
+				vals[i].val := val;
+				return;
+			}
+		}
+		/* name not found, append */
+		vals[lengthof(vals)] := {
+			name := countername,
+			val := val
+		}
+	}
+
+	/* In a list of several instances' counters, increment a specific instance's specifically named counter. */
+	function f_counter_name_vals_list_add(inout CounterNameValsList vals, integer instance_nr,
+	                                      charstring countername, integer val := 1)
+	{
+		f_counter_name_vals_add(vals[instance_nr], countername, val);
+	}
+
+	/* In a list of several instances' counters, set a specific instance's specifically named counter to a specific
+	 * value. */
+	function f_counter_name_vals_list_set(inout CounterNameValsList vals, integer instance_nr,
+	                                      charstring countername, integer val := 0)
+	{
+		f_counter_name_vals_set(vals[instance_nr], countername, val);
+	}
+
+	private function f_counter_val_to_str(integer val) return charstring
+	{
+		if (val < 0) {
+			return "not present";
+		}
+		return int2str(val);
+	}
+
+	/* For a specific instance, call f_counter_name_vals_get() and compare with expected counter values.
+	 * Set the test verdict accordingly. */
+	function f_counter_name_vals_expect(IPA_CTRL_PT pt, charstring instance_name, integer instance_nr,
+					    CounterNameVals vals) {
+		var CounterNameVals last := f_counter_name_vals_get(pt, instance_name, instance_nr, vals);
+		for (var integer i := 0; i < lengthof(vals); i := i + 1) {
+			if (last[i].name != vals[i].name) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Internal error");
+			}
+			if (last[i].val != vals[i].val) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							"Rate counter mismatch: " & instance_name & " " & int2str(instance_nr)
+							& " " & vals[i].name & " is " & f_counter_val_to_str(last[i].val)
+							& " but expected " & f_counter_val_to_str(vals[i].val));
+			}
+		}
+		setverdict(pass);
+	}
+
+	/* For N instances, call f_counter_name_vals_get() and compare with expected counter values.
+	 * Set the test verdict accordingly. The number of instances is given by lengthof(valslist). */
+	function f_counter_name_vals_expect_n(IPA_CTRL_PT pt, charstring instance_name, CounterNameValsList valslist) {
+		for (var integer instance_nr := 0; instance_nr < lengthof(valslist); instance_nr := instance_nr + 1) {
+			f_counter_name_vals_expect(pt, instance_name, instance_nr, valslist[instance_nr]);
+		}
+	}
+
+	/* For a specific instance, call f_counter_name_vals_get() and indentify counters that have changed with respect
+	 * to 'vals'. Return list of the changed counter names in the order they appear in 'vals'. */
+	function f_counter_name_vals_get_changed(IPA_CTRL_PT pt, charstring instance_name, integer instance_nr,
+						 CounterNameVals vals)
+	return charstring_list {
+		var charstring_list changed := {};
+		var CounterNameVals last := f_counter_name_vals_get(pt, instance_name, instance_nr, vals);
+		for (var integer i := 0; i < lengthof(vals); i := i + 1) {
+			if (last[i].name != vals[i].name) {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Internal error");
+			}
+			if (last[i].val != vals[i].val) {
+				changed := changed & { instance_name & "." & int2str(instance_nr) & "." & vals[i].name };
+			}
+		}
+		return changed;
+	}
+
+	/* For N instances, call f_counter_name_vals_get() and indentify counters that have changed with respect
+	 * to 'vals'. Return list of the changed counter names in the order they appear in 'vals'. */
+	function f_counter_name_vals_get_changed_n(IPA_CTRL_PT pt, charstring instance_name, CounterNameValsList valslist)
+	return charstring_list {
+		var charstring_list changed := {};
+		for (var integer instance_nr := 0; instance_nr < lengthof(valslist); instance_nr := instance_nr + 1) {
+			changed := changed & f_counter_name_vals_get_changed(pt, instance_name, instance_nr, valslist[instance_nr]);
+		}
+		return changed;
+	}
+
+	function f_counter_name_vals_expect_changed(IPA_CTRL_PT pt, charstring instance_name, CounterNameValsList valslist,
+						    charstring_list expect_changed) {
+		var charstring_list changed := f_counter_name_vals_get_changed_n(pt, instance_name, valslist);
+		f_counter_name_vals_expect_changed_list(changed, expect_changed);
+	}
+
+	function f_counter_name_vals_expect_changed_list(charstring_list got_list, charstring_list expect_list) {
+		var charstring unexpected_change := "";
+		for (var integer i := 0; i < lengthof(got_list); i := i + 1) {
+			var boolean found := false;
+			for (var integer j := 0; j < lengthof(expect_list); j := j + 1) {
+				if (got_list[i] == expect_list[j]) {
+					found := true;
+					break;
+				}
+			}
+			if (not found) {
+				unexpected_change := unexpected_change & " " & got_list[i];
+			}
+		}
+		var charstring missing_change := "";
+		for (var integer i := 0; i < lengthof(expect_list); i := i + 1) {
+			var boolean found := false;
+			for (var integer j := 0; j < lengthof(got_list); j := j + 1) {
+				if (expect_list[i] == got_list[j]) {
+					found := true;
+					break;
+				}
+			}
+			if (not found) {
+				missing_change := missing_change & " " & expect_list[i];
+			}
+		}
+		var charstring diff := "";
+		if (lengthof(unexpected_change) > 0) {
+			diff := diff & " Unexpected changes in" & unexpected_change & ";";
+		}
+		if (lengthof(missing_change) > 0) {
+			diff := diff & " Missing changes in" & missing_change & ";";
+		}
+		if (lengthof(diff) > 0) {
+			log("ERROR\nExpected: ", expect_list, "\nGot: ", got_list);
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"Rate counters did not change as expected:" & diff);
+		} else {
+			setverdict(pass);
+		}
+	}
+
+}

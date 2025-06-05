@@ -1,0 +1,703 @@
+module PCUIF_Components {
+
+/*
+ * Components for (RAW) PCU test cases.
+ *
+ * (C) 2019 Vadim Yanitskiy <axilirator@gmail.com>
+ *
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from IPL4asp_Types all;
+import from UD_Types all;
+
+import from PCUIF_Types all;
+import from PCUIF_CodecPort all;
+
+import from Osmocom_Types all;
+import from General_Types all;
+import from RLCMAC_Types all;
+import from GSM_RR_Types all;
+
+/* Component communication diagram:
+ *
+ * +-----+               +----------+      +---------+
+ * | MTC +---------------+ PCUIF_CT +------+ OsmoPCU |
+ * +--+--+               +----+-----+      +---------+
+ *    |                       |
+ *    |                       |
+ *    |                       |
+ *    |    +-----------+      |      +---------------+
+ *    +----+ BTS_CT #1 +------+      | ClckGen_CT #1 |
+ *    |    +-----+-----+      |      +-------+-------+
+ *    |          |            |              |
+ *    |          +---------------------------+
+ *    |                       |
+ *    |    +-----------+      |      +---------------+
+ *    +----+ BTS_CT #2 +------+      | ClckGen_CT #2 |
+ *    |    +-----+-----+      |      +-------+-------+
+ *    |          |            |              |
+ *    |          +---------------------------+
+ *    |                       |
+ *    |    +-----------+      |      +---------------+
+ *    +----+ BTS_CT #N +------+      | ClckGen_CT #N |
+ *         +-----+-----+             +-------+-------+
+ *               |                           |
+ *               +---------------------------+
+ */
+
+/* Events are used by the components to indicate that something
+ * has happened, e.g. we have got a connection from the PCU. */
+type enumerated RAW_PCU_EventType {
+	/* Events related to RAW_PCUIF_CT */
+	PCU_EV_DISCONNECT,		/*!< OsmoPCU has disconnected */
+	PCU_EV_CONNECT,			/*!< OsmoPCU is now connected */
+
+	/* Events related to RAW_PCU_BTS_CT */
+	BTS_EV_SI13_NEGO,		/*!< SI13 negotiation complete */
+
+	/* TDMA clock related events (TDMA frame-number in parameters) */
+	TDMA_EV_PDTCH_BLOCK_BEG,	/*!< 1/4 bursts of a PDTCH block on both Uplink and Downlink */
+	TDMA_EV_PDTCH_BLOCK_END,	/*!< 4/4 bursts of a PDTCH block on both Uplink and Downlink */
+	TDMA_EV_PTCCH_DL_BLOCK,		/*!< 4/4 bursts of a PTCCH block on Downlink */
+	TDMA_EV_PTCCH_UL_BURST,		/*!< One Access Burst on PTCCH/U */
+
+	TDMA_EV_PDTCH_BLOCK_SENT	/*!< A PDTCH block has been sent to the PCU */
+};
+
+/* Union of all possible parameters of the events */
+type union RAW_PCU_EventParam {
+	integer tdma_fn
+};
+
+type record RAW_PCU_Event {
+	RAW_PCU_EventType event,
+	/* TODO: can we use 'anytype' here? */
+	RAW_PCU_EventParam data optional
+};
+
+template (value) RAW_PCU_Event ts_RAW_PCU_EV(RAW_PCU_EventType event) := {
+	event := event,
+	data := omit
+}
+template RAW_PCU_Event tr_RAW_PCU_EV(template RAW_PCU_EventType event := ?,
+				     template RAW_PCU_EventParam data := *) := {
+	event := event,
+	data := data
+}
+
+template (value) RAW_PCU_Event ts_RAW_PCU_CLCK_EV(RAW_PCU_EventType event, integer fn) := {
+	event := event,
+	data := { tdma_fn := fn }
+}
+template RAW_PCU_Event tr_RAW_PCU_CLCK_EV := {
+	event := (TDMA_EV_PDTCH_BLOCK_BEG, TDMA_EV_PDTCH_BLOCK_END,
+		  TDMA_EV_PTCCH_DL_BLOCK, TDMA_EV_PTCCH_UL_BURST,
+		  TDMA_EV_PDTCH_BLOCK_SENT),
+	data := { tdma_fn := ? }
+}
+
+/* Commands are mostly used by the MTC to configure the components
+ * at run-time, e.g. to enable or disable some optional features. */
+type enumerated RAW_PCU_CommandType {
+	GENERAL_CMD_SHUTDOWN,		/*!< Shut down component and all its child components */
+	TDMA_CMD_ENABLE_PTCCH_UL_FWD	/*!< Enable forwarding of TDMA_EV_PTCCH_UL_BURST to the MTC */
+};
+
+type record RAW_PCU_Command {
+	RAW_PCU_CommandType cmd,
+	anytype data optional
+};
+
+template (value) RAW_PCU_Command ts_RAW_PCU_CMD(RAW_PCU_CommandType cmd) := {
+	cmd := cmd,
+	data := omit
+}
+template RAW_PCU_Command tr_RAW_PCU_CMD(template RAW_PCU_CommandType cmd := ?,
+					template anytype data := *) := {
+	cmd := cmd,
+	data := data
+}
+
+/* PCUIF req_data containing decoded rlcmac/rr, for users to be able to match
+ * directly on receive()
+ */
+type record BTS_PDTCH_Block {
+	uint8_t		bts_nr,
+	PCUIF_data	raw,
+	RlcmacDlBlock	dl_block optional
+};
+type record BTS_PTCCH_Block {
+	uint8_t		bts_nr,
+	PCUIF_data	raw,
+	PTCCHDownlinkMsg dl_block optional
+};
+type record BTS_CCCH_Block {
+	uint8_t		bts_nr,
+	PCUIF_data	raw,
+	OCT4		msg_id optional,
+	charstring	imsi optional,
+	GsmRrMessage	rr_msg,
+	boolean		confirm optional
+};
+template BTS_PDTCH_Block tr_PCUIF_DATA_PDTCH(template uint8_t bts_nr,
+					    template PCUIF_data raw,
+					    template RlcmacDlBlock dl_block := ?) := {
+	bts_nr := bts_nr,
+	raw := raw,
+	dl_block := dl_block
+};
+template BTS_PTCCH_Block tr_PCUIF_DATA_PTCCH(template uint8_t bts_nr,
+					    template PCUIF_data raw,
+					    template PTCCHDownlinkMsg dl_block := ?) := {
+	bts_nr := bts_nr,
+	raw := raw,
+	dl_block := dl_block
+};
+template BTS_CCCH_Block tr_PCUIF_DATA_RR(template uint8_t bts_nr,
+					    template PCUIF_data raw,
+					    template GsmRrMessage rr_msg := ?,
+					    template OCT4 msg_id := *,
+					    template charstring imsi := *,
+					    template boolean confirm := *) := {
+	bts_nr := bts_nr,
+	raw := raw,
+	msg_id := msg_id,
+	imsi := imsi,
+	rr_msg := rr_msg,
+	confirm := confirm
+};
+
+/* Generic port for messages and events */
+type port RAW_PCU_MSG_PT message {
+	inout RAW_PCU_Command;
+	inout RAW_PCU_Event;
+	inout PCUIF_Message;
+	inout BTS_PDTCH_Block;
+	inout BTS_PTCCH_Block;
+	inout BTS_CCCH_Block;
+} with { extension "internal" };
+
+/* TDMA frame clock generator */
+type component RAW_PCU_ClckGen_CT {
+	/* One TDMA frame is 4.615 ms long */
+	timer T_TDMAClock := 4.615 / 1000.0;
+	port RAW_PCU_MSG_PT CLCK;
+	var integer fn := 0;
+}
+
+/* Derive PTCCH/U sub-slot from a given TDMA frame-number */
+function f_tdma_ptcch_fn2ss(integer fn) return integer
+{
+	var integer ss := -1;
+
+	/* See 3GPP TS 45.002, table 6 */
+	select (fn mod 416) {
+	case (12) { ss := 0; }
+	case (38) { ss := 1; }
+	case (64) { ss := 2; }
+	case (90) { ss := 3; }
+
+	case (116) { ss := 4; }
+	case (142) { ss := 5; }
+	case (168) { ss := 6; }
+	case (194) { ss := 7; }
+
+	case (220) { ss := 8; }
+	case (246) { ss := 9; }
+	case (272) { ss := 10; }
+	case (298) { ss := 11; }
+
+	case (324) { ss := 12; }
+	case (350) { ss := 13; }
+	case (376) { ss := 14; }
+	case (402) { ss := 15; }
+	}
+
+	return ss;
+}
+
+function f_ClckGen_CT_handler(integer start_fn := 0)
+runs on RAW_PCU_ClckGen_CT {
+	var integer fn104, fn52, fn13;
+
+	fn := start_fn;
+
+	while (true) {
+		fn104 := fn mod 104;
+		fn52 := fn mod 52;
+		fn13 := fn mod 13;
+
+		if (fn13 == 0 or fn13 == 4 or fn13 == 8) {
+			/* 1/4 bursts of a PDTCH block on both Uplink and Downlink */
+			CLCK.send(ts_RAW_PCU_CLCK_EV(TDMA_EV_PDTCH_BLOCK_BEG, fn));
+		} else if (fn13 == 3 or fn13 == 7 or fn13 == 11) {
+			/* 4/4 bursts of a PDTCH block on both Uplink and Downlink */
+			CLCK.send(ts_RAW_PCU_CLCK_EV(TDMA_EV_PDTCH_BLOCK_END, fn));
+		} else if (fn52 == 12 or fn52 == 38) {
+			/* 4/4 bursts of a PTCCH (Timing Advance Control) block on Downlink */
+			if (fn104 == 90) {
+				CLCK.send(ts_RAW_PCU_CLCK_EV(TDMA_EV_PTCCH_DL_BLOCK, fn));
+			}
+			/* One Access Burst on PTCCH/U (goes 3 time-slots after PTCCH/D) */
+			CLCK.send(ts_RAW_PCU_CLCK_EV(TDMA_EV_PTCCH_UL_BURST, fn));
+		}
+
+		/* TDMA hyperframe period is (2048 * 51 * 26) frames */
+		fn := (fn + 1) mod (2048 * 51 * 26);
+
+		/* (Re)start TDMA clock timer and wait */
+		T_TDMAClock.start;
+		T_TDMAClock.timeout;
+	}
+}
+
+type record of PCUIF_Message PCUIF_MsgQueue;
+
+/* Enqueue a given message to the end of a given queue */
+private function f_PCUIF_MsgQueue_enqueue(inout PCUIF_MsgQueue queue,
+					  in PCUIF_Message msg)
+{
+	queue := queue & { msg };
+}
+
+/* Dequeue the first message of a given queue */
+private function f_PCUIF_MsgQueue_dequeue(inout PCUIF_MsgQueue queue,
+					  out PCUIF_Message msg)
+{
+	var integer len := lengthof(queue);
+
+	if (len == 0) {
+		setverdict(fail, "Failed to dequeue a message: the queue is empty!");
+		mtc.stop;
+	}
+
+	/* Store the first message */
+	msg := queue[0];
+
+	/* Remove the first message from queue */
+	if (len > 1) {
+		queue := substr(queue, 1, len - 1);
+	} else {
+		queue := { };
+	}
+}
+
+/* Get first message from queue. true if non-empty, false otherwise */
+private function f_PCUIF_MsgQueue_first(inout PCUIF_MsgQueue queue,
+					out PCUIF_Message msg) return boolean
+{
+	if (lengthof(queue) == 0) {
+		return false;
+	}
+
+	msg := queue[0];
+	return true;
+}
+
+/* Multiple base stations can be connected to the PCU. This component
+ * represents one BTS with an associated TDMA clock generator. */
+type component RAW_PCU_BTS_CT {
+	/* TDMA clock generator */
+	var RAW_PCU_ClckGen_CT vc_CLCK_GEN;
+	port RAW_PCU_MSG_PT CLCK;
+
+	/* Queues of PCUIF messages to be sent
+	 * TODO: we may have multiple PDCH time-slots */
+	var PCUIF_MsgQueue pdtch_data_queue := { };
+	var PCUIF_MsgQueue pdtch_rts_queue := { };
+	var PCUIF_MsgQueue ptcch_rts_queue := { };
+
+	/* Connection towards the PCU interface */
+	port RAW_PCU_MSG_PT PCUIF;
+	/* Connection towards the test case */
+	port RAW_PCU_MSG_PT TC;
+
+	/* Whether to forward PTCCH/U burst events to the TC */
+	var boolean cfg_ptcch_burst_fwd := false;
+
+	var PCUIF_info_ind g_info_ind;
+}
+
+/* Queue received messages from Test Case, they will eventually be scheduled and
+ * sent according to their FN. FN value of 0 has the special meaning of "schedule
+ * as soon as possible". */
+private altstep as_BTS_CT_MsgQueue(integer bts_nr)
+runs on RAW_PCU_BTS_CT {
+	var PCUIF_Message pcu_msg;
+
+	/* Enqueue DATA.ind and RTS.req messages */
+	[] TC.receive(tr_PCUIF_MSG(PCU_IF_MSG_DATA_IND, bts_nr)) -> value pcu_msg {
+		if (pcu_msg.u.data_ind.sapi == PCU_IF_SAPI_BCCH) {
+			PCUIF.send(pcu_msg); /* Forward directly ASAP */
+		} else {
+			f_PCUIF_MsgQueue_enqueue(pdtch_data_queue, pcu_msg);
+		}
+		repeat;
+		}
+	[] TC.receive(tr_PCUIF_RTS_REQ(bts_nr, sapi := PCU_IF_SAPI_PDTCH)) -> value pcu_msg {
+		f_PCUIF_MsgQueue_enqueue(pdtch_rts_queue, pcu_msg);
+		repeat;
+		}
+	[] TC.receive(tr_PCUIF_RTS_REQ(bts_nr, sapi := PCU_IF_SAPI_PTCCH)) -> value pcu_msg {
+		f_PCUIF_MsgQueue_enqueue(ptcch_rts_queue, pcu_msg);
+		repeat;
+		}
+	/* Forward other messages directly to the PCU */
+	[] TC.receive(tr_PCUIF_MSG(?, bts_nr)) -> value pcu_msg {
+		PCUIF.send(pcu_msg);
+		repeat;
+		}
+}
+
+/* Submit empty data on any available TS, to set up initial TDMA clock */
+private function f_tx_first_data_ind(integer bts_nr, PCUIF_info_ind info_ind, integer start_fn)
+runs on RAW_PCU_BTS_CT
+{
+	var PCUIF_Message pcu_msg;
+
+	/* Find an active TS: */
+	for (var uint8_t ts_nr := 0; ts_nr < 8; ts_nr := ts_nr + 1) {
+		for (var integer trx_nr := 0; trx_nr < lengthof(g_info_ind.trx); trx_nr := trx_nr + 1) {
+			if (g_info_ind.trx[trx_nr].pdch_mask[ts_nr] == '0'B) {
+				continue; /* TRX+TS not activated */
+			}
+
+			/* Send empty DATA.ind to set up FN */
+			pcu_msg := valueof(ts_PCUIF_DATA_IND(bts_nr, trx_nr, ts_nr, 0 /* FIXME */,
+							     PCU_IF_SAPI_PDTCH, ''O, start_fn,
+							     g_info_ind.trx[trx_nr].arfcn,
+							     rssi := -80, ber10k := 0,
+							     ta_offs_qbits := 0, lqual_cb := 10));
+			PCUIF.send(pcu_msg);
+			return;
+		}
+	}
+}
+
+private function fn2macblock(uint32_t fn)  return uint8_t
+{
+	return (fn mod 52) / 4;
+}
+
+/* Get first message from queue. true if non-empty, false otherwise */
+private function f_tx_data_ind_fn(integer bts_nr, integer fn)
+runs on RAW_PCU_BTS_CT
+{
+	var PCUIF_Message pcu_msg;
+	var boolean has_msg, use_msg;
+
+	for (var uint8_t ts_nr := 0; ts_nr < 8; ts_nr := ts_nr + 1) {
+		for (var integer trx_nr := 0; trx_nr < lengthof(g_info_ind.trx); trx_nr := trx_nr + 1) {
+			//var charstring prefix := "BTS=" & int2str(bts_nr) & ",TRX=" & int2str(trx_nr) & ",TS=" & int2str(ts_nr) & ",FN=" & int2str(fn) & ": ";
+			if (g_info_ind.trx[trx_nr].pdch_mask[ts_nr] == '0'B) {
+				//log(prefix, "disabled");
+				continue; /* TRX+TS not activated */
+			}
+
+			/* Check if we reached time to serve the first DATA.ind message in the queue: */
+			has_msg := f_PCUIF_MsgQueue_first(pdtch_data_queue, pcu_msg) and
+				   pcu_msg.u.data_ind.trx_nr == trx_nr and
+				   pcu_msg.u.data_ind.ts_nr == ts_nr;
+			use_msg := has_msg and (pcu_msg.u.data_ind.fn == 0 or pcu_msg.u.data_ind.fn == fn);
+			if (use_msg) {
+				/* Dequeue a DATA.ind message */
+				f_PCUIF_MsgQueue_dequeue(pdtch_data_queue, pcu_msg);
+				/* Patch TDMA frame / block number */
+				pcu_msg.u.data_ind.fn := fn;
+				pcu_msg.u.data_ind.block_nr := fn2macblock(fn);
+				//log(prefix, "DATA.ind");
+			} else if (has_msg and pcu_msg.u.data_ind.fn < fn) {
+				setverdict(fail, "We are late scheduling the block! ", pcu_msg.u.data_ind.fn, " < ", fn);
+				mtc.stop;
+			} else {
+				/* NOPE.ind: */
+				pcu_msg := valueof(ts_PCUIF_DATA_IND(bts_nr, trx_nr, ts_nr, 0 /* FIXME */,
+								     PCU_IF_SAPI_PDTCH, ''O, fn,
+								     g_info_ind.trx[trx_nr].arfcn,
+								     rssi := -80, ber10k := 0,
+								     ta_offs_qbits := 0, lqual_cb := 10));
+				//log(prefix, "DATA.ind (len=0)");
+			}
+
+			PCUIF.send(pcu_msg); /* Send to the PCU and notify the TC */
+			if (use_msg) {
+				TC.send(ts_RAW_PCU_CLCK_EV(TDMA_EV_PDTCH_BLOCK_SENT, fn));
+			}
+		}
+	}
+}
+
+/* Handle schedule events and manage actions: Send msgs over PCUIF to PCU,
+ * advertise Test Case about sent messages, etc. */
+private altstep as_BTS_CT_TDMASched(integer bts_nr)
+runs on RAW_PCU_BTS_CT {
+	var PCUIF_Message pcu_msg;
+	var RAW_PCU_Event event;
+	var integer ev_begin_fn;
+
+	[] CLCK.receive(tr_RAW_PCU_EV(TDMA_EV_PDTCH_BLOCK_BEG)) -> value event {
+		/* If the RTS queue for PDTCH is not empty, send a message */
+		if (lengthof(pdtch_rts_queue) > 0) {
+			f_PCUIF_MsgQueue_dequeue(pdtch_rts_queue, pcu_msg);
+
+			/* Patch TDMA frame / block number and send */
+			pcu_msg.u.rts_req.fn := event.data.tdma_fn;
+			pcu_msg.u.rts_req.block_nr := fn2macblock(event.data.tdma_fn);
+			PCUIF.send(pcu_msg);
+		}
+
+		/* We don't really need to send every frame to OsmoPCU, because
+		 * it omits frame numbers not starting at a MAC block. */
+		PCUIF.send(ts_PCUIF_TIME_IND(bts_nr, event.data.tdma_fn));
+		repeat;
+		}
+	[] CLCK.receive(tr_RAW_PCU_EV(TDMA_EV_PDTCH_BLOCK_END)) -> value event {
+		/* FN matching the beginning of current block: */
+		ev_begin_fn := event.data.tdma_fn - 3;
+		f_tx_data_ind_fn(bts_nr, ev_begin_fn);
+		repeat;
+		}
+	[lengthof(ptcch_rts_queue) > 0] CLCK.receive(tr_RAW_PCU_EV(TDMA_EV_PTCCH_DL_BLOCK)) -> value event {
+		/* FN matching the beginning of current block (PTCCH is interleaved over 4 non-consecutive bursts): */
+		ev_begin_fn := event.data.tdma_fn - 78;
+		/* Dequeue an RTS.req message for PTCCH */
+		f_PCUIF_MsgQueue_dequeue(ptcch_rts_queue, pcu_msg);
+
+		/* Patch TDMA frame / block number and send */
+		pcu_msg.u.rts_req.fn := ev_begin_fn;
+		pcu_msg.u.rts_req.block_nr := fn2macblock(ev_begin_fn);
+		PCUIF.send(pcu_msg);
+		repeat;
+		}
+	/* Optional forwarding of PTCCH/U burst indications to the test case */
+	[cfg_ptcch_burst_fwd] CLCK.receive(tr_RAW_PCU_EV(TDMA_EV_PTCCH_UL_BURST)) -> value event {
+		TC.send(event);
+		repeat;
+		}
+	/* Ignore other clock events (and guard against an empty queue) */
+	[] CLCK.receive(tr_RAW_PCU_CLCK_EV) { repeat; }
+}
+
+function f_BTS_CT_handler(integer bts_nr, PCUIF_info_ind info_ind, boolean decode_data_req := false)
+runs on RAW_PCU_BTS_CT {
+	var PCUIF_Message pcu_msg;
+	var RAW_PCU_Command cmd;
+	var RAW_PCU_Event event;
+	var BTS_PDTCH_Block pcu_msg_pdtch;
+	var BTS_PTCCH_Block pcu_msg_ptcch;
+	var BTS_CCCH_Block pcu_msg_rr;
+
+	g_info_ind := info_ind;
+
+	/* Init TDMA clock generator (so we can stop and start it) */
+	vc_CLCK_GEN := RAW_PCU_ClckGen_CT.create("ClckGen-" & int2str(bts_nr)) alive;
+	connect(vc_CLCK_GEN:CLCK, self:CLCK);
+
+	/* Wait until the PCU is connected */
+	PCUIF.receive(tr_RAW_PCU_EV(PCU_EV_CONNECT));
+
+	alt {
+	/* Wait for TXT.ind (PCU_VERSION) and respond with INFO.ind (SI13). We may ignore the bts_nr field because for
+	 * TXT indications of type PCU_VERSION this field has no meaning. */
+	[] PCUIF.receive(tr_PCUIF_TXT_IND(?, PCU_VERSION, ?)) -> value pcu_msg {
+		log("Rx TXT.ind from the PCU, version is ", pcu_msg.u.txt_ind.text);
+
+		/* Send System Information 13 to the PCU */
+		PCUIF.send(PCUIF_Message:{
+			msg_type := PCU_IF_MSG_INFO_IND,
+			bts_nr := bts_nr,
+			spare := '0000'O,
+			u := { info_ind := info_ind }
+		});
+
+		const integer start_fn := 0;
+		f_tx_first_data_ind(bts_nr, info_ind, start_fn);
+
+		/* Notify the test case that we're done with SI13 */
+		TC.send(ts_RAW_PCU_EV(BTS_EV_SI13_NEGO));
+
+		/* Start feeding clock to the PCU */
+		vc_CLCK_GEN.start(f_ClckGen_CT_handler(start_fn));
+		repeat;
+		}
+	/* PCU -> TS becomes active */
+	[] PCUIF.receive(tr_PCUIF_ACT_REQ(bts_nr, ?, ?)) -> value pcu_msg {
+		log("Rx ACT.req from the PCU: TRX" & int2str(pcu_msg.u.act_req.trx_nr) &
+		    "/TS" & int2str(pcu_msg.u.act_req.ts_nr));
+		repeat;
+		}
+	/* PCU -> TS becomes inactive */
+	[] PCUIF.receive(tr_PCUIF_DEACT_REQ(bts_nr, ?, ?)) -> value pcu_msg {
+		log("Rx DEACT.req from the PCU: TRX" & int2str(pcu_msg.u.act_req.trx_nr) &
+		    "/TS" & int2str(pcu_msg.u.act_req.ts_nr));
+		repeat;
+		}
+	[decode_data_req] PCUIF.receive(tr_PCUIF_DATA_REQ(bts_nr, ?, ?, sapi := PCU_IF_SAPI_PCH_2)) -> value pcu_msg {
+		var charstring imsi_filter_regexp := "(\d*)"; /* numbers only */
+		var PCUIF_pch pch;
+
+		pcu_msg_rr.bts_nr := bts_nr;
+		pcu_msg_rr.raw := pcu_msg.u.data_req;
+
+		pch := dec_PCUIF_pch(pcu_msg_rr.raw.data);
+		pcu_msg_rr.msg_id := pch.msg_id;
+		pcu_msg_rr.imsi := regexp(pch.imsi, imsi_filter_regexp, 0);
+		pcu_msg_rr.rr_msg := dec_GsmRrMessage(pch.data);
+		pcu_msg_rr.confirm := pch.confirm;
+
+		TC.send(pcu_msg_rr);
+		repeat;
+	}
+	[decode_data_req] PCUIF.receive(tr_PCUIF_DATA_REQ(bts_nr, ?, ?, sapi := PCU_IF_SAPI_AGCH_2)) -> value pcu_msg {
+		var PCUIF_agch agch;
+
+		pcu_msg_rr.bts_nr := bts_nr;
+		pcu_msg_rr.raw := pcu_msg.u.data_req;
+
+		agch := dec_PCUIF_agch(pcu_msg_rr.raw.data);
+		pcu_msg_rr.imsi := omit;
+		pcu_msg_rr.msg_id := agch.msg_id;
+		pcu_msg_rr.rr_msg := dec_GsmRrMessage(agch.data);
+		pcu_msg_rr.confirm := agch.confirm;
+
+		TC.send(pcu_msg_rr);
+		repeat;
+	}
+	[decode_data_req] PCUIF.receive(tr_PCUIF_DATA_REQ(bts_nr, ?, ?, sapi := PCU_IF_SAPI_PDTCH)) -> value pcu_msg {
+		pcu_msg_pdtch.bts_nr := bts_nr;
+		pcu_msg_pdtch.raw := pcu_msg.u.data_req;
+		if (pcu_msg_pdtch.raw.len != 0) {
+			pcu_msg_pdtch.dl_block := dec_RlcmacDlBlock(pcu_msg_pdtch.raw.data);
+		} else {
+			pcu_msg_pdtch.dl_block := omit;
+		}
+		TC.send(pcu_msg_pdtch);
+		repeat;
+	}
+	[decode_data_req] PCUIF.receive(tr_PCUIF_DATA_REQ(bts_nr, ?, ?, sapi := PCU_IF_SAPI_PTCCH)) -> value pcu_msg {
+		pcu_msg_ptcch.bts_nr := bts_nr;
+		pcu_msg_ptcch.raw := pcu_msg.u.data_req;
+		if (pcu_msg_ptcch.raw.len != 0) {
+			pcu_msg_ptcch.dl_block := dec_PTCCHDownlinkMsg(pcu_msg_ptcch.raw.data);
+		} else {
+			pcu_msg_ptcch.dl_block := omit;
+		}
+		TC.send(pcu_msg_ptcch);
+		repeat;
+	}
+	/* PCU -> test case forwarding (filter by the BTS number) */
+	[] PCUIF.receive(tr_PCUIF_MSG(?, bts_nr)) -> value pcu_msg {
+		TC.send(pcu_msg);
+		repeat;
+		}
+
+	/* TC -> [Queue] -> PCU forwarding */
+	[] as_BTS_CT_MsgQueue(bts_nr);
+	/* TDMA scheduler (clock and queue handling) */
+	[] as_BTS_CT_TDMASched(bts_nr);
+
+	/* Command handling */
+	[] TC.receive(tr_RAW_PCU_CMD(GENERAL_CMD_SHUTDOWN)) {
+		log("Shutting down virtual BTS #", bts_nr, "...");
+		vc_CLCK_GEN.stop;
+		break;
+		}
+	[] TC.receive(tr_RAW_PCU_CMD(TDMA_CMD_ENABLE_PTCCH_UL_FWD)) {
+		log("Enabling forwarding of PTCCH/U TDMA events to the TC");
+		cfg_ptcch_burst_fwd := true;
+		repeat;
+		}
+	[] TC.receive(tr_RAW_PCU_CMD) -> value cmd {
+		log("Ignore unhandled command: ", cmd);
+		repeat;
+		}
+
+	/* TODO: handle events (e.g. disconnection) from the PCU interface */
+	[] PCUIF.receive(tr_RAW_PCU_EV) -> value event {
+		log("Ignore unhandled event: ", event);
+		repeat;
+		}
+	}
+}
+
+/* PCU interface (UNIX domain socket) handler */
+type component RAW_PCUIF_CT {
+	var ConnectionId g_pcu_conn_id := -1;
+	var boolean g_pcu_connected := false;
+	port PCUIF_CODEC_PT PCU;
+
+	/* Connection towards BTS component(s) */
+	port RAW_PCU_MSG_PT BTS;
+	/* Connection to the MTC (test case) */
+	port RAW_PCU_MSG_PT MTC;
+};
+
+/* All received messages and events from OsmoPCU can be additionally sent
+ * directly to the MTC component. Pass direct := true to enable this mode. */
+function f_PCUIF_CT_handler(charstring pcu_sock_path, boolean direct := false)
+runs on RAW_PCUIF_CT {
+	var PCUIF_send_data pcu_sd_msg;
+	var PCUIF_Message pcu_msg;
+	timer T_Conn := 10.0;
+
+	log("Init PCU interface on '" & pcu_sock_path & "', waiting for connection...");
+	g_pcu_conn_id := f_pcuif_listen(PCU, pcu_sock_path);
+
+	/* Wait for connection */
+	T_Conn.start;
+	alt {
+	[not g_pcu_connected] PCU.receive(UD_connected:?) {
+		log("OsmoPCU is now connected");
+		/* Duplicate this event to the MTC if requested */
+		if (direct) { MTC.send(ts_RAW_PCU_EV(PCU_EV_CONNECT)); }
+		BTS.send(ts_RAW_PCU_EV(PCU_EV_CONNECT));
+		g_pcu_connected := true;
+		setverdict(pass);
+		T_Conn.stop;
+		repeat;
+		}
+	/* PCU -> BTS / MTC message forwarding */
+	[g_pcu_connected] PCU.receive(PCUIF_send_data:?) -> value pcu_sd_msg {
+		/* Send to the BTSes if at least one is connected */
+		if (BTS.checkstate("Connected")) { BTS.send(pcu_sd_msg.data); }
+		/* Duplicate this message to the MTC if requested */
+		if (direct) { MTC.send(pcu_sd_msg.data); }
+		repeat;
+		}
+	/* MTC -> PCU message forwarding */
+	[g_pcu_connected] MTC.receive(PCUIF_Message:?) -> value pcu_msg {
+		PCU.send(t_SD_PCUIF(g_pcu_conn_id, pcu_msg));
+		repeat;
+		}
+	/* BTS -> PCU message forwarding */
+	[g_pcu_connected] BTS.receive(PCUIF_Message:?) -> value pcu_msg {
+		PCU.send(t_SD_PCUIF(g_pcu_conn_id, pcu_msg));
+		repeat;
+		}
+	[not g_pcu_connected] MTC.receive(PCUIF_Message:?) -> value pcu_msg {
+		log("PCU is not connected, dropping ", pcu_msg);
+		repeat;
+		}
+	[not g_pcu_connected] BTS.receive(PCUIF_Message:?) -> value pcu_msg {
+		log("PCU is not connected, dropping ", pcu_msg);
+		repeat;
+		}
+	/* TODO: handle disconnect and reconnect of the PCU */
+	[] PCU.receive {
+		log("Unhandled message on PCU interface");
+		repeat;
+		}
+	[not g_pcu_connected] T_Conn.timeout {
+		setverdict(fail, "Timeout waiting for PCU connection");
+		mtc.stop;
+		}
+	}
+}
+
+}

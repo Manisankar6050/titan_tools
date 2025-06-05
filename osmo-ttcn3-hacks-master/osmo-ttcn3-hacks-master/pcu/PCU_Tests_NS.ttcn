@@ -1,0 +1,249 @@
+module PCU_Tests_NS {
+
+/* Osmocom PCU test suite for IP Sub-Network-Service (SNS) in TTCN-3
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Osmocom_VTY_Functions all;
+import from TELNETasp_PortType all;
+import from PCU_Tests all;
+import from SGSN_Components all;
+import from Osmocom_Gb_Types all;
+import from NS_Types all;
+import from BSSGP_Types all;
+import from UD_Types all;
+import from NS_Emulation all;
+import from Native_Functions all;
+import from IPL4asp_Types all;
+import from PCUIF_Types all;
+import from PCUIF_CodecPort all;
+import from RAW_NS all;
+
+type component RAW_PCU_CT {
+	/* PCUIF (we emulate the BTS part) */
+	port PCUIF_CODEC_PT PCU;
+	var ConnectionId g_pcu_conn_id := -1;
+	/* VTY connection to the PCU */
+	port TELNETasp_PT PCUVTY;
+}
+
+type component RAW_Test_CT extends RAW_NS_CT, RAW_PCU_CT {
+}
+
+function f_init_vty(charstring id) runs on RAW_PCU_CT {
+	map(self:PCUVTY, system:PCUVTY);
+	f_vty_set_prompts(PCUVTY);
+	f_vty_transceive(PCUVTY, "enable");
+}
+
+function f_init_pcuif() runs on RAW_PCU_CT {
+	var PCUIF_info_ind info_ind;
+	map(self:PCU, system:PCU);
+
+
+	info_ind := valueof(ts_PCUIF_INFO_default);
+
+	/* Connect the Unix Domain Socket */
+	g_pcu_conn_id := f_pcuif_listen(PCU, mp_pcu_sock_path);
+	PCU.receive(UD_connected:?);
+
+	/* Wait for PCU_VERSION and return INFO_IND. We may ignore the bts_nr field because for TXT indications of type
+	 * PCU_VERSION this field has no meaning. */
+	PCU.receive(t_SD_PCUIF(g_pcu_conn_id, tr_PCUIF_TXT_IND(?, PCU_VERSION, ?)));
+	/* FIXME: make sure to use parameters from mp_gb_cfg.bvc[0].cell_id in the PCU INFO IND */
+	var template PCUIF_Message info_ind_msg := ts_PCUIF_INFO_IND(0, info_ind);
+	PCU.send(t_SD_PCUIF(g_pcu_conn_id, info_ind_msg));
+}
+
+function f_pcuif_tx(template (value) PCUIF_Message msg) runs on RAW_PCU_CT {
+	PCU.send(t_SD_PCUIF(g_pcu_conn_id, msg));
+}
+
+/* ensure no matching message is received within 'tout' */
+function f_ensure_no_ns(template PDU_NS ns := ?, integer idx := 0, float tout := 3.0)
+runs on RAW_Test_CT {
+	timer T := tout;
+	T.start;
+	alt {
+	[] NSCP[idx].receive(ns) {
+		setverdict(fail, "NS-ALIVE from unconfigured (possibly initial) endpoint");
+		}
+	[] T.timeout {
+		setverdict(pass);
+		}
+	}
+}
+
+/* test the NS-RESET procedure */
+testcase TC_ns_reset() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* ensure NS-RESET are re-transmitted */
+testcase TC_ns_reset_retrans() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	var integer i;
+	for (i := 0; i < 3; i := i+1) {
+		NSCP[0].receive(tr_NS_RESET(NS_CAUSE_OM_INTERVENTION,
+					    g_nsconfig.nsvc[0].nsvci, g_nsconfig.nsei));
+	}
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* test the inbound NS-ALIVE procedure after NS-RESET */
+testcase TC_ns_alive() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	alt {
+	/* wait for one ALIVE cycle, then ACK any further ALIVE in the background */
+	[] NSCP[0].receive(t_NS_ALIVE) { setverdict(pass); };
+	[] NSCP[0].receive(t_NS_UNBLOCK) { repeat; }
+	}
+	f_clean_ns_codec();
+}
+
+/* Test for NS-RESET after NS-ALIVE timeout */
+testcase TC_ns_alive_timeout_reset() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig, guard_secs := 100.0);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	/* wait for at least one NS-ALIVE */
+	alt {
+	[] as_rx_alive_tx_ack(oneshot := true) { };
+	[] NSCP[0].receive(t_NS_UNBLOCK) { repeat; }
+	}
+
+	/* wait for NS-RESET to re-appear, ignoring any NS-ALIVE until then */
+	alt {
+	[] as_rx_ns_reset_ack(oneshot := true) { setverdict(pass); }
+	[] NSCP[0].receive(t_NS_ALIVE) { repeat; }
+	[] NSCP[0].receive(t_NS_UNBLOCK) { repeat; }
+	}
+
+	f_clean_ns_codec();
+}
+
+/* test for NS-RESET/NS-ALIVE/NS-UNBLOCK */
+testcase TC_ns_unblock() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	/* keep it alive */
+	activate(as_rx_alive_tx_ack());
+
+	as_rx_ns_unblock_ack(oneshot := true);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* test for NS-UNBLOCK re-transmissions */
+testcase TC_ns_unblock_retrans() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	/* keep it alive */
+	activate(as_rx_alive_tx_ack());
+
+	/* wait for first NS-UNBLOCK, don't respond */
+	NSCP[0].receive(t_NS_UNBLOCK);
+
+	/* wait for re-transmission of NS-UNBLOCK */
+	as_rx_ns_unblock_ack(oneshot := true);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* full bring-up of the Gb link for NS and BSSGP layer up to BVC-FC */
+testcase TC_ns_full_bringup() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	/* keep it alive */
+	activate(as_rx_alive_tx_ack());
+
+	as_rx_ns_unblock_ack(oneshot := true);
+
+	f_outgoing_ns_alive();
+
+	/* Expect BVC-RESET for signaling (0) and ptp BVCI */
+	as_rx_bvc_reset_tx_ack(0, omit, omit, oneshot := true);
+	as_rx_bvc_reset_tx_ack(mp_gb_cfg.bvc[0].bvci, mp_gb_cfg.bvc[0].cell_id, omit, oneshot := true);
+	as_rx_bvc_unblock_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true);
+
+	/* wait for one FLOW-CONTROL BVC and then ACK any further in the future */
+	as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci, oneshot := true);
+	activate(as_rx_bvc_fc_tx_ack(mp_gb_cfg.bvc[0].bvci));
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+/* test outbound (SGSN-originated) NS-BLOCK procedure */
+testcase TC_ns_so_block() runs on RAW_Test_CT {
+	f_init_ns_codec(mp_nsconfig);
+	f_init_pcuif();
+
+	/* Expect inbound NS-RESET procedure */
+	as_rx_ns_reset_ack(oneshot := true);
+
+	/* keep it alive */
+	activate(as_rx_alive_tx_ack());
+
+	as_rx_ns_unblock_ack(oneshot := true);
+
+	f_outgoing_ns_alive();
+
+	f_outgoing_ns_block(NS_CAUSE_EQUIPMENT_FAILURE);
+	setverdict(pass);
+	f_clean_ns_codec();
+}
+
+
+control {
+	execute( TC_ns_reset() );
+	execute( TC_ns_reset_retrans() );
+	execute( TC_ns_alive() );
+	execute( TC_ns_alive_timeout_reset() );
+	execute( TC_ns_unblock() );
+	execute( TC_ns_unblock_retrans() );
+	execute( TC_ns_full_bringup() );
+	execute( TC_ns_so_block() );
+}
+
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<testsuite name='Titan' tests='9' failures='0' errors='0' skipped='0' inconc='0' time='MASKED'>
+  <testcase classname='Asterisk_Tests' name='TC_internal_registration' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_internal_call_momt' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_internal_call_all_2registered' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_internal_call_all_3registered' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_internal_call_all_4registered' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_resync' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_timeout_initial_100Trying' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_timeout_initial_401Unauthorized' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_timeout_resync_401Unauthorized' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_timeout_protected_100Trying' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_timeout_protected_200OK' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_registration_423_interval_too_brief' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_reregistration' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_session_timer' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_noprecondition' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_holdresume_mo' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_holdswitchresume_mo' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_2nd_mo_rejected' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_2nd_mt_rejected' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mo_after_tcp_conn_closed' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mt' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mt_noprecondition' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mt_no_local_uas_registered' time='MASKED'/>
+  <testcase classname='Asterisk_Tests' name='TC_ims_call_mt_local_uas_inacall' time='MASKED'/>
+</testsuite>

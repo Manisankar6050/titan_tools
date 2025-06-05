@@ -1,0 +1,96 @@
+module DNS_Helpers {
+
+/* DNS Helper functions in TTCN-3
+ * (C) 2018 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+private function f_strchr(charstring s, charstring c) return integer {
+	var integer i;
+	for (i := 0; i < lengthof(s); i := i+1) {
+		if (s[i] == c) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+private function f_dns_enc_label(charstring str) return octetstring {
+	var octetstring ret;
+
+	ret[0] := int2oct(lengthof(str), 1);
+	return ret & char2oct(str);
+}
+
+function f_enc_dns_hostname(charstring str) return octetstring {
+	var octetstring ret := ''O;
+	while (lengthof(str) > 0) {
+		var integer dot_idx;
+		var octetstring lbl;
+
+		dot_idx := f_strchr(str, ".");
+		if (dot_idx >= 0) {
+			/* there is another dot */
+			lbl := f_dns_enc_label(substr(str, 0, dot_idx));
+			str := substr(str, dot_idx+1, lengthof(str)-dot_idx-1);
+		} else {
+			/* no more dot */
+			lbl := f_dns_enc_label(str);
+			str := "";
+		}
+		ret := ret & lbl;
+	}
+	return ret;
+}
+
+
+
+
+function f_dec_dns_hostname(octetstring inp) return charstring {
+	var charstring ret := "";
+	while (lengthof(inp) > 0) {
+		var integer label_len;
+		var charstring lbl;
+
+		label_len := oct2int(substr(inp, 0, 1));
+		lbl := oct2char(substr(inp, 1, label_len));
+		inp := substr(inp, 1+label_len, lengthof(inp)-1-label_len);
+
+		ret := ret & lbl;
+		if (lengthof(inp) > 0) {
+			ret := ret & ".";
+		}
+	}
+	return ret;
+}
+
+
+function f_enc_IPv4(charstring str) return octetstring {
+	var octetstring ret := ''O;
+
+	while (lengthof(str) > 0) {
+		var integer dot_idx;
+		var charstring num;
+
+		dot_idx := f_strchr(str, ".");
+		if (dot_idx >= 0) {
+			/* there is another dot */
+			num := substr(str, 0, dot_idx);
+			str := substr(str, dot_idx+1, lengthof(str)-dot_idx-1);
+		} else {
+			/* no more dot */
+			num := str;
+			str := "";
+		}
+		ret := ret & int2oct(str2int(num), 1);
+	}
+
+	return ret;
+}
+
+}

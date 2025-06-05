@@ -1,0 +1,592 @@
+module RAW_NS {
+
+/* Osmocom NS test suite for NS in TTCN-3
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from Osmocom_Types all;
+import from Osmocom_Gb_Types all;
+import from NS_Emulation all;
+import from NS_Types all;
+import from BSSGP_Types all;
+import from NS_Emulation all;
+import from Native_Functions all;
+import from IPL4asp_Types all;
+import from NS_Provider_IPL4 all;
+#ifdef NS_EMULATION_FR
+import from NS_Provider_FR all;
+#endif
+
+type record PerIPProvider {
+	NS_Provider_IPL4_CT vc_NSP_IP,
+	charstring local_ip,
+	PortNumber local_udp_port
+}
+
+public type component RAW_NS_CT {
+	/* UDP port towards the bottom (IUT) */
+	port NS_PROVIDER_PT NSCP[4];
+	var PerIPProvider ip_prov[4];
+	port NSPIP_PROC_PT NSPIP_PROC;
+#ifdef NS_EMULATION_FR
+	var NS_Provider_FR_CT vc_NSP_FR[4];
+#endif
+	var NSConfiguration g_nsconfig;
+	timer g_T_guard;
+	var boolean g_handle_rx_alive := false;
+	var boolean rawns_initialized := false;
+}
+
+public altstep as_Tguard() runs on RAW_NS_CT {
+	[] g_T_guard.timeout {
+		setverdict(fail, "Timeout of T_guard");
+		mtc.stop;
+		}
+}
+
+function f_find_ip_provider(NSVCConfigurationIP nsip_config)
+runs on RAW_NS_CT return integer {
+	for (var integer idx := 0; idx < sizeof(ip_prov); idx := idx+1) {
+		if (ip_prov[idx].vc_NSP_IP == null) {
+			continue;
+		}
+
+		if (ip_prov[idx].local_ip == nsip_config.local_ip and
+			ip_prov[idx].local_udp_port == nsip_config.local_udp_port) {
+			return idx;
+		}
+	}
+	return -1;
+}
+
+function f_init_ns_codec(NSConfiguration ns_config, integer idx := 0, float guard_secs := 60.0, charstring id := testcasename()) runs on RAW_NS_CT {
+	var Result res;
+
+	if (not g_T_guard.running) {
+		g_T_guard.start(guard_secs);
+		activate(as_Tguard());
+	}
+
+	if (not rawns_initialized) {
+		for (var integer i := 0; i < sizeof(ip_prov); i := i+1) {
+			ip_prov[i].vc_NSP_IP := null;
+		}
+		rawns_initialized := true;
+	}
+
+	if (not isbound(g_nsconfig)) {
+		g_nsconfig := ns_config;
+	}
+
+	if (ischosen(ns_config.nsvc[idx].provider.ip)) {
+		var integer prov_idx := f_find_ip_provider(ns_config.nsvc[idx].provider.ip);
+		/* Connect the UDP socket
+		 * check if NS_Provider_IPL4_CT is already created
+		 * add list of vc_NSP_IP with entries of source ip/port
+		 * add a NSVC to it */
+		if (prov_idx == -1) {
+			for (prov_idx := 0; prov_idx < sizeof(ip_prov); prov_idx := prov_idx+1) {
+				if (ip_prov[prov_idx].vc_NSP_IP == null) {
+					break;
+				}
+			}
+			if (prov_idx > sizeof(ip_prov)) {
+				/* TODO: error !! */
+			}
+			ip_prov[prov_idx].local_ip := ns_config.nsvc[idx].provider.ip.local_ip;
+			ip_prov[prov_idx].local_udp_port := ns_config.nsvc[idx].provider.ip.local_udp_port;
+			ip_prov[prov_idx].vc_NSP_IP := NS_Provider_IPL4_CT.create(id & "-provIP" & int2str(prov_idx)) alive;
+			connect(self:NSPIP_PROC, ip_prov[prov_idx].vc_NSP_IP:PROC);
+			ip_prov[prov_idx].vc_NSP_IP.start(NS_Provider_IPL4.main(ns_config.nsvc[idx], ns_config, id));
+		}
+		var integer port_idx := f_nspip_add_nsvc2(ip_prov[prov_idx].vc_NSP_IP, ns_config.nsvc[idx].provider.ip.remote_ip, ns_config.nsvc[idx].provider.ip.remote_udp_port);
+		connect(self:NSCP[idx], ip_prov[prov_idx].vc_NSP_IP:NSVC[port_idx]);
+		/* the NS_PROV_LINK_STATUS_UP is not sent by the NS_Provider_IPL4 because we connect the port manual */
+#ifdef NS_EMULATION_FR
+	} else if (ischosen(ns_config.nsvc[idx].provider.fr)) {
+		vc_NSP_FR[idx] := NS_Provider_FR_CT.create(id & "-provFR") alive;
+		connect(self:NSCP[idx], vc_NSP_FR[idx]:NSE);
+		vc_NSP_FR[idx].start(NS_Provider_FR.main(ns_config.nsvc[idx], ns_config, id));
+		NSCP[idx].receive(NS_Provider_Evt:{link_status:=NS_PROV_LINK_STATUS_UP});
+#endif
+	} else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Unsupported NS provider");
+	}
+}
+
+function f_clean_ns_codec() runs on RAW_NS_CT {
+	for (var integer i := 0; i < lengthof(ip_prov); i := i + 1) {
+		if (ip_prov[i].vc_NSP_IP != null) {
+			ip_prov[i].vc_NSP_IP.stop;
+		}
+	}
+#ifdef NS_EMULATION_FR
+	for (var integer i := 0; i < lengthof(vc_NSP_FR); i := i + 1) {
+		vc_NSP_FR[i].stop;
+	}
+#endif NS_EMULATION_FR
+}
+
+public altstep ax_rx_fail_on_any_ns(integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS nrf;
+	[] NSCP[idx].receive(PDU_NS: ?) -> value nrf {
+		setverdict(fail, "Received unexpected NS: ", nrf);
+		mtc.stop;
+		}
+}
+
+function f_ns_exp(template PDU_NS exp_rx, integer idx := 0) runs on RAW_NS_CT return PDU_NS {
+	var PDU_NS nrf;
+	log("f_ns_exp() expecting ", exp_rx);
+	/* last activated altstep has the lowest priority */
+	var default d := activate(ax_rx_fail_on_any_ns());
+	alt {
+	[] NSCP[idx].receive(PDU_NS: exp_rx) -> value nrf { }
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	}
+	deactivate(d);
+	return nrf;
+}
+
+/* perform outbound NS-ALIVE procedure */
+function f_outgoing_ns_alive(integer idx := 0) runs on RAW_NS_CT {
+	NSCP[idx].send(t_NS_ALIVE);
+	alt {
+	[] NSCP[idx].receive(t_NS_ALIVE_ACK);
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	}
+}
+
+/* perform outbound NS-ALIVE procedure */
+function f_outgoing_ns_alive_no_ack(integer idx := 0, float tout := 10.0) runs on RAW_NS_CT {
+	timer T := tout;
+	NSCP[idx].send(t_NS_ALIVE);
+	T.start;
+	alt {
+	[] NSCP[idx].receive(t_NS_ALIVE_ACK) {
+		setverdict(fail, "Received unexpected NS-ALIVE ACK");
+		}
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	[] T.timeout {
+		setverdict(pass);
+		}
+	}
+}
+
+function f_outgoing_ns_reset(integer idx := 0, float tout := 10.0) runs on RAW_NS_CT {
+	timer T := tout;
+	var template PDU_NS reset := ts_NS_RESET(NS_CAUSE_EQUIPMENT_FAILURE, g_nsconfig.nsvc[idx].nsvci, g_nsconfig.nsei)
+	NSCP[idx].send(reset);
+	T.start;
+	alt {
+	[] NSCP[idx].receive(ts_NS_RESET_ACK(g_nsconfig.nsvc[idx].nsvci, g_nsconfig.nsei)) {
+		setverdict(pass);
+		}
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Failed to receive a RESET ACK");
+		}
+	}
+}
+
+/* perform outbound NS-BLOCK procedure */
+function f_outgoing_ns_block(NsCause cause, integer idx := 0) runs on RAW_NS_CT {
+	NSCP[idx].send(ts_NS_BLOCK(cause, g_nsconfig.nsvc[idx].nsvci));
+	alt {
+	[] NSCP[idx].receive(tr_NS_BLOCK_ACK(g_nsconfig.nsvc[idx].nsvci));
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	}
+}
+
+/* perform outbound NS-UNBLOCK procedure */
+function f_outgoing_ns_unblock(integer idx := 0) runs on RAW_NS_CT {
+	NSCP[idx].send(t_NS_UNBLOCK);
+	alt {
+	[] NSCP[idx].receive(t_NS_UNBLOCK_ACK);
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	}
+}
+
+/* receive NS-ALIVE and ACK it */
+altstep as_rx_alive_tx_ack(boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	[] NSCP[idx].receive(t_NS_ALIVE) {
+		NSCP[idx].send(t_NS_ALIVE_ACK);
+		if (not oneshot) { repeat; }
+		}
+	/* in oneshot mode, ignore any NS-UNITDATA we receive meanwhile.  This is
+	 * particularly useful when waiting for the first NS-ALIVE after SNS-CONFIG,
+	 * where there is a high chance of UNITDATA during the first Tns-test cycle
+	 * before the peer sends its first NS-ALIVE after Tns-test expiration */
+	[oneshot] NSCP[idx].receive(tr_NS_UNITDATA(?,?,?)) {
+		repeat;
+		}
+}
+
+/* Transmit BSSGP RESET for given BVCI and expect ACK */
+function f_tx_bvc_reset_rx_ack(BssgpBvci bvci, template (omit) BssgpCellId tx_cell_id, template BssgpCellId rx_cell_id,
+			       integer idx := 0, boolean exp_ack := true)
+runs on RAW_NS_CT {
+	var PDU_BSSGP bssgp_tx := valueof(ts_BVC_RESET(BSSGP_CAUSE_NET_SV_CAP_MOD_GT_ZERO_KBPS, bvci,
+						       tx_cell_id));
+	timer T := 5.0;
+	NSCP[idx].send(ts_NS_UNITDATA(t_SduCtrlB, 0, enc_PDU_BSSGP(bssgp_tx)));
+	T.start;
+	alt {
+	[exp_ack] NSCP[idx].receive(tr_NS_UNITDATA(t_SduCtrlB, 0,
+						   decmatch tr_BVC_RESET_ACK(bvci, rx_cell_id))) {
+		setverdict(pass);
+		}
+	[exp_ack] T.timeout {
+		setverdict(fail, "No response to BVC-RESET");
+		}
+	[not exp_ack] T.timeout {
+		setverdict(pass);
+		}
+	[g_handle_rx_alive] as_rx_alive_tx_ack(idx := idx);
+	[] NSCP[idx].receive { repeat; }
+	}
+}
+
+/* Receive a BSSGP RESET for given BVCI and ACK it */
+altstep as_rx_bvc_reset_tx_ack(BssgpBvci bvci, template BssgpCellId rx_cell_id, template (omit) BssgpCellId tx_cell_id,
+				boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(tr_NS_UNITDATA(t_SduCtrlB, 0,
+						  decmatch tr_BVC_RESET(?, bvci, rx_cell_id)))
+								-> value ns_rf {
+		var PDU_BSSGP bssgp_rx := dec_PDU_BSSGP(ns_rf.pDU_NS_Unitdata.nS_SDU);
+		var PDU_BSSGP bssgp_tx := valueof(ts_BVC_RESET_ACK(bvci, tx_cell_id));
+		NSCP[idx].send(ts_NS_UNITDATA(t_SduCtrlB, 0, enc_PDU_BSSGP(bssgp_tx)));
+		if (not oneshot) { repeat; }
+		}
+}
+
+
+/* Receive a BSSGP UNBLOCK for given BVCI and ACK it */
+altstep as_rx_bvc_unblock_tx_ack(BssgpBvci bvci, boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(tr_NS_UNITDATA(t_SduCtrlB, 0, decmatch tr_BVC_UNBLOCK(bvci))) -> value ns_rf {
+		var PDU_BSSGP bssgp_rx := dec_PDU_BSSGP(ns_rf.pDU_NS_Unitdata.nS_SDU);
+		var PDU_BSSGP bssgp_tx := valueof(ts_BVC_UNBLOCK_ACK(bvci));
+		NSCP[idx].send(ts_NS_UNITDATA(t_SduCtrlB, 0, enc_PDU_BSSGP(bssgp_tx)));
+		if (not oneshot) { repeat; }
+		}
+}
+
+/* Receive a BSSGP FLOW-CONTROL-BVC and ACK it */
+altstep as_rx_bvc_fc_tx_ack(BssgpBvci bvci, boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(tr_NS_UNITDATA(t_SduCtrlB, bvci,
+					    decmatch tr_BVC_FC_BVC))
+								-> value ns_rf {
+		var PDU_BSSGP bssgp_rx := dec_PDU_BSSGP(ns_rf.pDU_NS_Unitdata.nS_SDU);
+		var OCT1 tag := bssgp_rx.pDU_BSSGP_FLOW_CONTROL_BVC.tag.unstructured_Value;
+		var PDU_BSSGP bssgp_tx := valueof(ts_BVC_FC_BVC_ACK(tag));
+		NSCP[idx].send(ts_NS_UNITDATA(t_SduCtrlB, bvci, enc_PDU_BSSGP(bssgp_tx)));
+		if (not oneshot) { repeat; }
+		}
+}
+
+/**********************************************************************************
+ * Classic Gb/IP bring-up test cases using NS-{RESET,BLOCK,UNBLOCK} and no IP-SNS *
+ **********************************************************************************/
+
+/* Receive a NS-RESET and ACK it */
+public altstep as_rx_ns_reset_ack(boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(tr_NS_RESET(NS_CAUSE_OM_INTERVENTION, g_nsconfig.nsvc[idx].nsvci,
+						  g_nsconfig.nsei)) -> value ns_rf {
+		NSCP[idx].send(ts_NS_RESET_ACK(g_nsconfig.nsvc[idx].nsvci, g_nsconfig.nsei));
+		if (not oneshot) { repeat; }
+		}
+}
+/* Receive a NS-UNBLOCK and ACK it */
+public altstep as_rx_ns_unblock_ack(boolean oneshot := false, integer idx := 0) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(t_NS_UNBLOCK) -> value ns_rf {
+		NSCP[idx].send(t_NS_UNBLOCK_ACK);
+		if (not oneshot) { repeat; }
+		}
+}
+
+/* Receive a NS-BLOCK and ACK it */
+public altstep as_rx_ns_block_ack(boolean oneshot := false, integer idx := 0, template NsCause cause := *, template Nsvci nsvci := *) runs on RAW_NS_CT {
+	var PDU_NS ns_rf;
+	[] NSCP[idx].receive(tr_NS_BLOCK(cause, nsvci)) -> value ns_rf {
+		NSCP[idx].send(ts_NS_BLOCK_ACK(oct2int(ns_rf.pDU_NS_Block.nS_VCI.nS_VCI)));
+		if (not oneshot) { repeat; }
+		}
+}
+
+/**********************************************************************************
+ * IP Sub-Network Service (SNS)
+ **********************************************************************************/
+
+/* perform inbound SNS-SIZE procedure */
+function f_incoming_sns_size(template (omit) NsCause cause := omit, integer idx := 0,
+			     template integer num_max_nsvcs := ?, template integer num_ep := ?)
+runs on RAW_NS_CT {
+	log("f_incoming_sns_size(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		/* expect one single SNS-SIZE with RESET flag; 4x v4 EP; no v6 EP */
+		rx := f_ns_exp(tr_SNS_SIZE(g_nsconfig.nsei, rst_flag := true, max_nsvcs := num_max_nsvcs,
+					   num_v4 := num_ep, num_v6 := omit), idx);
+	} else {
+		/* expect one single SNS-SIZE with RESET flag; no v4 EP; 4x v6 EP */
+		rx := f_ns_exp(tr_SNS_SIZE(g_nsconfig.nsei, rst_flag := true, max_nsvcs := num_max_nsvcs,
+					   num_v4 := omit, num_v6 := num_ep), idx);
+	}
+	NSCP[idx].send(ts_SNS_SIZE_ACK(g_nsconfig.nsei, cause));
+}
+
+/* perform outbound SNS-SIZE procedure */
+function f_outgoing_sns_size(template (omit) NsCause cause := omit, integer max_nsvcs := 1,
+			     integer num_ip := 1, integer idx:= 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_size(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		NSCP[idx].send(ts_SNS_SIZE(g_nsconfig.nsei, rst_flag := true, max_nsvcs := max_nsvcs,
+								num_v4 := num_ip, num_v6 := omit)
+					);
+	} else {
+		NSCP[idx].send(ts_SNS_SIZE(g_nsconfig.nsei, rst_flag := true, max_nsvcs := max_nsvcs,
+								num_v4 := omit, num_v6 := num_ip)
+					);
+	}
+	/* expect one single SNS-SIZE */
+	rx := f_ns_exp(tr_SNS_SIZE_ACK(g_nsconfig.nsei, cause), idx);
+}
+
+/* perform inbound SNS-CONFIG procedure */
+function f_incoming_sns_config(template (omit) NsCause cause := omit, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_incoming_sns_config(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template IP4_Elements v4_elem := { tr_SNS_IPv4(nsvc_cfg.provider.ip.remote_ip,
+								   nsvc_cfg.provider.ip.remote_udp_port) };
+		rx := f_ns_exp(tr_SNS_CONFIG(g_nsconfig.nsei, end_flag := true, v4 := v4_elem), idx);
+	} else {
+		var template IP6_Elements v6_elem := { tr_SNS_IPv6(nsvc_cfg.provider.ip.remote_ip,
+								   nsvc_cfg.provider.ip.remote_udp_port) };
+		rx := f_ns_exp(tr_SNS_CONFIG(g_nsconfig.nsei, end_flag := true, v6 := v6_elem), idx);
+	}
+	NSCP[idx].send(ts_SNS_CONFIG_ACK(g_nsconfig.nsei, cause));
+}
+
+/* perform outbound SNS-CONFIG procedure */
+function f_outgoing_sns_config(template (omit) NsCause cause := omit, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_config(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port) }
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, v4));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port) }
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, omit, v6));
+	}
+	rx := f_ns_exp(tr_SNS_CONFIG_ACK(g_nsconfig.nsei, cause), idx);
+}
+
+/* perform outbound SNS-CONFIG procedure (separate endpoints: 1 for control, 1 for user */
+function f_outgoing_sns_config_1c1u(template (omit) NsCause cause := omit, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_config_1c1u(idx=", idx, ")");
+	var PDU_NS rx;
+
+	if (g_nsconfig.nsvc[0].provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(g_nsconfig.nsvc[0].provider.ip.local_ip,
+								     g_nsconfig.nsvc[0].provider.ip.local_udp_port, 1, 0),
+							 ts_SNS_IPv4(g_nsconfig.nsvc[1].provider.ip.local_ip,
+								     g_nsconfig.nsvc[1].provider.ip.local_udp_port, 0, 1) };
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, v4));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(g_nsconfig.nsvc[0].provider.ip.local_ip,
+								     g_nsconfig.nsvc[0].provider.ip.local_udp_port, 1, 0),
+							 ts_SNS_IPv6(g_nsconfig.nsvc[1].provider.ip.local_ip,
+								     g_nsconfig.nsvc[1].provider.ip.local_udp_port, 0, 1) };
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, omit, v6));
+	}
+	rx := f_ns_exp(tr_SNS_CONFIG_ACK(g_nsconfig.nsei, cause), idx);
+}
+
+/* perform outbound SNS-CONFIG procedure (separate endpoints: 1 for control, 1 for user */
+function f_outgoing_sns_config_1c1u_separate(template (omit) NsCause cause := omit, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_config_1c1u_separate(idx=", idx, ")");
+	var PDU_NS rx;
+	if (g_nsconfig.nsvc[0].provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(g_nsconfig.nsvc[1].provider.ip.local_ip,
+								     g_nsconfig.nsvc[1].provider.ip.local_udp_port, 1, 0),
+							 ts_SNS_IPv4(g_nsconfig.nsvc[2].provider.ip.local_ip,
+								     g_nsconfig.nsvc[2].provider.ip.local_udp_port, 0, 1) };
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, v4));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(g_nsconfig.nsvc[1].provider.ip.local_ip,
+								     g_nsconfig.nsvc[1].provider.ip.local_udp_port, 1, 0),
+							 ts_SNS_IPv6(g_nsconfig.nsvc[2].provider.ip.local_ip,
+								     g_nsconfig.nsvc[2].provider.ip.local_udp_port, 0, 1) };
+		NSCP[idx].send(ts_SNS_CONFIG(g_nsconfig.nsei, true, omit, v6));
+	}
+	rx := f_ns_exp(tr_SNS_CONFIG_ACK(g_nsconfig.nsei, cause), idx);
+}
+
+/* perform inbound SNS-CHANGE-WEIGHT procedure */
+function f_incoming_sns_chg_weight(integer idx_chg := 0, template (omit) NsCause cause := omit, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_incoming_sns_chg_weight(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_chg];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template IP4_Elements v4_elem := { tr_SNS_IPv4(nsvc_cfg.provider.ip.remote_ip,
+								   nsvc_cfg.provider.ip.remote_udp_port) };
+		rx := f_ns_exp(tr_SNS_CHG_WEIGHT(g_nsconfig.nsei, ?, v4 := v4_elem), idx);
+	} else {
+		var template IP6_Elements v6_elem := { tr_SNS_IPv6(nsvc_cfg.provider.ip.remote_ip,
+								   nsvc_cfg.provider.ip.remote_udp_port) };
+		rx := f_ns_exp(tr_SNS_CHG_WEIGHT(g_nsconfig.nsei, ?, v4 := omit, v6 := v6_elem), idx);
+	}
+	NSCP[idx].send(ts_SNS_ACK(g_nsconfig.nsei, rx.pDU_SNS_ChangeWeight.transactionID));
+}
+
+
+/* perform inbound SNS-ADD procedure */
+function f_incoming_sns_add(integer idx_add, uint8_t w_sig := 1, uint8_t w_user := 1, integer idx := 0, template (omit) NsCause cause := omit)
+runs on RAW_NS_CT {
+	log("f_incoming_sns_add(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_add];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4_elem := { ts_SNS_IPv4(nsvc_cfg.provider.ip.remote_ip,
+								     nsvc_cfg.provider.ip.remote_udp_port,
+								     w_sig, w_user) };
+		rx := f_ns_exp(tr_SNS_ADD(g_nsconfig.nsei, ?, v4 := v4_elem), idx);
+	} else {
+		var template (omit) IP6_Elements v6_elem := { ts_SNS_IPv6(nsvc_cfg.provider.ip.remote_ip,
+								     nsvc_cfg.provider.ip.remote_udp_port,
+								     w_sig, w_user) };
+		rx := f_ns_exp(tr_SNS_ADD(g_nsconfig.nsei, ?, omit, v6_elem), idx);
+	}
+	NSCP[idx].send(ts_SNS_ACK(g_nsconfig.nsei, rx.pDU_SNS_Add.transactionID));
+}
+
+function f_outgoing_sns_add(integer idx_add, uint8_t w_sig := 1, uint8_t w_user := 1, integer idx := 0, template (omit) NsCause cause := omit)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_add(idx_add=", idx_add, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_add];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		var template (omit) IP4_Elements ack_v4 := omit;
+		if (isvalue(cause) and valueof(cause) == NS_CAUSE_UNKNOWN_IP_ENDPOINT) {
+			ack_v4 := v4;
+		}
+		NSCP[idx].send(ts_SNS_ADD(g_nsconfig.nsei, 23, v4));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 23, cause, ack_v4));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		var template (omit) IP6_Elements ack_v6 := omit;
+		if (isvalue(cause) and valueof(cause) == NS_CAUSE_UNKNOWN_IP_ENDPOINT) {
+			ack_v6 := v6;
+		}
+		NSCP[idx].send(ts_SNS_ADD(g_nsconfig.nsei, 23, omit, v6));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 23, cause, omit, ack_v6));
+	}
+}
+
+/* perform inbound SNS-DELETE procedure */
+function f_incoming_sns_del(integer idx_del, uint8_t w_sig := 1, uint8_t w_user := 1, integer idx := 0, template (omit) NsCause cause := omit)
+runs on RAW_NS_CT {
+	log("f_incoming_sns_del(idx=", idx, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_del];
+
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4_elem := { ts_SNS_IPv4(nsvc_cfg.provider.ip.remote_ip,
+								     nsvc_cfg.provider.ip.remote_udp_port,
+								     w_sig, w_user) };
+		rx := f_ns_exp(tr_SNS_DEL(g_nsconfig.nsei, ?, omit, v4 := v4_elem), idx);
+	} else {
+		var template (omit) IP6_Elements v6_elem := { ts_SNS_IPv6(nsvc_cfg.provider.ip.remote_ip,
+								     nsvc_cfg.provider.ip.remote_udp_port,
+								     w_sig, w_user) };
+		rx := f_ns_exp(tr_SNS_DEL(g_nsconfig.nsei, ?, omit, omit, v6_elem), idx);
+	}
+	NSCP[idx].send(ts_SNS_ACK(g_nsconfig.nsei, rx.pDU_SNS_Delete.transactionID));
+}
+
+
+function f_outgoing_sns_del(integer idx_del, uint8_t w_sig := 1, uint8_t w_user := 1, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_del(idx_del=", idx_del, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_del];
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		NSCP[idx].send(ts_SNS_DEL(g_nsconfig.nsei, 24, omit, v4));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 24, omit, v4));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		NSCP[idx].send(ts_SNS_DEL(g_nsconfig.nsei, 24, omit, omit, v6));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 24, omit, omit, v6));
+	}
+}
+
+function f_outgoing_sns_chg_weight(integer idx_chg, uint8_t w_sig, uint8_t w_user, integer idx := 0)
+runs on RAW_NS_CT {
+	log("f_outgoing_sns_chg_weight(idx_chg=", idx_chg, ")");
+	var PDU_NS rx;
+	var NSVCConfiguration nsvc_cfg := g_nsconfig.nsvc[idx_chg];
+	if (nsvc_cfg.provider.ip.address_family == AF_INET) {
+		var template (omit) IP4_Elements v4 := { ts_SNS_IPv4(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		NSCP[idx].send(ts_SNS_CHG_WEIGHT(g_nsconfig.nsei, 25, v4));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 25, omit, omit));
+	} else {
+		var template (omit) IP6_Elements v6 := { ts_SNS_IPv6(nsvc_cfg.provider.ip.local_ip,
+								     nsvc_cfg.provider.ip.local_udp_port,
+								     w_sig, w_user) };
+		NSCP[idx].send(ts_SNS_CHG_WEIGHT(g_nsconfig.nsei, 25, omit, v6));
+		rx := f_ns_exp(tr_SNS_ACK(g_nsconfig.nsei, 25, omit, omit, omit));
+	}
+}
+
+}

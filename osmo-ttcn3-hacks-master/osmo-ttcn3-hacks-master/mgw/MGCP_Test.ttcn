@@ -1,0 +1,3448 @@
+/* MGW (Media Gateway) test suite in TTCN-3
+ * (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * (C) 2018-2019 sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module MGCP_Test {
+	import from Misc_Helpers all;
+	import from Osmocom_Types all;
+	import from MGCP_Types all;
+	import from MGCP_Templates all;
+	import from SDP_Types all;
+	import from SDP_Templates all;
+	import from MGCP_CodecPort all;
+	import from MGCP_CodecPort_CtrlFunct all;
+	import from RTP_CodecPort all;
+	import from RTP_CodecPort_CtrlFunct all;
+	import from RTP_Emulation all;
+	import from IuUP_Emulation all;
+	import from OSMUX_Types all;
+	import from OSMUX_CodecPort all;
+	import from OSMUX_CodecPort_CtrlFunct all;
+	import from OSMUX_Emulation all;
+	import from AMR_Types all;
+	import from IPL4asp_Types all;
+	import from General_Types all;
+	import from Native_Functions all;
+	import from IP_Types all;
+	import from Osmocom_VTY_Functions all;
+	import from TELNETasp_PortType all;
+	import from StatsD_Types all;
+	import from StatsD_CodecPort all;
+	import from StatsD_CodecPort_CtrlFunct all;
+	import from StatsD_Checker all;
+	import from Osmocom_CTRL_Functions all;
+	import from Osmocom_CTRL_Types all;
+	import from Osmocom_CTRL_Adapter all;
+
+	const charstring c_mgw_domain := "mgw";
+	const charstring c_mgw_ep_rtpbridge := "rtpbridge/";
+
+	/* any variables declared in the component will be available to
+	 * all functions that 'run on' the named component, similar to
+	 * class members in C++ */
+	type component dummy_CT extends StatsD_ConnHdlr, CTRL_Adapter_CT {
+		port MGCP_CODEC_PT MGCP;
+		var boolean initialized := false;
+		var ConnectionId g_mgcp_conn_id := -1;
+		var integer g_trans_id;
+
+		var RTP_Emulation_CT vc_RTPEM[3];
+		port RTPEM_CTRL_PT RTPEM[3];
+
+		var OSMUX_Emulation_CT vc_OsmuxEM;
+		port OsmuxEM_CTRL_PT OsmuxEM;
+
+		port TELNETasp_PT MGWVTY;
+
+		var StatsD_Checker_CT vc_STATSD;
+	};
+
+	function get_next_trans_id() runs on dummy_CT return MgcpTransId {
+		var MgcpTransId tid := int2str(g_trans_id);
+		g_trans_id := g_trans_id + 1;
+		return tid;
+	}
+
+	/* all parameters declared here can be modified / overridden by
+	 * the config file in the [MODULE_PARAMETERS] section. If no
+	 * config file is used or the file doesn't specify them, the
+	 * default values assigned below are used */
+	modulepar {
+		PortNumber mp_local_udp_port := 2727;
+		charstring mp_local_ipv4 := "127.0.0.1";
+		charstring mp_local_ipv6 := "::1";
+		PortNumber mp_remote_udp_port := 2427;
+		charstring mp_remote_ipv4 := "127.0.0.1";
+		charstring mp_remote_ipv6 := "::1";
+		PortNumber mp_local_rtp_port_base := 10000;
+		PortNumber mp_local_osmux_port := 1985;
+		PortNumber mp_mgw_statsd_port := 8125;
+		PortNumber mp_mgw_ctrl_port := 4267;
+		/* Maximum number of available endpoints in osmo-mgw.cfg ("number endpoints"): */
+		integer	mp_num_endpoints := 300;
+	}
+
+	private function f_vty_enable_osmux(boolean osmux_on) runs on dummy_CT {
+		/* Turn on conversion mode */
+		f_vty_enter_config(MGWVTY);
+		f_vty_transceive(MGWVTY, "mgcp");
+		if (osmux_on) {
+			f_vty_transceive(MGWVTY, "osmux on");
+		} else {
+			f_vty_transceive(MGWVTY, "osmux off");
+		}
+		f_vty_transceive(MGWVTY, "exit");
+		f_vty_transceive(MGWVTY, "exit");
+
+	}
+
+	private function f_init_vty(boolean osmux_on) runs on dummy_CT {
+		map(self:MGWVTY, system:MGWVTY);
+		f_vty_set_prompts(MGWVTY);
+		f_vty_transceive(MGWVTY, "enable");
+
+		f_vty_enable_osmux(osmux_on);
+	}
+
+	private function f_rtpem_init(inout RTP_Emulation_CT comp_ref, integer i)
+	runs on dummy_CT {
+		comp_ref := RTP_Emulation_CT.create("RTPEM" & int2str(i));
+		map(comp_ref:RTP, system:RTP);
+		map(comp_ref:RTCP, system:RTCP);
+		comp_ref.start(RTP_Emulation.f_main());
+	}
+
+	private function f_osmuxem_init(inout OSMUX_Emulation_CT comp_ref)
+	runs on dummy_CT {
+		comp_ref := OSMUX_Emulation_CT.create("OsmuxEM");
+		map(comp_ref:OSMUX, system:OSMUX);
+		comp_ref.start(OSMUX_Emulation.f_main());
+	}
+
+	/* initialization function, called by each test case at the
+	 * beginning, but 'initialized' variable ensures its body is
+	 * only executed once */
+	private function f_init(template MgcpEndpoint ep := omit, boolean osmux_on := false) runs on dummy_CT {
+		var Result res;
+		var uint32_t ssrc;
+
+		if (initialized == false) {
+			initialized := true;
+
+			/* some random number for the initial transaction id */
+			g_trans_id := float2int(rnd()*65535.0);
+			map(self:MGCP, system:MGCP_CODEC_PT);
+			/* connect the MGCP test port using the given
+			 * source/destionation ip/port and store the connection id in g_mgcp_conn_id
+			 * */
+			res := MGCP_CodecPort_CtrlFunct.f_IPL4_connect(MGCP, mp_remote_ipv4, mp_remote_udp_port, mp_local_ipv4, mp_local_udp_port, 0, { udp := {} });
+			if (not ispresent(res.connId)) {
+				setverdict(fail, "Could not connect MGCP, check your configuration");
+				mtc.stop;
+			}
+			g_mgcp_conn_id := res.connId;
+
+			for (var integer i := 0; i < sizeof(vc_RTPEM); i := i+1) {
+				f_rtpem_init(vc_RTPEM[i], i);
+				connect(vc_RTPEM[i]:CTRL, self:RTPEM[i]);
+			}
+			if (osmux_on) {
+				f_osmuxem_init(vc_OsmuxEM);
+				connect(vc_OsmuxEM:CTRL, self:OsmuxEM);
+			}
+
+			f_init_statsd("VirtCallAgent", vc_STATSD, mp_local_ipv4, mp_mgw_statsd_port);
+			connect(self:STATSD_PROC, vc_STATSD:STATSD_PROC);
+
+			f_statsd_reset();
+		}
+
+		f_ipa_ctrl_start_client(mp_remote_ipv4, mp_mgw_ctrl_port);
+
+		if (isvalue(ep)) {
+			/* do a DLCX on all connections of the EP */
+			f_dlcx_ignore(valueof(ep));
+		}
+
+		f_init_vty(osmux_on);
+	}
+
+	testcase TC_selftest() runs on dummy_CT {
+		const charstring c_auep := "AUEP 158663169 ds/e1-1/2@172.16.6.66 MGCP 1.0\r\n";
+		const charstring c_mdcx3 := "MDCX 18983215 " & c_mgw_ep_rtpbridge & "1@" & c_mgw_domain & " MGCP 1.0\r\n";
+		const charstring c_mdcx3_ret := "200 18983215 OK\r\n" &
+						"I: 1\n" &
+						"\n" &
+						"v=0\r\n" &
+						"o=- 1 23 IN IP4 0.0.0.0\r\n" &
+						"s=-\r\n" &
+						"c=IN IP4 0.0.0.0\r\n" &
+						"t=0 0\r\n" &
+						"m=audio 0 RTP/AVP 126\r\n" &
+						"a=rtpmap:126 AMR/8000\r\n" &
+						"a=ptime:20\r\n";
+		const charstring c_mdcx4 :=	"MDCX 18983216 " & c_mgw_ep_rtpbridge & "1@" & c_mgw_domain & " MGCP 1.0\r\n" &
+						"M: sendrecv\r" &
+						"C: 2\r\n" &
+						"I: 1\r\n" &
+						"L: p:20, a:AMR, nt:IN\r\n" &
+						"\n" &
+						"v=0\r\n" &
+						"o=- 1 23 IN IP4 0.0.0.0\r\n" &
+						"s=-\r\n" &
+						"c=IN IP4 0.0.0.0\r\n" &
+						"t=0 0\r\n" &
+						"m=audio 4441 RTP/AVP 99\r\n" &
+						"a=rtpmap:99 AMR/8000\r\n" &
+						"a=ptime:40\r\n";
+		const charstring c_crcx510_ret := "510 23 FAIL\r\n"
+
+		log(c_auep);
+		log(dec_MgcpCommand(c_auep));
+
+		log(c_mdcx3);
+		log(dec_MgcpCommand(c_mdcx3));
+
+		log(c_mdcx3_ret);
+		log(dec_MgcpResponse(c_mdcx3_ret));
+
+		log(c_mdcx4);
+		log(dec_MgcpCommand(c_mdcx4));
+
+		log(ts_CRCX("23", c_mgw_ep_rtpbridge & "42@" & c_mgw_domain, "sendrecv", '1234'H));
+		log(enc_MgcpCommand(valueof(ts_CRCX("23", c_mgw_ep_rtpbridge & "42@" & c_mgw_domain, "sendrecv", '1234'H))));
+
+		log(c_crcx510_ret);
+		log(dec_MgcpResponse(c_crcx510_ret));
+		log(dec_MgcpMessage(c_crcx510_ret));
+
+		/* We didn't encounter any DTE, so pass the test */
+		setverdict(pass);
+	}
+
+	/* CRCX test ideas:
+	 * x without mandatory CallId
+	 * - with forbidden parameters (e.g. Capabilities, PackageList, ...
+	 * - CRCX with remote session description and without
+	 *
+	 * general ideas:
+	 * x packetization != 20ms
+	 * x invalid mode
+	 * x unsupported mode (517)
+	 * x bidirectional mode before RemoteConnDesc: 527
+	 * - invalid codec
+	 * x retransmission of same transaction
+	 * - unsupported LocalConnectionOptions ("b", "a", "e", "gc", "s", "r", "k", ..)
+	 */
+
+	/* build a receive template for receiving a MGCP message. You
+	 * pass the MGCP response template in, and it will generate an
+	 * MGCP_RecvFrom template that can match the primitives arriving on the
+	 * MGCP_CodecPort */
+	function tr_MGCP_RecvFrom_R(template MgcpResponse resp) runs on dummy_CT return template MGCP_RecvFrom {
+		var template MGCP_RecvFrom mrf := {
+			connId := g_mgcp_conn_id,
+			remName := mp_remote_ipv4,
+			remPort := mp_remote_udp_port,
+			locName := mp_local_ipv4,
+			locPort := mp_local_udp_port,
+			msg := { response := resp }
+		}
+		return mrf;
+	}
+
+	/* Send a MGCP request + receive a (matching!) response */
+	function mgcp_transceive_mgw(template MgcpCommand cmd, template MgcpResponse resp := ?) runs on dummy_CT return MgcpResponse {
+		var MgcpMessage msg := { command := valueof(cmd) };
+		resp.line.trans_id := cmd.line.trans_id;
+		var template MGCP_RecvFrom mrt := tr_MGCP_RecvFrom_R(resp);
+		var MGCP_RecvFrom mrf;
+		timer T := 5.0;
+
+		MGCP.send(t_MGCP_Send(g_mgcp_conn_id, msg));
+		T.start;
+		alt {
+			[] MGCP.receive(mrt) -> value mrf { }
+			[] MGCP.receive(tr_MGCP_RecvFrom_R(?)) -> value mrf {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						        log2str("Unexpected MGCP Response: ", mrf, " vs exp ", mrt));
+				}
+			[] MGCP.receive { repeat; }
+			[] T.timeout {
+				Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+							log2str("Timeout waiting for response to ", cmd));
+				}
+		}
+		T.stop;
+
+		if (isbound(mrf) and isbound(mrf.msg) and ischosen(mrf.msg.response)) {
+			return mrf.msg.response;
+		} else {
+			var MgcpResponse r := { line := { code := "999", trans_id := valueof(cmd.line.trans_id) } };
+			return r;
+		}
+	}
+
+	function extract_conn_id(MgcpResponse resp) return MgcpConnectionId {
+		var integer i;
+		for (i := 0; i < lengthof(resp.params); i := i + 1) {
+			var MgcpParameter par := resp.params[i];
+			if (par.code == "I") {
+				return str2hex(par.val);
+			}
+		}
+		setverdict(fail, "Could not find conn id for MgcpReponse");
+		mtc.stop;
+		return '00000000'H;
+	}
+
+	function f_dlcx(MgcpEndpoint ep, template MgcpResponseCode ret_code, template charstring ret_val,
+			template MgcpCallId call_id := omit,
+			template MgcpConnectionId conn_id := omit) runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := ret_code,
+				string := ret_val
+			},
+			params := *,
+			sdp := *
+		};
+		cmd := ts_DLCX(get_next_trans_id(), ep, call_id, conn_id);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+	}
+
+	/* Send DLCX and expect OK response */
+	function f_dlcx_ok(MgcpEndpoint ep, template MgcpCallId call_id := omit,
+			   template MgcpConnectionId conn_id := omit) runs on dummy_CT {
+		f_dlcx(ep, ("200","250"), "OK", call_id, conn_id);
+	}
+
+	/* Send DLCX and accept any response */
+	function f_dlcx_ignore(MgcpEndpoint ep, template MgcpCallId call_id := omit,
+				template MgcpConnectionId conn_id := omit) runs on dummy_CT {
+		f_dlcx(ep, ?, *, call_id, conn_id);
+	}
+
+	type record HostPort {
+		charstring hostname,
+		integer portnr optional
+	}
+	type record RtpOsmuxFlowData {
+		boolean local_cid_sent, /* whther non wildcarded CID was already sent to MGW */
+		MgcpOsmuxCID local_cid optional,
+		MgcpOsmuxCID remote_cid optional,
+		OsmuxemConfig cfg optional
+	}
+	type record RtpCodecDescr {
+		uint7_t pt,
+		charstring codec,
+		charstring fmtp optional
+	}
+	type record RtpFlowData {
+		HostPort em,	/* emulation side */
+		HostPort mgw,	/* mgw side */
+		MgcpConnectionId mgcp_conn_id optional,
+		record of RtpCodecDescr codec_descr,
+		RtpemConfig rtp_cfg optional,
+		RtpOsmuxFlowData osmux
+	}
+
+	template RtpFlowData t_RtpFlow(charstring host_a, charstring host_b, uint7_t pt,
+				       charstring codec, template charstring fmtp := omit) := {
+		em := {
+			hostname := host_a,
+			portnr := omit
+		},
+		mgw := {
+			hostname := host_b,
+			portnr := omit
+		},
+		codec_descr := {{
+			pt := pt,
+			codec := codec,
+			fmtp := fmtp
+		}},
+		osmux:= {
+			local_cid_sent := false,
+			local_cid := omit,
+			remote_cid := omit,
+			cfg := omit
+		}
+	}
+
+	/* To be used with f_flow_create/modify... functions */
+	function f_gen_sdp(RtpFlowData flow) runs on dummy_CT return SDP_Message {
+		var template SDP_Message sdp;
+		var SDP_fmt_list fmt_list := {};
+		var SDP_attribute_list attributes := {};
+
+		/* Add SDP RTMAP attributes (codec type, referenced by PT) */
+		for (var integer i := 0; i < lengthof(flow.codec_descr); i := i + 1) {
+			attributes := attributes & { valueof(ts_SDP_rtpmap(flow.codec_descr[i].pt,
+				      flow.codec_descr[i].codec)) };
+		}
+
+		/* Add SDP PTIME attribute, regardless of which codec, the packet intervall remains the same */
+		attributes := attributes & { valueof(ts_SDP_ptime(20)) };
+
+		/* Add SDP FMTP attributes (codec parameters for each codec, referenced by PT) */
+		for (var integer i := 0; i < lengthof(flow.codec_descr); i := i + 1) {
+			if (isvalue(flow.codec_descr[i].fmtp) and flow.codec_descr[i].fmtp != "") {
+				attributes := attributes & { valueof(ts_SDP_fmtp(flow.codec_descr[i].pt,
+							     flow.codec_descr[i].fmtp)) };
+			}
+		}
+
+		/* Final step: Generate SDP */
+		for (var integer i := 0; i < lengthof(flow.codec_descr); i := i + 1) {
+			fmt_list := fmt_list & {int2str(flow.codec_descr[i].pt)};
+		}
+		sdp := ts_SDP(flow.em.hostname, flow.em.hostname, "23", "42", flow.em.portnr, fmt_list, attributes);
+
+		return valueof(sdp);
+	}
+
+	/* Generate a valid RTP emulation config from the payload type numbers configured in the flow description and
+	 * the the default configuration of the RTP emulation module. */
+	function f_gen_rtpem_config_from_flow(RtpFlowData flow) return RtpemConfig {
+		var RtpemConfig rtp_cfg := c_RtpemDefaultCfg;
+
+		for (var integer i := 0; i < lengthof(flow.codec_descr); i := i + 1) {
+			var RtpemConfigPayload tx_cfg_payload;
+			var RtpemConfigPayload rx_cfg_payload;
+
+			tx_cfg_payload.payload_type := flow.codec_descr[i].pt;
+			tx_cfg_payload.fixed_payload := c_RtpemDefaultCfg.tx_payloads[0].fixed_payload;
+			rx_cfg_payload.payload_type := flow.codec_descr[i].pt;
+			rx_cfg_payload.fixed_payload := c_RtpemDefaultCfg.rx_payloads[0].fixed_payload;
+
+			rtp_cfg.tx_payloads := rtp_cfg.tx_payloads & {tx_cfg_payload};
+			rtp_cfg.rx_payloads := rtp_cfg.rx_payloads & {rx_cfg_payload};
+		}
+
+		return rtp_cfg;
+	}
+
+	/* Create an RTP flow (bidirectional, or receive-only) */
+	function f_flow_create(RTPEM_CTRL_PT pt, MgcpEndpoint ep, MgcpCallId call_id, charstring mode, inout RtpFlowData flow,
+				boolean one_phase := true)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		/* bind local RTP emulation socket */
+		f_rtpem_bind(pt, flow.em.hostname, flow.em.portnr);
+
+		/* configure rtp-emulation */
+		if (ispresent(flow.rtp_cfg)) {
+			f_rtpem_configure(pt, flow.rtp_cfg);
+		} else {
+			f_rtpem_configure(pt, f_gen_rtpem_config_from_flow(flow));
+		}
+
+		if (one_phase) {
+			/* Connect flow to MGW using a CRCX that also contains an SDP
+			 * part that tells the MGW where we are listening for RTP streams
+			 * that come from the MGW. We get a fully working connection in
+			 * one go. */
+
+			cmd := ts_CRCX(get_next_trans_id(), ep, mode, call_id);
+			cmd.sdp := f_gen_sdp(flow);
+
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+			flow.mgcp_conn_id := extract_conn_id(resp);
+			/* extract port number from response */
+			flow.mgw.portnr :=
+				resp.sdp.media_list[0].media_field.ports.port_number;
+		} else {
+			/* Create a half-open connection only. We do not tell the MGW
+			 * where it can send RTP streams to us. This means this
+			 * connection will only be able to receive but can not send
+			 * data back to us. In order to turn the connection in a fully
+			 * bi-directional one, a separate MDCX is needed. */
+
+			cmd := ts_CRCX(get_next_trans_id(), ep, mode, call_id);
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+			flow.mgcp_conn_id := extract_conn_id(resp);
+			/* extract MGW-side port number from response */
+			flow.mgw.portnr :=
+				resp.sdp.media_list[0].media_field.ports.port_number;
+		}
+		/* finally, connect the emulation-side RTP socket to the MGW */
+		f_rtpem_connect(pt, flow.mgw.hostname, flow.mgw.portnr);
+	}
+
+	/* Create an Osmux flow (bidirectional, or receive-only) */
+	function f_flow_create_osmux(OsmuxEM_CTRL_PT pt, MgcpEndpoint ep, MgcpCallId call_id, charstring mode, inout RtpFlowData flow,
+				boolean one_phase := true)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var OsmuxTxHandle tx_hdl;
+		var OsmuxRxHandle rx_hdl;
+		var charstring cid_response;
+		var OsmuxCID cid_resp_parsed
+
+		/* bind local Osmux emulation socket */
+		f_osmuxem_bind(pt, flow.em.hostname, flow.em.portnr);
+
+		/* configure osmux-emulation */
+		if (ispresent(flow.osmux.cfg)) {
+			f_osmuxem_configure(pt, flow.osmux.cfg);
+		} else {
+			var OsmuxemConfig osmux_cfg := c_OsmuxemDefaultCfg;
+			f_osmuxem_configure(pt, osmux_cfg);
+			flow.osmux.cfg := osmux_cfg
+		}
+
+		if (one_phase) {
+			/* Connect flow to MGW using a CRCX that also contains an SDP
+			 * part that tells the MGW where we are listening for Osmux streams
+			 * that come from the MGW. We get a fully working connection in
+			 * one go. */
+			if (flow.osmux.local_cid != -1) {
+				/* We may still want to negotiate osmux CID later at MDCX */
+				rx_hdl := c_OsmuxemDefaultRxHandle;
+				rx_hdl.cid := flow.osmux.local_cid;
+				f_osmuxem_register_rxhandle(pt, rx_hdl);
+				flow.osmux.local_cid_sent := true;
+			}
+			cmd := ts_CRCX_osmux(get_next_trans_id(), ep, mode, call_id, flow.osmux.local_cid);
+			cmd.sdp := f_gen_sdp(flow);
+  			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK_osmux);
+			flow.mgcp_conn_id := extract_conn_id(resp);
+			/* extract port number from response */
+			flow.mgw.portnr :=
+				resp.sdp.media_list[0].media_field.ports.port_number;
+		} else {
+			/* Create a half-open connection only. We do not tell the MGW
+			 * where it can send Osmux streams to us. This means this
+			 * connection will only be able to receive but can not send
+			 * data back to us. In order to turn the connection in a fully
+			 * bi-directional one, a separate MDCX is needed. */
+
+			cmd := ts_CRCX_osmux(get_next_trans_id(), ep, mode, call_id, flow.osmux.local_cid);
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK_osmux);
+
+			flow.mgcp_conn_id := extract_conn_id(resp);
+			/* extract MGW-side port number from response */
+			flow.mgw.portnr :=
+				resp.sdp.media_list[0].media_field.ports.port_number;
+		}
+
+		/* extract Osmux CID we got assigned by the MGW */
+		var MgcpMessage resp_msg := {
+			response := resp
+		}
+
+		if (f_mgcp_find_param(resp_msg, "X-OSMUX", cid_response) == false) {
+			setverdict(fail, "No Osmux CID in MGCP response", resp);
+			mtc.stop;
+		}
+
+		/* Make sure response is no wildcard */
+		flow.osmux.remote_cid := f_mgcp_osmux_cid_decode(cid_response);
+		if (flow.osmux.remote_cid == -1) {
+			setverdict(fail, "Osmux CID in MGCP response contains unexpected wildcard");
+			mtc.stop;
+		}
+		tx_hdl := valueof(t_TxHandleAMR590(flow.osmux.remote_cid));
+		f_osmuxem_register_txhandle(pt, tx_hdl);
+
+		/* finally, connect the emulation-side RTP socket to the MGW */
+		f_osmuxem_connect(pt, flow.mgw.hostname, flow.mgw.portnr);
+	}
+
+	/* Modify an existing RTP flow */
+	function f_flow_modify(RTPEM_CTRL_PT pt, MgcpEndpoint ep, MgcpCallId call_id, charstring mode, inout RtpFlowData flow)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		/* rebind local RTP emulation socket to the new address */
+		f_rtpem_bind(pt, flow.em.hostname, flow.em.portnr);
+
+		/* reconfigure rtp-emulation */
+		if (ispresent(flow.rtp_cfg)) {
+			f_rtpem_configure(pt, flow.rtp_cfg);
+		} else {
+			f_rtpem_configure(pt, f_gen_rtpem_config_from_flow(flow));
+		}
+
+		/* connect MGW side RTP socket to the emulation-side RTP socket using SDP */
+		cmd := ts_MDCX(get_next_trans_id(), ep, mode, call_id, flow.mgcp_conn_id);
+		cmd.sdp := f_gen_sdp(flow);
+		resp := mgcp_transceive_mgw(cmd, tr_MDCX_ACK);
+
+		/* extract MGW-side port number from response. (usually this
+		 * will not change, but thats is up to the MGW) */
+		flow.mgw.portnr :=
+			resp.sdp.media_list[0].media_field.ports.port_number;
+
+		/* reconnect the emulation-side RTP socket to the MGW */
+		f_rtpem_connect(pt, flow.mgw.hostname, flow.mgw.portnr);
+	}
+
+	/* Modify an existing Osmux flow */
+	function f_flow_modify_osmux(OsmuxEM_CTRL_PT pt, MgcpEndpoint ep, MgcpCallId call_id, charstring mode, inout RtpFlowData flow)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var OsmuxRxHandle rx_hdl;
+		var charstring cid_response;
+		var OsmuxCID cid_resp_parsed
+
+		/* rebind local Osmux emulation socket to the new address */
+		f_osmuxem_bind(pt, flow.em.hostname, flow.em.portnr);
+
+		/* configure osmux-emulation */
+		if (ispresent(flow.osmux.cfg)) {
+			f_osmuxem_configure(pt, flow.osmux.cfg);
+		} else {
+			var OsmuxemConfig osmux_cfg := c_OsmuxemDefaultCfg;
+			f_osmuxem_configure(pt, osmux_cfg);
+		}
+
+		/* We didn't send a non-wildcarded Osmux CID yet. If caller wants to submit it, register handler */
+		if (flow.osmux.local_cid_sent == false and flow.osmux.local_cid != -1) {
+			rx_hdl := c_OsmuxemDefaultRxHandle;
+			rx_hdl.cid := flow.osmux.local_cid;
+			f_osmuxem_register_rxhandle(pt, rx_hdl);
+			flow.osmux.local_cid_sent := true;
+		}
+
+		/* connect MGW side Osmux socket to the emulation-side Osmux socket using SDP */
+		cmd := ts_MDCX_osmux(get_next_trans_id(), ep, mode, call_id, flow.mgcp_conn_id, flow.osmux.local_cid);
+		cmd.sdp := f_gen_sdp(flow);
+		resp := mgcp_transceive_mgw(cmd, tr_MDCX_ACK);
+
+		/* extract MGW-side port number from response. (usually this
+		 * will not change, but thats is up to the MGW) */
+		flow.mgw.portnr :=
+			resp.sdp.media_list[0].media_field.ports.port_number;
+
+		/* extract Osmux CID we got assigned by the MGW */
+		var MgcpMessage resp_msg := {
+			response := resp
+		}
+
+		if (f_mgcp_find_param(resp_msg, "X-OSMUX", cid_response) == false) {
+			setverdict(fail, "No Osmux CID in MGCP response", resp);
+			mtc.stop;
+		}
+
+		/* Make sure response is no wildcard */
+		cid_resp_parsed := f_mgcp_osmux_cid_decode(cid_response);
+		if (cid_resp_parsed == -1) {
+			setverdict(fail, "Osmux CID in MGCP response contains unexpected wildcard");
+			mtc.stop;
+		}
+		if (cid_resp_parsed != flow.osmux.remote_cid) {
+			setverdict(fail, "Osmux CID in MGCP MDCX response changed from prev value");
+			mtc.stop;
+		}
+
+		/* reconnect the emulation-side Osmux socket to the MGW */
+		f_osmuxem_connect(pt, flow.mgw.hostname, flow.mgw.portnr);
+	}
+
+	/* Delete an existing RTP flow */
+	function f_flow_delete(RTPEM_CTRL_PT pt, template MgcpEndpoint ep := omit, template MgcpCallId call_id := omit,
+			       RtpemMode mode := RTPEM_MODE_NONE)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		/* Switch off RTP flow */
+		f_rtpem_mode(pt, mode);
+
+		/* Delete connection on MGW (if needed) */
+		if (isvalue(call_id) and isvalue(ep)) {
+			f_sleep(0.1);
+			f_dlcx_ok(valueof(ep), call_id);
+		}
+	}
+
+	/* Delete an existing Osmux flow */
+	function f_flow_delete_osmux(OsmuxEM_CTRL_PT pt, template MgcpEndpoint ep := omit, template MgcpCallId call_id := omit)
+	runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		/* Switch off Osmux flow */
+		f_osmuxem_mode(pt, OSMUXEM_MODE_NONE);
+
+		/* Delete connection on MGW (if needed) */
+		if (isvalue(call_id) and isvalue(ep)) {
+			f_sleep(0.1);
+			f_dlcx_ok(valueof(ep), call_id);
+		}
+	}
+
+	/* Send an AuditEndpoint message to the MGW */
+	function f_auep(charstring ep_prefix) runs on dummy_CT {
+		var MgcpEndpoint ep := ep_prefix & "@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		f_init(ep);
+
+		cmd := ts_AUEP(get_next_trans_id(), ep);
+		resp := mgcp_transceive_mgw(cmd, tr_AUEP_ACK);
+	}
+
+	function f_crcx(charstring ep_prefix) runs on dummy_CT {
+		var MgcpEndpoint ep := ep_prefix & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+
+		f_init(ep);
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		extract_conn_id(resp);
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+	}
+
+	function f_crcx_no_lco(charstring ep_prefix) runs on dummy_CT {
+		var MgcpEndpoint ep := ep_prefix & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+
+		f_init(ep);
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX_no_lco(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		extract_conn_id(resp);
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+
+		/* See also OS#2658: Even when we omit the LCO information, we
+		   expect the MGW to pick a sane payload type for us. This
+		   payload type should be visible in the SDP of the response. */
+		if (resp.sdp.media_list[0].media_field.fmts[0] != "0") {
+			setverdict(fail, "SDP contains unexpected codec");
+			mtc.stop;
+		}
+
+		/* See also OS#2658: We also expect the MGW to assign a port
+		   number to us. */
+		if (isbound(resp.sdp.media_list[0].media_field.ports.port_number) == false) {
+			setverdict(fail, "SDP does not contain a port number");
+			mtc.stop;
+		}
+	}
+
+	function f_crcx_osmux(charstring ep_prefix, MgcpOsmuxCID osmux_cid, boolean run_init := true) runs on dummy_CT {
+		var MgcpEndpoint ep := ep_prefix & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+		var charstring cid_response;
+
+		if (run_init) {
+			f_init(ep, true);
+		}
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX_osmux(get_next_trans_id(), ep, "recvonly", call_id, osmux_cid);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK_osmux);
+		extract_conn_id(resp);
+
+		/* extract Osmux CID we got assigned by the MGW */
+		var MgcpMessage resp_msg := {
+			response := resp
+		}
+
+		if (f_mgcp_find_param(resp_msg, "X-OSMUX", cid_response) == false) {
+			setverdict(fail, "No Osmux CID in MGCP response", resp);
+			mtc.stop;
+		}
+
+		/* Make sure response is no wildcard */
+		if (f_mgcp_osmux_cid_decode(cid_response) == -1) {
+			setverdict(fail, "Osmux CID in MGCP response contains unexpected wildcard");
+			mtc.stop;
+		}
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+	}
+
+	/* test valid AUEP towards "null" endpoint */
+	testcase TC_auep_null() runs on dummy_CT {
+		f_auep("null");
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP */
+	testcase TC_crcx() runs on dummy_CT {
+		f_crcx(c_mgw_ep_rtpbridge);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP and LCO */
+	testcase TC_crcx_no_lco() runs on dummy_CT {
+		f_crcx_no_lco(c_mgw_ep_rtpbridge);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP (older method without endpoint prefix) */
+	testcase TC_crcx_noprefix() runs on dummy_CT {
+		f_crcx("");
+		setverdict(pass);
+	}
+
+	/* test CRCX with unsupported mode, expect 517 */
+	testcase TC_crcx_unsupp_mode() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1233'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("517");
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "netwtest", call_id);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* Test CRCX with X-Osmo-IGN, using same message as SYS#5063 to make sure it doesn't cause a crash. */
+	testcase TC_crcx_osmo_ign() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := "7@" & c_mgw_domain;
+		var MgcpCallId call_id := '3'H;
+
+		f_init(ep);
+
+		/* CRCX 1 7@mgw MGCP 1.0
+		C: 3
+		L: p:20, a:GSM-EFR, nt:IN
+		M: recvonly
+		X-Osmo-IGN: C
+		*/
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "netwtest", call_id);
+		cmd.params := {ts_MgcpParCallId(call_id),
+			       t_MgcpParLocConnOpt("p:20, a:GSM-EFR, nt:IN"),
+			       t_MgcpParConnMode("recvonly"),
+			       t_MgcpParOsmoIGN("C")};
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		extract_conn_id(resp);
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+		setverdict(pass);
+	}
+
+	/* test CRCX with early bi-directional mode, expect 527 as
+	 * bi-diretional media can only  be established once both local and
+	 * remote side are specified, see MGCP RFC */
+	testcase TC_crcx_early_bidir_mode() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1232'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("527");
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "sendrecv", call_id);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test CRCX with unsupported Parameters */
+	testcase TC_crcx_unsupp_param() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1231'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("539");
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		/* osmo-bsc_mgcp/mgw doesn't implement notifications */
+		f_mgcp_par_append(cmd.params, MgcpParameter:{ "N", "foobar" });
+
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test CRCX with missing CallId */
+	testcase TC_crcx_missing_callid() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err(("400","516"));
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", '1230'H);
+		cmd.params := {
+			t_MgcpParConnMode("recvonly"),
+			t_MgcpParLocConnOpt("p:20")
+		}
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+
+	}
+
+	/* test CRCX with missing Mode */
+	testcase TC_crcx_missing_mode() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1229'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err(("400","517"));
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		cmd.params := {
+			ts_MgcpParCallId(call_id),
+			t_MgcpParLocConnOpt("p:20")
+		}
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test CRCX with unsupported packetization interval */
+	testcase TC_crcx_unsupp_packet_intv() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1228'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("535");
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		cmd.params[2] := t_MgcpParLocConnOpt("p:111");
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test CRCX with illegal double presence of local connection option */
+	testcase TC_crcx_illegal_double_lco() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("524");
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		/* p:20 is permitted only once and not twice! */
+		cmd.params[2] := t_MgcpParLocConnOpt("p:20, a:AMR, p:20");
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX with valid SDP */
+	testcase TC_crcx_sdp() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1226'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "sendrecv", call_id);
+		cmd.sdp := ts_SDP("127.0.0.1", "127.0.0.2", "23", "42", 2344, { "98" },
+				  { valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+
+		setverdict(pass);
+	}
+
+	/* test valid wildcarded CRCX */
+	testcase TC_crcx_wildcarded() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "*@" & c_mgw_domain;
+		var MgcpCallId call_id := '1234'H;
+		var MgcpEndpoint ep_assigned;
+		f_init();
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		extract_conn_id(resp);
+
+		/* extract endpoint name we got assigned by the MGW */
+		var MgcpMessage resp_msg := {
+			response := resp
+		}
+		if (f_mgcp_find_param(resp_msg, "Z", ep_assigned) == false) {
+			setverdict(fail, "No SpecificEndpointName in MGCP response", resp);
+			mtc.stop;
+		}
+
+		/* clean-up */
+		f_dlcx_ok(ep_assigned, call_id);
+
+		setverdict(pass);
+	}
+
+	/* test valid wildcarded CRCX */
+	type record of MgcpEndpoint MgcpEndpointList;
+	testcase TC_crcx_wildcarded_exhaust() runs on dummy_CT {
+		var integer i;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "*@" & c_mgw_domain;
+		var MgcpCallId call_id := '1234'H;
+		var MgcpEndpoint ep_assigned;
+		var MgcpEndpointList ep_assigned_li := {};
+		f_init();
+
+		/* Exhaust all endpoint resources on the virtual trunk */
+		for (i := 0; i < mp_num_endpoints; i := i+1) {
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+			/* Make sure we got a connection id */
+			extract_conn_id(resp);
+
+			var MgcpMessage resp_msg := {
+			    response := resp
+			}
+			if (f_mgcp_find_param(resp_msg, "Z", ep_assigned) == false) {
+				setverdict(fail, "No SpecificEndpointName in MGCP response", resp);
+				mtc.stop;
+			}
+			ep_assigned_li := ep_assigned_li & {ep_assigned}
+		}
+
+		/* Try to allocate one more endpoint, which should fail */
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		var template MgcpResponse rtmpl := tr_MgcpResp_Err("403");
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+
+		/* clean-up */
+		for (i := 0; i < mp_num_endpoints; i := i+1) {
+		    f_dlcx_ok(ep_assigned_li[i], call_id);
+		}
+		setverdict(pass);
+	}
+
+	/* TODO: various SDP related bits */
+
+
+	/* TODO: CRCX with X-Osmux */
+	/* TODO: double CRCX without force_realloc */
+
+	/* TODO: MDCX (various) */
+
+	/* TODO: MDCX without CRCX first */
+	testcase TC_mdcx_without_crcx() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "3@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var template MgcpResponse rtmpl := {
+			line := {
+				/* TODO: accept/enforce better error? */
+				code := "400",
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+
+		f_init(ep);
+
+		cmd := ts_MDCX(get_next_trans_id(), ep, "sendrecv", call_id, call_id);
+		cmd.sdp := ts_SDP("127.0.0.1", "127.0.0.2", "23", "42", 2344, { "98" },
+				  { valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* DLCX without CRCX first */
+	testcase TC_dlcx_without_crcx() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "4@" & c_mgw_domain;
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := ("400", "515"),
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+
+		f_init(ep);
+
+		cmd := ts_DLCX(get_next_trans_id(), ep, '41234'H);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* DLCX to non existing endpoint */
+	testcase TC_dlcx_non_existant_ep() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var charstring non_existant_ep := hex2str(int2hex(mp_num_endpoints + 1, 4))
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & non_existant_ep & "@" & c_mgw_domain;
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := ("500"),
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+
+		f_init(ep);
+
+		cmd := ts_DLCX(get_next_trans_id(), ep, '41234'H);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test valid wildcarded MDCX */
+	testcase TC_mdcx_wildcarded() runs on dummy_CT {
+		 /* Note: A wildcarded MDCX is not allowed, so we expect the
+		  * MGW to reject this request */
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "*@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var template MgcpResponse rtmpl := {
+			line := {
+				/* TODO: accept/enforce better error? */
+				code := "507",
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+
+		f_init(ep);
+
+		cmd := ts_MDCX(get_next_trans_id(), ep, "sendrecv", call_id, call_id);
+		cmd.sdp := ts_SDP("127.0.0.1", "127.0.0.2", "23", "42", 2344, { "98" },
+				  { valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		setverdict(pass);
+	}
+
+	/* test valid wildcarded DLCX */
+	testcase TC_dlcx_wildcarded() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "*@" & c_mgw_domain;
+		var integer i;
+		var MgcpCallId call_id := '1234'H;
+		var StatsDExpects expect;
+		f_init(ep);
+
+		/* Allocate a few endpoints */
+		for (i := 0; i < mp_num_endpoints; i := i+1) {
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		}
+
+		/* Wait until the stats items have seteled and then check if we get the expected number (all) of
+		 * occupied endpoints */
+		f_sleep(1.0)
+		expect := {
+			{ name := "TTCN3.trunk.virtual-0.common.endpoints.used", mtype := "g", min := mp_num_endpoints, max := mp_num_endpoints}
+		};
+		f_statsd_expect(expect);
+
+		/* Send wildcarded DLCX */
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := "200",
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+		cmd := ts_DLCX(get_next_trans_id(), ep);
+		mgcp_transceive_mgw(cmd, rtmpl);
+
+		/* Query a the statsd once to ensure that intermediate results are pulled from the
+		 * pipeline. The second query (below) will return the actual result. */
+		expect := {
+			{ name := "TTCN3.trunk.virtual-0.common.endpoints.used", mtype := "g", min := 0, max := mp_num_endpoints}
+		};
+		f_statsd_expect(expect);
+
+		/* The second query must resturn a result with 0 endpoints in use. */
+		expect := {
+			{ name := "TTCN3.trunk.virtual-0.common.endpoints.used", mtype := "g", min := 0, max := 0}
+		};
+		f_statsd_expect(expect);
+
+		setverdict(pass);
+	}
+
+	/* Test (valid) CRCX followed by (valid) DLCX containig EP+CallId+ConnId */
+	testcase TC_crcx_and_dlcx_ep_callid_connid() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51234'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx_ok(ep, call_id, extract_conn_id(resp));
+
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP */
+	testcase TC_crcx_osmux_wildcard() runs on dummy_CT {
+		f_crcx_osmux(c_mgw_ep_rtpbridge, -1);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP */
+	testcase TC_crcx_osmux_fixed() runs on dummy_CT {
+		f_crcx_osmux(c_mgw_ep_rtpbridge, 2);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX without SDP, twice, to make sure CID is freed fine during first step. */
+	testcase TC_crcx_osmux_fixed_twice() runs on dummy_CT {
+		f_crcx_osmux(c_mgw_ep_rtpbridge, 3, true);
+		f_crcx_osmux(c_mgw_ep_rtpbridge, 3, false);
+		setverdict(pass);
+	}
+
+	/* test Creating 257 concurrent osmux conns. It should fail since maximum is 256. */
+	testcase TC_crcx_osmux_257() runs on dummy_CT {
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "*@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var charstring cid_response;
+		var integer i;
+
+		f_init(ep, true);
+
+		for (i := 0; i < 256; i := i + 1) {
+
+			cmd := ts_CRCX_osmux(get_next_trans_id(), ep, "recvonly", int2hex(i, 4), -1);
+			resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK_osmux);
+			extract_conn_id(resp);
+
+			/* extract Osmux CID we got assigned by the MGW */
+			var MgcpMessage resp_msg := {
+				response := resp
+			}
+
+			if (f_mgcp_find_param(resp_msg, "X-OSMUX", cid_response) == false) {
+				setverdict(fail, "No Osmux CID in MGCP response", resp);
+				mtc.stop;
+			}
+
+			/* Make sure response is no wildcard */
+			if (f_mgcp_osmux_cid_decode(cid_response) == -1) {
+				setverdict(fail, "Osmux CID in MGCP response contains unexpected wildcard");
+				mtc.stop;
+			}
+		}
+
+		/* Now conn num 257, it should fail due to all Osmux conns already allocated: */
+		cmd := ts_CRCX_osmux(get_next_trans_id(), ep, "recvonly", int2hex(i, 4), -1);
+		resp := mgcp_transceive_mgw(cmd, tr_MgcpResp_Err("400"));
+
+		setverdict(pass);
+
+		/* Clean up */
+		for (i := 0; i < 256; i := i + 1) {
+			f_dlcx_ok(ep, int2hex(i, 4));
+		}
+	}
+
+	/* Create one half open connection in receive-only mode. The MGW must accept
+	 * the packets but must not send any. */
+	testcase TC_one_crcx_receive_only_osmux() runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "1@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var OsmuxemStats stats;
+		var OsmuxTxHandle tx_hdl;
+
+		f_init(ep, true);
+		flow := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 112, "AMR/8000/1"));
+		flow.em.portnr := mp_local_osmux_port;
+		flow.osmux.local_cid := -1;
+		f_flow_create_osmux(OsmuxEM, ep, call_id, "recvonly", flow, false);
+
+		/* create a transmitter not yet known by MGW */
+		tx_hdl := valueof(t_TxHandleAMR590(2));
+		f_osmuxem_register_txhandle(OsmuxEM, tx_hdl);
+
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_flow_delete_osmux(OsmuxEM, ep, call_id);
+
+		stats := f_osmuxem_stats_get(OsmuxEM);
+
+		if (stats.num_pkts_tx < 40 / flow.osmux.cfg.batch_size) {
+			setverdict(fail);
+		}
+		if (stats.bytes_payload_tx < stats.num_pkts_tx * f_amrft_payload_len(tx_hdl.amr_ft) * flow.osmux.cfg.batch_size) {
+			setverdict(fail);
+		}
+
+		f_osmuxem_stats_err_check(stats);
+
+		setverdict(pass);
+	}
+
+	/* Create one connection in loopback mode, test if the Osmux packets are
+	 * actually reflected */
+	testcase TC_one_crcx_loopback_osmux() runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "1@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var OsmuxemStats stats;
+		var OsmuxTxHandle tx_hdl;
+
+		f_init(ep, true);
+		flow := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 111, "GSM-HR-08/8000/1"));
+		flow.em.portnr := mp_local_osmux_port;
+		flow.osmux.local_cid := 2;
+		f_flow_create_osmux(OsmuxEM, ep, call_id, "loopback", flow);
+
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_BIDIR);
+		f_sleep(1.0);
+
+		/* Switch off both Tx, wait to receive delayed frames from MGW */
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_RXONLY);
+		f_sleep(0.1);
+		f_flow_delete_osmux(OsmuxEM, ep, call_id);
+
+		stats := f_osmuxem_stats_get(OsmuxEM);
+
+		if (stats.num_pkts_tx != stats.num_pkts_rx) {
+			setverdict(fail);
+		}
+		if (stats.bytes_payload_tx != stats.bytes_payload_rx) {
+			setverdict(fail);
+		}
+
+		f_osmuxem_stats_err_check(stats);
+
+		setverdict(pass);
+	}
+
+	/* Cross-compare two osmuxem-statistics. The transmission statistics on the a side
+	 * must match the reception statistics on the other side and vice versa. The
+	 * user may also supply a tolerance value (number of packets) when deviations
+	 * are acceptable */
+	function f_rtp_osmux_stats_compare(RtpemStats a, OsmuxemStats b, integer batch_size, integer tolerance := 0) return boolean {
+		var integer plen;
+
+		log("stats A: ", a);
+		log("stats B: ", b);
+		log("tolerance: ", tolerance, " packets");
+		log("batch_size: ", batch_size, " packets");
+
+		var integer tolerance_batch := tolerance + (batch_size - tolerance mod batch_size);
+
+		if (f_osmuxem_stats_compare_value(a.num_pkts_tx, b.num_pkts_rx * batch_size, tolerance_batch) == false) {
+			return false;
+		}
+
+		if (f_osmuxem_stats_compare_value(a.num_pkts_rx / batch_size, b.num_pkts_tx, tolerance_batch) == false) {
+			return false;
+		}
+
+		if(a.num_pkts_tx > 0) {
+			plen := a.bytes_payload_tx / a.num_pkts_tx;
+		} else {
+			plen := 0;
+		}
+
+		/* Each RTP pcket payload contains 2 extra bytes due to AMR ToC at start */
+		if (f_osmuxem_stats_compare_value(a.bytes_payload_tx, b.bytes_payload_rx + a.num_pkts_tx * 2, tolerance_batch * plen) == false) {
+			log("incorrect payload A->B: " , a.bytes_payload_tx, " vs ", b.bytes_payload_rx + a.num_pkts_rx * 2);
+			return false;
+		}
+
+		if (f_osmuxem_stats_compare_value(a.bytes_payload_rx, b.bytes_payload_tx + b.num_pkts_tx * 2 * batch_size, tolerance_batch * plen) == false) {
+			log("incorrect payload B->A: " ,  b.bytes_payload_tx + b.num_pkts_tx * 2 * batch_size, " vs ", a.bytes_payload_rx);
+			return false;
+		}
+
+		return true;
+	}
+
+	function f_TC_two_crcx_and_rtp_osmux(boolean bidir, boolean rtp_amr_oa,
+					     charstring local_ip_rtp, charstring remote_ip_rtp,
+					     charstring local_ip_osmux, charstring remote_ip_osmux) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats_rtp;
+		var OsmuxemStats stats_osmux;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1226'H;
+		var integer tolerance := 0;
+
+		var octetstring amr_payload;
+		var charstring fmtp;
+
+		f_init(ep, true);
+
+		var AMRFT cmr := AMR_FT_0;
+		var AMRFT ft := AMR_FT_2;
+		if (rtp_amr_oa) {
+			fmtp := "octet-align=1";
+			var RTP_AMR_Hdr amr_oa_hdr := valueof(ts_RTP_AMR_Hdr(enum2int(cmr), enum2int(ft)));
+			amr_payload := enc_RTP_AMR_Hdr(amr_oa_hdr) &
+				       f_osmux_gen_expected_rx_rtp_payload(enum2int(ft), c_OsmuxemDefaultCfg.tx_fixed_payload);
+		} else {
+			fmtp := "octet-align=0";
+			/* Convert OA to BWE: */
+			var RTP_AMR_BWE_Hdr amr_bwe_hdr := valueof(ts_RTP_AMR_BWE_Hdr(enum2int(cmr), enum2int(ft)));
+			var bitstring amr_bwe_hdr_bits := substr(oct2bit(enc_RTP_AMR_BWE_Hdr(amr_bwe_hdr)), 0 , 10);
+			var bitstring amr_data_bits := oct2bit(f_osmux_gen_expected_rx_rtp_payload(enum2int(ft), c_OsmuxemDefaultCfg.tx_fixed_payload));
+			var bitstring amr_payload_bits := amr_bwe_hdr_bits & substr(amr_data_bits, 0, f_amrft_payload_bits_len(enum2int(ft)));
+			amr_payload := bit2oct(f_pad_bit(amr_payload_bits, (lengthof(amr_payload_bits)+7)/8*8, '0'B));
+		};
+
+		/* from us to MGW */
+		flow[0] := valueof(t_RtpFlow(local_ip_rtp, remote_ip_rtp, 112, "AMR/8000", fmtp));
+		flow[0].rtp_cfg := c_RtpemDefaultCfg
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := amr_payload;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := amr_payload;
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* from MGW back to us */
+		flow[1] := valueof(t_RtpFlow(local_ip_osmux, remote_ip_osmux, 110, "AMR/8000"));
+		flow[1].em.portnr := mp_local_osmux_port;
+		flow[1].osmux.local_cid := 2;
+		flow[1].osmux.cfg := c_OsmuxemDefaultCfg;
+		f_flow_create_osmux(OsmuxEM, ep, call_id, "sendrecv", flow[1]);
+
+		if (bidir) {
+				f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+				f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_BIDIR);
+
+				/* Note: When we test bidirectional we may
+				 * loose packets during switch off because
+				 * both ends are transmitting and we only
+				 * can switch them off one by one. */
+				tolerance := 3;
+		} else {
+				f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+				f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_TXONLY);
+		}
+
+		f_sleep(1.0);
+
+		/* Switch off both Tx, wait to receive delayed frames from MGW */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_RXONLY);
+		f_sleep(0.1);
+
+		f_flow_delete_osmux(OsmuxEM, ep, call_id);
+		f_flow_delete(RTPEM[1]);
+
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+		if (not f_rtp_osmux_stats_compare(stats_rtp, stats_osmux, flow[1].osmux.cfg.batch_size,  tolerance)) {
+			setverdict(fail, "RTP and Osmux endpoint statistics don't match");
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats_rtp);
+		f_osmuxem_stats_err_check(stats_osmux);
+
+		setverdict(pass);
+	}
+
+	/* create one RTP and one OSmux emulations; create two connections on MGW EP, exchange some data */
+	testcase TC_two_crcx_and_rtp_osmux() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(false, true, mp_local_ipv4, mp_remote_ipv4,
+					     mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* create one RTP and one OSmux emulations; create two connections on MGW EP,
+	 * exchange some data in both directions */
+	testcase TC_two_crcx_and_rtp_osmux_bidir() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(true, true, mp_local_ipv4, mp_remote_ipv4,
+					     mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* create one RTP and one OSmux emulations; create two connections on MGW EP,
+	 * exchange some data in both directions. RTP side is configured to
+	 * rx/rx AMR in bandwidth-efficient mode. */
+	testcase TC_two_crcx_and_rtp_osmux_bidir_amr_bwe() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(true, false, mp_local_ipv4, mp_remote_ipv4,
+					     mp_local_ipv4, mp_remote_ipv4);
+	}
+
+
+	/* Same as TC_two_crcx_and_rtp_osmux_bidir, but using IPv6 */
+	testcase TC_two_crcx_and_rtp_osmux_bidir_ipv6() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(true, true, mp_local_ipv6, mp_remote_ipv6,
+					     mp_local_ipv6, mp_remote_ipv6);
+	}
+	/* Same as TC_two_crcx_and_rtp_osmux_bidir, but using IPv4 (RTP) and IPv6 (Osmux) */
+	testcase TC_two_crcx_and_rtp_osmux_bidir_ipv4_ipv6() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(true, true, mp_local_ipv4, mp_remote_ipv4,
+					     mp_local_ipv6, mp_remote_ipv6);
+	}
+	/* Same as TC_two_crcx_and_rtp_osmux_bidir, but using IPv6 (RTP) and IPv4 (Osmux) */
+	testcase TC_two_crcx_and_rtp_osmux_bidir_ipv6_ipv4() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp_osmux(true, true, mp_local_ipv6, mp_remote_ipv6,
+					     mp_local_ipv4, mp_remote_ipv4);
+	}
+
+
+	function f_two_crcx_mdcx_and_rtp_osmux(boolean crcx_osmux_wildcard,
+					       charstring local_ip_rtp, charstring remote_ip_rtp,
+					       charstring local_ip_osmux, charstring remote_ip_osmux) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats_rtp;
+		var OsmuxemStats stats_osmux;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var integer num_pkts_tx[2], num_pkts_rx[2];
+		var integer temp;
+
+		f_init(ep, true);
+
+		/* Create the first connection in receive only mode */
+		flow[0] := valueof(t_RtpFlow(local_ip_rtp, remote_ip_rtp, 112, "AMR/8000"));
+		flow[0].rtp_cfg := c_RtpemDefaultCfg
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		/* 0014 is the ToC (CMR=AMR4.75) in front of AMR Payload in RTP Payload */
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := '0014'O & f_osmux_gen_expected_rx_rtp_payload(2 /* AMR_FT_2, 5.90 */, c_OsmuxemDefaultCfg.tx_fixed_payload);
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := flow[0].rtp_cfg.rx_payloads[0].fixed_payload;
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "recvonly", flow[0], true);
+
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode */
+		flow[1] := valueof(t_RtpFlow(local_ip_osmux, remote_ip_osmux, 110, "AMR/8000"));
+		flow[1].em.portnr := mp_local_osmux_port;
+		if (crcx_osmux_wildcard) {
+			flow[1].osmux.local_cid := -1;
+		} else {
+			flow[1].osmux.local_cid := 2;
+		}
+		flow[1].osmux.cfg := c_OsmuxemDefaultCfg;
+		f_flow_create_osmux(OsmuxEM, ep, call_id, "recvonly", flow[1], true);
+
+
+		/* The first leg starts transmitting */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(0.5);
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		if (stats_rtp.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from RTP MGW on recvonly connection");
+			mtc.stop;
+		}
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+		if (stats_osmux.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from Osmux MGW on recvonly connection");
+			mtc.stop;
+		}
+
+		/* The second leg starts transmitting a little later */
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_TXONLY);
+		f_sleep(1.0);
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		if (stats_rtp.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from RTP MGW on recvonly connection");
+			mtc.stop;
+		}
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+		if (stats_osmux.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from Osmux MGW on recvonly connection");
+			mtc.stop;
+		}
+
+		/* The first leg will now be switched into bidirectional
+		 * mode, but we do not expect any data comming back yet. */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_flow_modify(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+		/* At this point in time, flow[1](Osmux)->MGW->flow[0](RTP) is active,
+		 * hence if local CID was provided during CRCX we should already be seeing packets
+		 * flowing in one direction, aka stats_rtp.num_pkts_rx sould be >0 after a while: */
+		f_sleep(0.5);
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		if (stats_rtp.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from RTP MGW on recvonly connection");
+			mtc.stop;
+		}
+		if (not crcx_osmux_wildcard and stats_rtp.num_pkts_rx == 0) {
+			setverdict(fail, "received 0 packets Osmux->MGW->RTP");
+			mtc.stop;
+		}
+
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+		if (stats_osmux.num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from Osmux MGW on recvonly connection");
+			mtc.stop;
+		}
+		if (stats_osmux.num_pkts_rx > 0) {
+			setverdict(fail, "received unexpected ", stats_osmux.num_pkts_rx, " packets RTP->MGW->Osmux");
+			mtc.stop;
+		}
+
+		/* When the second leg is switched into bidirectional mode
+		 * as well, then the MGW will connect the two together and
+		 * we should see RTP streams passing through from both ends. */
+		f_osmuxem_mode(OsmuxEM, OSMUXEM_MODE_BIDIR);
+		if (crcx_osmux_wildcard) {
+			/* We set now the local CID in MDCX: */
+			flow[1].osmux.local_cid := 2;
+		}
+		f_flow_modify_osmux(OsmuxEM, ep, call_id, "sendrecv", flow[1]);
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+		num_pkts_tx[0] := stats_rtp.num_pkts_tx;
+		num_pkts_tx[1] := stats_osmux.num_pkts_tx;
+		num_pkts_rx[0] := stats_rtp.num_pkts_rx;
+		num_pkts_rx[1] := stats_osmux.num_pkts_rx;
+		f_sleep(2.0);
+
+		stats_rtp := f_rtpem_stats_get(RTPEM[0]);
+		stats_osmux := f_osmuxem_stats_get(OsmuxEM);
+
+		temp := (stats_rtp.num_pkts_tx - num_pkts_tx[0]) -
+			(stats_osmux.num_pkts_rx - num_pkts_rx[1]) * flow[1].osmux.cfg.batch_size;
+		if (temp > 3 * flow[1].osmux.cfg.batch_size or temp < -3 * flow[1].osmux.cfg.batch_size) {
+			log("stats_rtp: ", stats_rtp);
+			log("stats_osmux: ", stats_osmux);
+			log("old_rtp_tx: ", num_pkts_tx[0]);
+			setverdict(fail, "RTP-Tx vs OSmux-Rx number of packets not within normal parameters (" & int2str(temp) & ")");
+			mtc.stop;
+		}
+
+		temp := (stats_osmux.num_pkts_tx - num_pkts_tx[1]) -
+			((stats_rtp.num_pkts_rx -  num_pkts_rx[0])/ flow[1].osmux.cfg.batch_size);
+		if (temp > 3 or temp < -3) {
+			log("stats_rtp: ", stats_rtp);
+			log("stats_osmux: ", stats_osmux);
+			log("old_osmux_tx: ", num_pkts_tx[1]);
+			setverdict(fail, "Osmux-Tx vs RTP-Rx number of packets not within normal parameters (" & int2str(temp) & ")");
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats_rtp);
+		f_osmuxem_stats_err_check(stats_osmux);
+
+		/* Tear down */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete_osmux(OsmuxEM, ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		setverdict(pass);
+	}
+
+	/*  create one RTP and one OSmux emulations and pass data in both
+	    directions. Create CRCX with wildcard Osmux CID and set it later
+	    during MDCX. This is similar to how MSC sets up the call in AoIP. */
+	testcase TC_two_crcx_mdcx_and_rtp_osmux_wildcard() runs on dummy_CT {
+		f_two_crcx_mdcx_and_rtp_osmux(true, mp_local_ipv4, mp_remote_ipv4,
+					      mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/*  create one RTP and one OSmux emulations and pass data in both
+	    directions. Create CRCX with fixed Osmux CID and keep it during
+	    MDCX. This is similar to how BSC sets up the call in AoIP. */
+	testcase TC_two_crcx_mdcx_and_rtp_osmux_fixed() runs on dummy_CT {
+		f_two_crcx_mdcx_and_rtp_osmux(false, mp_local_ipv4, mp_remote_ipv4,
+					      mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/*  Same as TC_two_crcx_mdcx_and_rtp_osmux_wildcard, but using IPv6. */
+	testcase TC_two_crcx_mdcx_and_rtp_osmux_ipv6() runs on dummy_CT {
+		f_two_crcx_mdcx_and_rtp_osmux(false, mp_local_ipv6, mp_remote_ipv6,
+					      mp_local_ipv6, mp_remote_ipv6);
+	}
+	/*  Same as TC_two_crcx_mdcx_and_rtp_osmux_wildcard, but using IPv4 (RTP) and IPv6 (Osmux). */
+	testcase TC_two_crcx_mdcx_and_rtp_osmux_ipv4_ipv6() runs on dummy_CT {
+		f_two_crcx_mdcx_and_rtp_osmux(false, mp_local_ipv4, mp_remote_ipv4,
+					      mp_local_ipv6, mp_remote_ipv6);
+	}
+	/*  Same as TC_two_crcx_mdcx_and_rtp_osmux_wildcard, but using IPv6 (RTP) and IPv4 (Osmux). */
+	testcase TC_two_crcx_mdcx_and_rtp_osmux_ipv6_ipv4() runs on dummy_CT {
+		f_two_crcx_mdcx_and_rtp_osmux(false, mp_local_ipv6, mp_remote_ipv6,
+					      mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	function f_crcx_and_dlcx_ep_callid_connid(MgcpEndpoint ep, MgcpCallId call_id) runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx_ok(ep, call_id, extract_conn_id(resp));
+
+		setverdict(pass);
+	}
+
+	testcase TC_crcx_dlcx_30ep() runs on dummy_CT {
+		var MgcpEndpoint ep;
+		var MgcpCallId call_id;
+		var integer ep_nr;
+
+		f_init();
+
+		for (ep_nr := 1; ep_nr < 30; ep_nr := ep_nr+1) {
+			if(ep_nr > 15) {
+				ep := c_mgw_ep_rtpbridge & hex2str(int2hex(ep_nr, 2)) & "@" & c_mgw_domain;
+			} else {
+				ep := c_mgw_ep_rtpbridge & hex2str(int2hex(ep_nr, 1)) & "@" & c_mgw_domain;
+			}
+			call_id := int2hex(ep_nr, 2) & '1234'H;
+			f_crcx_and_dlcx_ep_callid_connid(ep, call_id);
+		}
+	}
+
+	/* Test (valid) CRCX followed by (valid) DLCX containing EP+CallId */
+	testcase TC_crcx_and_dlcx_ep_callid() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51233'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx_ok(ep, call_id);
+
+		setverdict(pass);
+	}
+
+	/* Test (valid) CRCX followed by (valid) DLCX containing EP */
+	testcase TC_crcx_and_dlcx_ep() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51232'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx_ok(ep);
+
+		setverdict(pass);
+	}
+
+
+	/* CRCX + DLCX of valid endpoint but invalid call-id */
+	testcase TC_crcx_and_dlcx_ep_callid_inval() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51231'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx(ep, "516", *, 'ffff'H);
+
+		setverdict(pass);
+	}
+
+
+	/* CRCX + DLCX of valid endpoint and call-id but invalid conn-id */
+	testcase TC_crcx_and_dlcx_ep_callid_connid_inval() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51230'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx(ep, "515", *, call_id, 'ffff'H);
+
+		setverdict(pass);
+	}
+
+
+	/* TODO: Double-DLCX (retransmission) */
+	testcase TC_crcx_and_dlcx_retrans() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "5@" & c_mgw_domain;
+		var MgcpCallId call_id := '51229'H;
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := "200",
+				string := "OK"
+			},
+			params:= { },
+			sdp := omit
+		};
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		cmd := ts_DLCX(get_next_trans_id(), ep, call_id);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+		resp := mgcp_transceive_mgw(cmd, rtmpl);
+
+		setverdict(pass);
+	}
+
+	/* transmit RTP streams between two RTP Emulations back-to-back; expect no loss */
+	testcase TC_rtpem_selftest() runs on dummy_CT {
+		var RtpemStats stats[2];
+		var integer local_port := 10000;
+		var integer local_port2 := 20000;
+
+		f_init();
+
+		f_rtpem_bind(RTPEM[0], "127.0.0.1", local_port);
+		f_rtpem_bind(RTPEM[1], "127.0.0.2", local_port2);
+
+		f_rtpem_connect(RTPEM[0], "127.0.0.2", local_port2);
+		f_rtpem_connect(RTPEM[1], "127.0.0.1", local_port);
+
+		log("=== starting");
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+
+		f_sleep(5.0);
+
+		log("=== stopping");
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (not f_rtpem_stats_compare(stats[0], stats[1])) {
+			setverdict(fail, "RTP endpoint statistics don't match");
+			mtc.stop;
+		}
+		setverdict(pass);
+	}
+
+	/* Create one half open connection in receive-only mode. The MGW must accept
+	 * the packets but must not send any. */
+	testcase TC_one_crcx_receive_only_rtp() runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "1@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var RtpemStats stats;
+
+		f_init(ep);
+		flow := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 112, "AMR/8000/1"));
+		flow.em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "recvonly", flow, true);
+
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_flow_delete(RTPEM[0], ep, call_id);
+
+		stats := f_rtpem_stats_get(RTPEM[0]);
+
+		/* Make sure that at least some amount of RTP packets/bytes
+		 * have has been transmitted. The compare values for
+		 * stats.num_pkts_tx and stats.bytes_payload_tx are determined
+		 * using a testrun and the results were devided by 2, so even
+		 * in load situations we should reach the minimum amount of
+		 * required packets/bytes */
+
+		if (stats.num_pkts_tx < 24) {
+			setverdict(fail);
+		}
+		if (stats.bytes_payload_tx < 96) {
+			setverdict(fail);
+		}
+
+		f_rtpem_stats_err_check(stats);
+
+		setverdict(pass);
+	}
+
+	/* Create one connection in loopback mode, test if the RTP packets are
+	 * actually reflected */
+	function f_TC_one_crcx_loopback_rtp(charstring local_ip, charstring remote_ip, boolean one_phase := true) runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "1@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var RtpemStats stats;
+
+		f_init(ep);
+		flow := valueof(t_RtpFlow(local_ip, remote_ip, 112, "GSM-HR-08/8000/1"));
+		flow.em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "loopback", flow, one_phase := one_phase);
+
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(1.0);
+		f_flow_delete(RTPEM[0], ep, call_id);
+
+		stats := f_rtpem_stats_get(RTPEM[0]);
+
+		if (one_phase) {
+			/* osmo-mgw knows both local and remote RTP address. Expect all packets to be reflected. */
+			if (stats.num_pkts_tx != stats.num_pkts_rx) {
+				setverdict(fail);
+			}
+			if (stats.bytes_payload_tx != stats.bytes_payload_rx) {
+				setverdict(fail);
+			}
+		} else {
+			/* osmo-mgw knows only the local RTP address. Expect no packets to be reflected. */
+			if (stats.num_pkts_rx > 0) {
+				setverdict(fail, "stats.num_pkts_rx=", stats.num_pkts_rx, ": osmo-mgw should not send RTP packets to an arbitrary peer");
+			}
+			if (stats.bytes_payload_rx > 0) {
+				setverdict(fail);
+			}
+		}
+
+		f_rtpem_stats_err_check(stats);
+
+		setverdict(pass);
+	}
+
+	/* Create one connection in loopback mode, test if the RTP packets are
+	 * actually reflected */
+	testcase TC_one_crcx_loopback_rtp() runs on dummy_CT {
+		 f_TC_one_crcx_loopback_rtp(mp_local_ipv4, mp_remote_ipv4, one_phase := true)
+	}
+	testcase TC_one_crcx_loopback_rtp_ipv6() runs on dummy_CT {
+		 f_TC_one_crcx_loopback_rtp(mp_local_ipv6, mp_remote_ipv6, one_phase := true)
+	}
+
+	/* Same as above, but we will intenionally not tell the MGW where to
+	 * send the outgoing traffic. The connection is still created in
+	 * loopback mode, so the MGW should take the originating address from
+	 * the incoming RTP packet and send it back to the source */
+	testcase TC_one_crcx_loopback_rtp_implicit() runs on dummy_CT {
+		 f_TC_one_crcx_loopback_rtp(mp_local_ipv6, mp_remote_ipv6, one_phase := false)
+	}
+
+
+	function f_TC_two_crcx_and_rtp(boolean bidir, charstring codec_name_a, integer pt_a,
+					charstring codec_name_b, integer pt_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1226'H;
+		var integer tolerance := 0;
+
+		f_init(ep);
+
+		/* from us to MGW */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, pt_a, codec_name_a));
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* from MGW back to us */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, pt_b, codec_name_b));
+		flow[1].em.portnr := 20000;
+		f_flow_create(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+
+		if (bidir) {
+				f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+				f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+
+				/* Note: When we test bidirectional we may
+				 * loose packets during switch off because
+				 * both ends are transmitting and we only
+				 * can switch them off one by one. */
+				tolerance := 3;
+		} else {
+				f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+				f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		}
+
+		f_sleep(1.0);
+
+		f_flow_delete(RTPEM[1], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[0], ep, call_id);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE); /* OS#3849 */
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (not f_rtpem_stats_compare(stats[0], stats[1], tolerance)) {
+			setverdict(fail, "RTP endpoint statistics don't match");
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		setverdict(pass);
+	}
+
+	/* create two local RTP emulations; create two connections on MGW EP, exchange some data */
+	testcase TC_two_crcx_and_rtp() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp(false, "AMR/8000", 98, "AMR/8000", 98);
+	}
+
+	/* create two local RTP emulations; create two connections on MGW EP,
+	 * exchange some data in both directions */
+	testcase TC_two_crcx_and_rtp_bidir() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp(true, "AMR/8000", 98, "AMR/8000", 98);
+	}
+
+	/* same as TC_two_crcx_and_rtp, but with different PT number on both ends */
+	testcase TC_two_crcx_diff_pt_and_rtp() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp(false, "AMR/8000", 98, "AMR/8000", 112);
+	}
+
+	/* same as TC_two_crcx_and_rtp, but with different PT number on both ends */
+	testcase TC_two_crcx_diff_pt_and_rtp_bidir() runs on dummy_CT {
+		 f_TC_two_crcx_and_rtp(true, "AMR/8000", 98, "AMR/8000", 112);
+	}
+
+	/* create two local RTP emulations and pass data in both directions */
+	function f_tc_two_crcx_mdcx_and_rtp(charstring local_ip_a, charstring remote_ip_a,
+					    charstring local_ip_b, charstring remote_ip_b,
+					    uint7_t payload_type := 3,
+					    charstring codec_name := "GSM/8000/1") runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var integer num_pkts_tx[2];
+		var integer temp;
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, payload_type, codec_name));
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "recvonly", flow[0], true);
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, payload_type, codec_name));
+		flow[1].em.portnr := 20000;
+		f_flow_create(RTPEM[1], ep, call_id, "recvonly", flow[1], true);
+
+		/* The first leg starts transmitting */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* The second leg starts transmitting a little later */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* The first leg will now be switched into bidirectional
+		 * mode, but we do not expect any data comming back yet. */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		num_pkts_tx[1] := stats[1].num_pkts_tx;
+		f_flow_modify(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* When the second leg is switched into bidirectional mode
+		 * as well, then the MGW will connect the two together and
+		 * we should see RTP streams passing through from both ends. */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		num_pkts_tx[0] := stats[0].num_pkts_tx;
+		f_flow_modify(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+		f_sleep(2.0);
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+
+		temp := stats[0].num_pkts_tx - num_pkts_tx[0] - stats[1].num_pkts_rx;
+		if (temp > 3 or temp < -3) {
+			setverdict(fail, "number of packets not within normal parameters:", temp);
+			mtc.stop;
+		}
+
+		temp := stats[1].num_pkts_tx - num_pkts_tx[1] - stats[0].num_pkts_rx;
+		if (temp > 3 or temp < -3) {
+			setverdict(fail, "number of packets not within normal parameters:", temp);
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		/* Tear down */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		setverdict(pass);
+	}
+
+	testcase TC_two_crcx_mdcx_and_rtp() runs on dummy_CT {
+		f_tc_two_crcx_mdcx_and_rtp(mp_local_ipv4, mp_remote_ipv4,
+					   mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	testcase TC_two_crcx_mdcx_and_rtp_ipv6() runs on dummy_CT {
+		f_tc_two_crcx_mdcx_and_rtp(mp_local_ipv6, mp_remote_ipv6,
+					   mp_local_ipv6, mp_remote_ipv6);
+	}
+
+	testcase TC_two_crcx_mdcx_and_rtp_ipv4_ipv6() runs on dummy_CT {
+		f_tc_two_crcx_mdcx_and_rtp(mp_local_ipv4, mp_remote_ipv4,
+					   mp_local_ipv6, mp_remote_ipv6);
+	}
+
+	testcase TC_two_crcx_mdcx_and_rtp_clearmode() runs on dummy_CT {
+		f_tc_two_crcx_mdcx_and_rtp(mp_local_ipv4, mp_remote_ipv4,
+					   mp_local_ipv4, mp_remote_ipv4,
+					   120, /* 3GPP TS 48.103 table 5.4.2.2.1 */
+					   "CLEARMODE/8000");
+	}
+
+	/* Test what happens when two RTP streams from different sources target
+	 * a single connection. Is the unsolicited stream properly ignored? */
+	testcase TC_two_crcx_and_unsolicited_rtp() runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1234321326'H;
+		var integer unsolicited_port := 10002;
+
+		f_init(ep);
+
+		/* from us to MGW */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 98, "AMR/8000"));
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* from MGW back to us */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 98, "AMR/8000"));
+		flow[1].em.portnr := 20000;
+		f_flow_create(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+
+		f_sleep(0.5);
+
+		/* Start inserting unsolicited RTP packets */
+		f_rtpem_bind(RTPEM[2], mp_local_ipv4, unsolicited_port);
+		f_rtpem_connect(RTPEM[2], mp_remote_ipv4, flow[0].mgw.portnr);
+		f_rtpem_mode(RTPEM[2], RTPEM_MODE_TXONLY);
+
+		f_sleep(0.5);
+
+		/* Stop transmitting packets and tear down the flows */
+		f_rtpem_mode(RTPEM[2], RTPEM_MODE_NONE);
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (not f_rtpem_stats_compare(stats[0], stats[1])) {
+			setverdict(fail, "RTP endpoint statistics don't match");
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[0]);
+
+		setverdict(pass);
+	}
+
+	/* Test a handover situation. We first create two connections transmit
+	 * some data bidirectionally. Then we will simulate a handover situation. */
+	testcase TC_two_crcx_and_one_mdcx_rtp_ho() runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[3];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "4@" & c_mgw_domain;
+		var MgcpCallId call_id := '76338'H;
+		var integer port_old;
+
+		f_init(ep);
+
+		/* First connection (BTS) */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 110, "GSM-EFR/8000"));
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* Second connection (PBX) */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 110, "GSM-EFR/8000"));
+		flow[1].em.portnr := 20000;
+		f_flow_create(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+
+		/* Normal rtp flow for one second */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+		f_sleep(1.0);
+
+		/* Now switch the flow over to a new port (BTS) */
+		port_old := flow[0].em.portnr;
+		flow[0].em.portnr := 10002;
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_flow_modify(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+
+		/* When handing over a call, the old source may still keep
+		 * transmitting for a while. We simulate this by injecting
+		 * some unsolicited packets on the behalf of the old source,
+		 * (old remote port) */
+		f_rtpem_bind(RTPEM[2], mp_local_ipv4, port_old);
+		f_rtpem_connect(RTPEM[2], mp_remote_ipv4, flow[0].mgw.portnr);
+		f_rtpem_mode(RTPEM[2], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[2], RTPEM_MODE_NONE);
+		f_sleep(1.0);
+
+		/* Terminate call */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (not f_rtpem_stats_compare(stats[0], stats[1], 5)) {
+			setverdict(fail, "RTP endpoint statistics don't match");
+			mtc.stop;
+		}
+		stats[2] := f_rtpem_stats_get(RTPEM[2]);
+		if (stats[2].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets on old leg after handover");
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+		f_rtpem_stats_err_check(stats[2]);
+
+		setverdict(pass);
+	}
+
+	testcase TC_two_crcx_confecho_sendonly_rtp() runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var RtpemStats stats[2];
+
+		f_init(ep);
+
+		/* "Talker" is sending to MGW and receives echo. */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 112, "GSM-HR-08/8000/1"));
+		flow[0].em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "confecho", flow[0]);
+
+		/* "Listener" receives from MGW. */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 112, "GSM-HR-08/8000/1"));
+		flow[1].em.portnr := 20000;
+		f_flow_create(RTPEM[1], ep, call_id, "sendonly", flow[1]);
+
+
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+		f_sleep(1.0);
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+
+		/* The "Talker" will receive his RTP, so TX must match RX.
+		 * As RTP from "Listener" is ignored, no extra packets shall be received. */
+		if (stats[0].num_pkts_tx != stats[0].num_pkts_rx) {
+			setverdict(fail, "Talker does not receive as many packets as it transmits!");
+		}
+		if (stats[0].bytes_payload_tx != stats[0].bytes_payload_rx) {
+			setverdict(fail, "Talker does not receive as many payload as it transmits!");
+		}
+
+		/* The "Listener" will also receive RTP of the "Talker",
+		 * so TX of "Talker" must match RX of "Listener". */
+		if (stats[0].num_pkts_tx != stats[1].num_pkts_rx) {
+			setverdict(fail, "Listener does not receive as many packets as talker transmits!");
+		}
+		if (stats[0].bytes_payload_tx != stats[1].bytes_payload_rx) {
+			setverdict(fail, "Listener does not receive as many payload as talker transmits!");
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		setverdict(pass);
+	}
+
+
+	/* create two local RTP emulations; create two connections on MGW EP, see if
+	 * exchanged data is converted between ts101318 and rfc5993 */
+	function f_ts101318_rfc5993_rtp_conversion(octetstring pl0, octetstring pl1, charstring fmtp0, charstring fmtp1) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1226'H;
+
+		f_init(ep);
+
+		/* Turn on conversion mode */
+		f_vty_enter_config(MGWVTY);
+		f_vty_transceive(MGWVTY, "mgcp");
+		f_vty_transceive(MGWVTY, "rtp-patch rfc5993hr");
+
+		/* Connection #0 (Bidirectional) */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 111, "GSM-HR-08/8000", fmtp0));
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := pl0;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := pl0;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* Connection #1 (Bidirectional) */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 111, "GSM-HR-08/8000", fmtp1));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg	:= c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.rx_payloads[0].fixed_payload := pl1;
+		flow[1].rtp_cfg.tx_payloads[0].fixed_payload := pl1;
+		f_flow_create(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+
+		/* Send RTP packets to connection #0, receive on connection #1 */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE);
+
+		/* Send RTP packets to connection #1, receive on connection #0 */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+
+		/* Remove RTP flows and check statistics */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+
+		/* Check for errors */
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		/* Turn off conversion mode */
+		f_vty_transceive(MGWVTY, "no rtp-patch rfc5993hr");
+
+		setverdict(pass);
+	}
+
+	const octetstring rtp_hr_gsm_ts101318 := '0b11b3eede60be4e3ec68838c7b5'O;
+	const octetstring rtp_hr_gsm_rfc5993 := '000b11b3eede60be4e3ec68838c7b5'O;
+
+	testcase TC_ts101318_rfc5993_rtp_conversion() runs on dummy_CT {
+		f_ts101318_rfc5993_rtp_conversion(rtp_hr_gsm_ts101318, rtp_hr_gsm_rfc5993, "", "");
+	}
+
+	testcase TC_ts101318_rfc5993_rtp_conversion_fmtp() runs on dummy_CT {
+		f_ts101318_rfc5993_rtp_conversion(rtp_hr_gsm_ts101318, rtp_hr_gsm_rfc5993, "gsm-hr-format=ts101318", "gsm-hr-format=rfc5993");
+	}
+
+	/* create two local RTP emulations; create two connections on MGW EP, see if
+	 * exchanged data is converted between AMR octet-aligned and bandwidth
+	 * efficient-mode */
+	function f_TC_amr_x_x_rtp_conversion(charstring fmtp0, octetstring pl0,
+					     charstring fmtp1a, octetstring pl1a,
+					     charstring fmtp1b, octetstring pl1b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1226'H;
+
+		f_init(ep);
+
+		/* Connection #0 (Bidirectional) */
+		flow[0] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 96, "AMR/8000", fmtp0));
+		/* bind local RTP emulation sockets */
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := pl0;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := pl0;
+		f_flow_create(RTPEM[0], ep, call_id, "sendrecv", flow[0]);
+
+		/* Connection #1 (Bidirectional) */
+		flow[1] := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 112, "AMR/8000", fmtp1a));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg	:= c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.rx_payloads := {};
+		flow[1].rtp_cfg.tx_payloads := {};
+		if (pl1a != ''O) {
+			flow[1].rtp_cfg.rx_payloads := flow[1].rtp_cfg.rx_payloads & {{112, pl1a}};
+			flow[1].rtp_cfg.tx_payloads := flow[1].rtp_cfg.tx_payloads & {{112, pl1a}};
+		}
+
+		/* The second fmtp parameter is to simulate a call agent that offers the transmission both modes. */
+		if (fmtp1b != "") {
+			flow[1].codec_descr := flow[1].codec_descr & {{113, "AMR/8000", fmtp1b}};
+			if (pl1b != ''O) {
+				flow[1].rtp_cfg.rx_payloads := flow[1].rtp_cfg.rx_payloads & {{113, pl1b}};
+				flow[1].rtp_cfg.tx_payloads := flow[1].rtp_cfg.tx_payloads & {{113, pl1b}};
+			}
+		}
+
+		f_flow_create(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+
+		/* Send RTP packets to connection #0, receive on connection #1 */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE);
+
+		/* Send RTP packets to connection #1, receive on connection #0 */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_NONE);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+
+		/* Remove RTP flows and check statistics */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+
+		/* Check for errors */
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		setverdict(pass);
+	}
+
+	/* Note: The hexstrings used with the f_TC_amr_x_x_rtp_conversion test
+	 * functions are real world AMR RTP payloads including AMR header. The
+	 * payloads were extracted from a trace with known good payloads. */
+
+	const octetstring rtp_amr_5_90k_oa := '2014e959f35fdfe5e9667ffbc088818088'O;
+	const octetstring rtp_amr_5_90k_bwe := '217a567cd7f7f97a599ffef022206022'O;
+	const octetstring rtp_amr_5_15k_oa := '100c4e9ba850e30d5d53d04de41e7c'O;
+	const octetstring rtp_amr_5_15k_bwe := '10d3a6ea1438c35754f41379079f'O;
+
+	/* Only one codec on each side */
+	testcase TC_amr_oa_bwe_rtp_conversion() runs on dummy_CT {
+		f_TC_amr_x_x_rtp_conversion("octet-align=1", rtp_amr_5_90k_oa, "octet-align=0", rtp_amr_5_90k_bwe, "", ''O);
+	}
+	testcase TC_amr_oa_oa_rtp_conversion() runs on dummy_CT {
+		f_TC_amr_x_x_rtp_conversion("octet-align=1", rtp_amr_5_15k_oa, "octet-align=1", rtp_amr_5_15k_oa, "", ''O);
+	}
+	testcase TC_amr_bwe_bwe_rtp_conversion() runs on dummy_CT {
+		f_TC_amr_x_x_rtp_conversion("octet-align=0", rtp_amr_5_15k_bwe, "octet-align=0", rtp_amr_5_15k_bwe, "", ''O);
+	}
+
+	/* Only one codec on one side, two codecs (compatibility) on other side. The payloads are the same on both
+	 * sides, so the expectation is that conversion must not be performed. Each test is done with both formats in
+	 * two different configurations.*/
+	testcase TC_amr_oa_oa_no_bwe_rtp_conversion() runs on dummy_CT {
+		f_TC_amr_x_x_rtp_conversion("octet-align=1", rtp_amr_5_15k_oa,
+					    "octet-align=1", rtp_amr_5_15k_oa,
+					    "octet-align=0", ''O); /* We expect to see NO bandwidth efficient packets! */
+	}
+	testcase TC_amr_oa_no_bwe_oa_rtp_conversion() runs on dummy_CT {
+		/* (Same as above but flipped on the opposite side) */
+		f_TC_amr_x_x_rtp_conversion("octet-align=1", rtp_amr_5_15k_oa,
+					    "octet-align=0", ''O, /* We expect to see NO bandwidth efficient packets! */
+					    "octet-align=1", rtp_amr_5_15k_oa);
+	}
+	testcase TC_amr_bwe_bwe_no_oa_rtp_conversion() runs on dummy_CT {
+		f_TC_amr_x_x_rtp_conversion("octet-align=0", rtp_amr_5_15k_bwe,
+					    "octet-align=0", rtp_amr_5_15k_bwe,
+					    "octet-align=1", ''O); /* We expect to see NO octet aligned packets! */
+	}
+	testcase TC_amr_bwe_no_oa_bwe_rtp_conversion() runs on dummy_CT {
+		/* (Same as above but flipped on the opposite side) */
+		f_TC_amr_x_x_rtp_conversion("octet-align=0", rtp_amr_5_15k_bwe,
+					    "octet-align=1", ''O, /* We expect to see NO octet aligned packets! */
+					    "octet-align=0", rtp_amr_5_15k_bwe);
+	}
+
+	/* TODO: Double-DLCX (no retransmission) */
+
+
+
+	/* TODO: AUEP (various) */
+	/* TODO: RSIP (various) */
+	/* TODO: RQNT (various) */
+	/* TODO: EPCF (various) */
+	/* TODO: AUCX (various) */
+	/* TODO: invalid verb (various) */
+
+
+	testcase TC_conn_timeout() runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "1@" & c_mgw_domain;
+		var MgcpCallId call_id := '1225'H;
+		var MGCP_RecvFrom mrf;
+
+		f_init(ep);
+		log("Setting conn-timeout to 1s");
+		f_vty_config(MGWVTY, "mgcp", "conn-timeout 1");
+
+		log("Sending RTP data for 1.5s");
+		flow := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 111, "GSM-HR-08/8000/1"));
+		flow.em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "loopback", flow);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(1.5);
+
+		log("Stopping for 0.5s and resuming");
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+		f_sleep(0.5);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(0.1);
+
+		log("Stopping for 1.5s, expecting to run into timeout");
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE);
+		f_sleep(1.5);
+
+		log("Resuming should fail now");
+		f_rtpem_conn_refuse_expect(RTPEM[0]);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(0.2);
+		f_rtpem_conn_refuse_verify(RTPEM[0]);
+
+		log("Setting conn-timeout back to 0 (disabled)");
+		f_vty_config(MGWVTY, "mgcp", "conn-timeout 0");
+
+		setverdict(pass);
+	}
+
+	/* Test (valid) CRCX followed by (valid) DLCX containing EP (E1) */
+	testcase TC_e1_crcx_and_dlcx_ep() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep := "ds/e1-1/s-1/su16-0@" & c_mgw_domain;
+		var MgcpCallId call_id := '8376F297'H;
+
+		f_init(ep);
+
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+
+		f_dlcx_ok(ep);
+
+		setverdict(pass);
+	}
+
+	/* Test what happens when overlapping endpoints are selected (E1) */
+	testcase TC_e1_crcx_with_overlap() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpEndpoint ep_1 := "ds/e1-1/s-1/su8-0@" & c_mgw_domain;
+		var MgcpEndpoint ep_2 := "ds/e1-1/s-1/su16-0@" & c_mgw_domain;
+		var MgcpCallId call_id_1 := '8376F297'H;
+		var MgcpCallId call_id_2 := '837AF2A7'H;
+
+		f_init();
+
+		/* ep_1 and ep_2 are overlapping, selecting both one after
+		 * another should work fine: */
+		cmd := ts_CRCX(get_next_trans_id(), ep_1, "recvonly", call_id_1);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		f_dlcx_ok(ep_1);
+		cmd := ts_CRCX(get_next_trans_id(), ep_2, "recvonly", call_id_2);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		f_dlcx_ok(ep_2);
+
+		/* When ep_1 is serving a call we can not select ep_2 becaus
+		 * it is overlapping with ep_1 */
+		cmd := ts_CRCX(get_next_trans_id(), ep_1, "recvonly", call_id_1);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		cmd := ts_CRCX(get_next_trans_id(), ep_2, "recvonly", call_id_2);
+		resp := mgcp_transceive_mgw(cmd, ?);
+		if (resp.line.code != "501") {
+			setverdict(fail, "unexpected CRCX returncode, CRCX should fail!");
+		}
+		f_dlcx_ok(ep_1);
+
+		setverdict(pass);
+	}
+
+	/* Create one connection in loopback mode, test if the RTP packets are
+	 * actually reflected */
+	testcase TC_e1_crcx_loopback() runs on dummy_CT {
+		var RtpFlowData flow;
+		var MgcpEndpoint ep := "ds/e1-1/s-1/su16-0@" & c_mgw_domain;
+		var MgcpCallId call_id := '12250989'H;
+		var RtpemStats stats;
+
+		f_init(ep);
+		flow := valueof(t_RtpFlow(mp_local_ipv4, mp_remote_ipv4, 111, "GSM-HR-08/8000/1"));
+		flow.em.portnr := 10000;
+		f_flow_create(RTPEM[0], ep, call_id, "loopback", flow);
+
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(1.0);
+		f_flow_delete(RTPEM[0], ep, call_id);
+
+		stats := f_rtpem_stats_get(RTPEM[0]);
+
+		if (stats.num_pkts_tx != stats.num_pkts_rx) {
+			setverdict(fail);
+		}
+		if (stats.bytes_payload_tx != stats.bytes_payload_rx) {
+			setverdict(fail);
+		}
+
+		f_rtpem_stats_err_check(stats);
+
+		setverdict(pass);
+	}
+
+	/* test valid wildcarded DLCX on an E1 trunk */
+	testcase TC_e1_dlcx_wildcarded() runs on dummy_CT {
+		var template MgcpCommand cmd;
+		var MgcpEndpoint ep;
+		var MgcpCallId call_id := '8376F297'H;
+		var integer n_e1_ts := 4;
+		var StatsDExpects expect;
+
+		f_init();
+
+		/* Open a few E1 timeslots */
+		for (var integer i := 0; i < n_e1_ts; i := i+1) {
+			ep := "ds/e1-1/s-" & int2str(i+1) & "/su16-0@" & c_mgw_domain;
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+			ep := "ds/e1-1/s-" & int2str(i+1) & "/su16-2@" & c_mgw_domain;
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+			ep := "ds/e1-1/s-" & int2str(i+1) & "/su16-4@" & c_mgw_domain;
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+			ep := "ds/e1-1/s-" & int2str(i+1) & "/su16-6@" & c_mgw_domain;
+			cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+			mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		}
+
+		/* Wait until the stats items have settled and then check if we get the expected number (all) of
+		 * occupied endpoints */
+		f_sleep(1.0)
+		expect := {
+			{ name := "TTCN3.trunk.e1-1.common.endpoints.used", mtype := "g", min := n_e1_ts * 4, max := n_e1_ts * 4}
+		};
+		f_statsd_expect(expect);
+
+		/* Send wildcarded DLCX */
+		var template MgcpResponse rtmpl := {
+			line := {
+				code := "200",
+				string := ?
+			},
+			params:= { },
+			sdp := omit
+		};
+		ep := "ds/e1-1/*@" & c_mgw_domain;
+		cmd := ts_DLCX(get_next_trans_id(), ep);
+		mgcp_transceive_mgw(cmd, rtmpl);
+
+		/* Query the statsd once to ensure that intermediate results are pulled from the
+		 * pipeline. The second query (below) will return the actual result. */
+		expect := {
+			{ name := "TTCN3.trunk.e1-1.common.endpoints.used", mtype := "g", min := 0, max := n_e1_ts * 4}
+		};
+		f_statsd_expect(expect);
+
+		/* The second query must return a result with 0 endpoints in use. */
+		expect := {
+			{ name := "TTCN3.trunk.e1-1.common.endpoints.used", mtype := "g", min := 0, max := 0}
+		};
+		f_statsd_expect(expect);
+
+		setverdict(pass);
+	}
+
+	/* test valid CRCX then MDCX with IPv4 address, MGW provides a local IPv4 too */
+	testcase TC_crcx_mdcx_ip4() runs on dummy_CT {
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+		var MgcpConnectionId conn_id;
+
+		f_init(ep);
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		conn_id := extract_conn_id(resp);
+
+		cmd := ts_MDCX(get_next_trans_id(), ep, "sendrecv", call_id, conn_id);
+		cmd.sdp := ts_SDP("127.0.0.2", "127.0.0.1", "23", "42", 2344, { "98" },
+				  { valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, tr_MDCX_ACK);
+
+		if (not ispresent(resp.sdp) or not ispresent(resp.sdp.connection)) {
+			setverdict(fail, "No RemoteConnection info found in MDCX ACK!");
+		}
+		if (not match(resp.sdp.connection, ts_SDP_connection_IP("127.0.0.1", "IP4"))) {
+			setverdict(fail, "Wrong RemoteConnection in MDCX ACK!", resp.sdp.connection);
+		}
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX then MDCX with IPv6 address, MGW provides a local IPv6 too */
+	testcase TC_crcx_mdcx_ip6() runs on dummy_CT {
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+		var MgcpConnectionId conn_id;
+
+		f_init(ep);
+
+		/* create the connection on the MGW */
+		cmd := ts_CRCX(get_next_trans_id(), ep, "recvonly", call_id);
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		conn_id := extract_conn_id(resp);
+
+		cmd := ts_MDCX(get_next_trans_id(), ep, "sendrecv", call_id, conn_id);
+		cmd.sdp := ts_SDP("::2", "::1", "23", "42", 2344, { "98" },
+				  { valueof(ts_SDP_rtpmap(98, "AMR/8000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, tr_MDCX_ACK);
+
+		if (not ispresent(resp.sdp) or not ispresent(resp.sdp.connection)) {
+			setverdict(fail, "No RemoteConnection info found in MDCX ACK!");
+		}
+		if (not match(resp.sdp.connection, ts_SDP_connection_IP("::1", "IP6"))) {
+			setverdict(fail, "Wrong RemoteConnection in MDCX ACK!", resp.sdp.connection);
+		}
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+		setverdict(pass);
+	}
+
+	/* test valid CRCX with IUFP in a given MGCP ConnectionMode ("sendrecv", "recvonly") */
+	function f_tc_crcx_iufp_mode(charstring mgcp_mode) runs on dummy_CT {
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var template MgcpCommand cmd;
+		var MgcpResponse resp;
+		var MgcpCallId call_id := '1234'H;
+		var MgcpConnectionId conn_id;
+
+		f_init(ep);
+
+		/* create the connection on the MGW.
+		 * Start directly in sendrecv mode, with IUFP and a (so far unknown) audio port == 0.
+		 * The MGCP ConnectionMode 'M:' is mandatory in MGCP in a CRCX. Another a=sendrecv exists in SDP. */
+		cmd := ts_CRCX(get_next_trans_id(), ep, mgcp_mode, call_id);
+		cmd.sdp := ts_SDP("127.0.0.2", "127.0.0.1", "23", "42", 0, { "96" },
+				  { valueof(ts_SDP_rtpmap(96, "VND.3GPP.IUFP/16000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, tr_CRCX_ACK);
+		conn_id := extract_conn_id(resp);
+		if (not match(resp.sdp.connection, ts_SDP_connection_IP("127.0.0.1", "IP4"))) {
+			setverdict(fail, "Wrong RemoteConnection in CRCX ACK", resp.sdp.connection);
+		}
+
+		/* Add the audio port in a subsequent MDCX. */
+		cmd := ts_MDCX(get_next_trans_id(), ep, "sendrecv", call_id, conn_id);
+		cmd.sdp := ts_SDP("127.0.0.2", "127.0.0.1", "23", "42", 2344, { "96" },
+				  { valueof(ts_SDP_rtpmap(96, "VND.3GPP.IUFP/16000")),
+				    valueof(ts_SDP_ptime(20)) });
+		resp := mgcp_transceive_mgw(cmd, tr_MDCX_ACK);
+
+		if (not ispresent(resp.sdp) or not ispresent(resp.sdp.connection)) {
+			setverdict(fail, "No RemoteConnection info found in MDCX ACK");
+		}
+		if (not match(resp.sdp.connection, ts_SDP_connection_IP("127.0.0.1", "IP4"))) {
+			setverdict(fail, "Wrong RemoteConnection in MDCX ACK", resp.sdp.connection);
+		}
+
+		/* clean-up */
+		f_dlcx_ok(ep, call_id);
+		setverdict(pass);
+	}
+
+	testcase TC_crcx_iufp_sendrecv() runs on dummy_CT {
+		f_tc_crcx_iufp_mode("sendrecv");
+	}
+
+	testcase TC_crcx_iufp_recvonly() runs on dummy_CT {
+		f_tc_crcx_iufp_mode("recvonly");
+	}
+
+	/* create two local emulations and pass data in both directions */
+	function f_two_crcx_mdcx_data_transfer(MgcpEndpoint ep, MgcpCallId call_id, inout RtpFlowData flow_a,
+					       inout RtpFlowData flow_b, boolean tear_down_rtp := true) runs on dummy_CT {
+		var RtpemStats stats[2];
+		var MgcpResponse resp;
+		var integer num_pkts_tx[2];
+		var integer temp;
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		f_flow_create(RTPEM[0], ep, call_id, "recvonly", flow_a, true);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, regular RTP) */
+		f_flow_create(RTPEM[1], ep, call_id, "recvonly", flow_b, true);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+
+		/* The first leg starts transmitting */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_TXONLY);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* The second leg starts transmitting a little later */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_sleep(1.0);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* The first leg will now be switched into bidirectional
+		 * mode, but we do not expect any data coming back yet. */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		num_pkts_tx[1] := stats[1].num_pkts_tx;
+		f_flow_modify(RTPEM[0], ep, call_id, "sendrecv", flow_a);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[0].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 0");
+			mtc.stop;
+		}
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx_err_disabled != 0) {
+			setverdict(fail, "received packets from MGW on recvonly connection 1");
+			mtc.stop;
+		}
+
+		/* When the second leg is switched into bidirectional mode
+		 * as well, then the MGW will connect the two together and
+		 * we should see RTP streams passing through from both ends. */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		num_pkts_tx[0] := stats[0].num_pkts_tx;
+		f_flow_modify(RTPEM[1], ep, call_id, "sendrecv", flow_b);
+		f_sleep(2.0);
+
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+
+		temp := stats[0].num_pkts_tx - num_pkts_tx[0] - stats[1].num_pkts_rx;
+		if (temp > 3 or temp < -3) {
+			setverdict(fail, "number of packets not within normal parameters:", temp);
+			mtc.stop;
+		}
+
+		temp := stats[1].num_pkts_tx - num_pkts_tx[1] - stats[0].num_pkts_rx;
+		if (temp > 3 or temp < -3) {
+			setverdict(fail, "number of packets not within normal parameters:", temp);
+			mtc.stop;
+		}
+
+		f_rtpem_stats_err_check(stats[0]);
+		f_rtpem_stats_err_check(stats[1]);
+
+		/* Tear down */
+		if (tear_down_rtp) {
+			f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+			f_flow_delete(RTPEM[1], ep, call_id);
+			f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		}
+		setverdict(pass);
+	}
+
+	/* create two local RTP+IuUP emulations and pass data in both directions */
+	function f_tc_two_crcx_mdcx_and_iuup(charstring local_ip_a, charstring remote_ip_a,
+					    IuUP_RabFlowCombinationList rfcl_a,
+					    charstring local_ip_b, charstring remote_ip_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, 96, "VND.3GPP.IUFP/16000"));
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.iuup_mode := true;
+		flow[0].rtp_cfg.iuup_cfg.active_init := true;
+		flow[0].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, IuUP-Init passive) */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, 96, "VND.3GPP.IUFP/16000"));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg := c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.iuup_mode := true;
+		flow[1].rtp_cfg.iuup_cfg.active_init := false;
+
+		f_two_crcx_mdcx_data_transfer(ep, call_id, flow[0], flow[1], true);
+		setverdict(pass);
+	}
+	testcase TC_two_crcx_mdcx_and_iuup() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(0),
+			t_IuUP_RFC_AMR_SID(1),
+			t_IuUP_RFC_AMR_NO_DATA(2)
+		};
+		f_tc_two_crcx_mdcx_and_iuup(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+					   mp_local_ipv4, mp_remote_ipv4);
+	}
+	/* Same as TC_two_crcx_mdcx_and_iuup, but passing unordered RFCI list (ID != position) */
+	testcase TC_two_crcx_mdcx_and_iuup_rfci_unordered() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(1),
+			t_IuUP_RFC_AMR_SID(2),
+			t_IuUP_RFC_AMR_NO_DATA(0)
+		};
+		f_tc_two_crcx_mdcx_and_iuup(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+					   mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* Test that once IuUP->RTP has been set up, if the RTP/IuUP conn is set
+	 * as "recvonly", no more RTP/IuUP packets get out of the MGW. */
+	function f_tc_two_crcx_mdcx_and_iuup_mdcx_recvonly(charstring local_ip_a, charstring remote_ip_a,
+							       IuUP_RabFlowCombinationList rfcl_a,
+							       charstring local_ip_b, charstring remote_ip_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var RtpemStats stats[2];
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, 96, "VND.3GPP.IUFP/16000"));
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.iuup_mode := true;
+		flow[0].rtp_cfg.iuup_cfg.active_init := true;
+		flow[0].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, IuUP-Init passive) */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, 96, "VND.3GPP.IUFP/16000"));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg := c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.iuup_mode := true;
+		flow[1].rtp_cfg.iuup_cfg.active_init := false;
+
+		f_two_crcx_mdcx_data_transfer(ep, call_id, flow[0], flow[1], false);
+
+		/* Now validate we don't receive more RTP packets after setting it to recvonly: */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_flow_modify(RTPEM[1], ep, call_id, "recvonly", flow[1]);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[1]);
+		f_sleep(0.5);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx > stats[0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("received ", stats[1].num_pkts_rx - stats[0].num_pkts_rx, " RTP packets from MGW on recvonly connection 1"));
+		}
+
+		/* Now do the same on the IuUP port: */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_flow_modify(RTPEM[0], ep, call_id, "recvonly", flow[0]);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		f_sleep(0.5);
+		stats[1] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[1].num_pkts_rx > stats[0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("received ", stats[1].num_pkts_rx - stats[0].num_pkts_rx, " IuUP packets from MGW on recvonly connection 1"));
+		}
+
+		/* Tear down */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		setverdict(pass);
+	}
+	testcase TC_two_crcx_mdcx_and_iuup_mdcx_recvonly() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(0),
+			t_IuUP_RFC_AMR_SID(1),
+			t_IuUP_RFC_AMR_NO_DATA(2)
+		};
+		f_tc_two_crcx_mdcx_and_iuup_mdcx_recvonly(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+							  mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* create two local emulations (1 RTP, 1 RTP+IuUP) and pass data in both directions */
+	function f_tc_two_crcx_mdcx_and_iuup_rtp(charstring local_ip_a, charstring remote_ip_a,
+					    IuUP_RabFlowCombinationList rfcl_a,
+					    charstring local_ip_b, charstring remote_ip_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, 96, "VND.3GPP.IUFP/16000"));
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := '4f28959ffeb80181f5c4e83d176c897b4a4e333298333419a493ca63ded6e0'O;
+		/* flow[1].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-BE-RTP->AMR-IUUP*/
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := '08556d944c71a1a081e7ead204244480000ecd82b81118000097c4794e7740'O;
+		flow[0].rtp_cfg.iuup_mode := true;
+		flow[0].rtp_cfg.iuup_cfg.active_init := true;
+		flow[0].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, regular RTP) */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, 112, "AMR/8000"));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg := c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].fixed_payload := '0382155b65131c68682079fab4810911200003b360ae0446000025f11e539dd0'O;
+		/* flow[0].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-IuUP->AMR-BE-RTP*/
+		flow[1].rtp_cfg.rx_payloads[0].fixed_payload := 'f3d3ca2567ffae00607d713a0f45db225ed2938ccca60ccd066924f298f7b5b8'O;
+		flow[1].rtp_cfg.iuup_mode := false;
+
+		f_two_crcx_mdcx_data_transfer(ep, call_id, flow[0], flow[1], true);
+		setverdict(pass);
+	}
+	testcase TC_two_crcx_mdcx_and_iuup_rtp() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(0),
+			t_IuUP_RFC_AMR_SID(1),
+			t_IuUP_RFC_AMR_NO_DATA(2)
+		};
+		f_tc_two_crcx_mdcx_and_iuup_rtp(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+					   mp_local_ipv4, mp_remote_ipv4);
+	}
+	/* Same as TC_two_crcx_mdcTC_two_crcx_mdcx_and_iuup_rtpx_and_iuup, but passing unordered RFCI list (ID != position) */
+	testcase TC_two_crcx_mdcx_and_iuup_rtp_rfci_unordered() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(1),
+			t_IuUP_RFC_AMR_SID(2),
+			t_IuUP_RFC_AMR_NO_DATA(0)
+		};
+		f_tc_two_crcx_mdcx_and_iuup_rtp(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+					   mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* Test that once IuUP->RTP has been set up, if the RTP/IuUP conn is set
+	 * as "recvonly", no more RTP/IuUP packets get out of the MGW. */
+	function f_tc_two_crcx_mdcx_and_iuup_rtp_mdcx_recvonly(charstring local_ip_a, charstring remote_ip_a,
+							       IuUP_RabFlowCombinationList rfcl_a,
+							       charstring local_ip_b, charstring remote_ip_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var RtpemStats stats[2];
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, 96, "VND.3GPP.IUFP/16000"));
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := '4f28959ffeb80181f5c4e83d176c897b4a4e333298333419a493ca63ded6e0'O;
+		/* flow[1].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-BE-RTP->AMR-IUUP*/
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := '08556d944c71a1a081e7ead204244480000ecd82b81118000097c4794e7740'O;
+		flow[0].rtp_cfg.iuup_mode := true;
+		flow[0].rtp_cfg.iuup_cfg.active_init := true;
+		flow[0].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, regular RTP) */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, 112, "AMR/8000"));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg := c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].fixed_payload := '0382155b65131c68682079fab4810911200003b360ae0446000025f11e539dd0'O;
+		/* flow[0].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-IuUP->AMR-BE-RTP*/
+		flow[1].rtp_cfg.rx_payloads[0].fixed_payload := 'f3d3ca2567ffae00607d713a0f45db225ed2938ccca60ccd066924f298f7b5b8'O;
+		flow[1].rtp_cfg.iuup_mode := false;
+
+		f_two_crcx_mdcx_data_transfer(ep, call_id, flow[0], flow[1], false);
+
+		/* Now validate we don't receive more RTP packets after setting it to recvonly: */
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_flow_modify(RTPEM[1], ep, call_id, "recvonly", flow[1]);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[1]);
+		f_sleep(0.5);
+		stats[1] := f_rtpem_stats_get(RTPEM[1]);
+		if (stats[1].num_pkts_rx > stats[0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("received ", stats[1].num_pkts_rx - stats[0].num_pkts_rx, " RTP packets from MGW on recvonly connection 1"));
+		}
+
+		/* Now do the same on the IuUP port: */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_flow_modify(RTPEM[0], ep, call_id, "recvonly", flow[0]);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_TXONLY);
+		f_flow_modify(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+		f_sleep(0.5);
+		stats[0] := f_rtpem_stats_get(RTPEM[0]);
+		f_sleep(0.5);
+		stats[1] := f_rtpem_stats_get(RTPEM[0]);
+		if (stats[1].num_pkts_rx > stats[0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("received ", stats[1].num_pkts_rx - stats[0].num_pkts_rx, " IuUP packets from MGW on recvonly connection 1"));
+		}
+
+		/* Tear down */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		setverdict(pass);
+	}
+	testcase TC_two_crcx_mdcx_and_iuup_rtp_mdcx_recvonly() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(0),
+			t_IuUP_RFC_AMR_SID(1),
+			t_IuUP_RFC_AMR_NO_DATA(2)
+		};
+		f_tc_two_crcx_mdcx_and_iuup_rtp_mdcx_recvonly(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+							      mp_local_ipv4, mp_remote_ipv4);
+	}
+
+	/* Set up Endpoint with 1 IuUP conn and 1 RTP-AMR conn, then MDCX the later to become IuUP. */
+	function f_tc_two_crcx_mdcx_and_iuup_rtp_mdcx_to_iuup(charstring local_ip_a, charstring remote_ip_a,
+					 IuUP_RabFlowCombinationList rfcl_a,
+					 charstring local_ip_b, charstring remote_ip_b) runs on dummy_CT {
+		var RtpFlowData flow[2];
+		var MgcpEndpoint ep := c_mgw_ep_rtpbridge & "2@" & c_mgw_domain;
+		var MgcpCallId call_id := '1227'H;
+		var RtpemStats stats[2][2];
+
+		f_init(ep);
+
+		/* Create the first connection in receive only mode (RNC side, IuUP-Init active) */
+		flow[0] := valueof(t_RtpFlow(local_ip_a, remote_ip_a, 96, "VND.3GPP.IUFP/16000"));
+		flow[0].em.portnr := 10000;
+		flow[0].rtp_cfg := c_RtpemDefaultCfg;
+		flow[0].rtp_cfg.tx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.rx_payloads[0].payload_type := flow[0].codec_descr[0].pt;
+		flow[0].rtp_cfg.tx_payloads[0].fixed_payload := '4f28959ffeb80181f5c4e83d176c897b4a4e333298333419a493ca63ded6e0'O;
+		/* flow[1].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-BE-RTP->AMR-IUUP*/
+		flow[0].rtp_cfg.rx_payloads[0].fixed_payload := '08556d944c71a1a081e7ead204244480000ecd82b81118000097c4794e7740'O;
+		flow[0].rtp_cfg.iuup_mode := true;
+		flow[0].rtp_cfg.iuup_cfg.active_init := true;
+		flow[0].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+
+		/* Create the second connection. This connection will be also
+		 * in receive only mode (CN side, regular RTP) */
+		flow[1] := valueof(t_RtpFlow(local_ip_b, remote_ip_b, 112, "AMR/8000"));
+		flow[1].em.portnr := 20000;
+		flow[1].rtp_cfg := c_RtpemDefaultCfg;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		flow[1].rtp_cfg.tx_payloads[0].fixed_payload := '0382155b65131c68682079fab4810911200003b360ae0446000025f11e539dd0'O;
+		/* flow[0].rtp_cfg.rx_payloads[0].fixed_payload converted AMR-IuUP->AMR-BE-RTP*/
+		flow[1].rtp_cfg.rx_payloads[0].fixed_payload := 'f3d3ca2567ffae00607d713a0f45db225ed2938ccca60ccd066924f298f7b5b8'O;
+		flow[1].rtp_cfg.iuup_mode := false;
+
+		f_two_crcx_mdcx_data_transfer(ep, call_id, flow[0], flow[1], false);
+		setverdict(pass);
+
+		/* Stop sending further pkts to RTPEM[1], to avoid race conditions where RTP is sent while we
+		 * reconfigure MGW (and our RTPEM) for IuUP:
+		 */
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_RXONLY);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_RXONLY);
+		f_sleep(0.5);
+
+		/* Modify the AMR side to also do IuUP */
+		flow[1].codec_descr := {{
+			pt := 96,
+			codec := "VND.3GPP.IUFP/16000",
+			fmtp := omit
+		}};
+		flow[1].rtp_cfg.iuup_mode := true;
+		flow[1].rtp_cfg.iuup_cfg.active_init := false;
+		flow[1].rtp_cfg.iuup_cfg.rab_flow_combs := rfcl_a;
+		flow[1].rtp_cfg.tx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		/* Send whatever payload is expected by the other RTPEM, now without AMR-BE_RTP<->AMR-IUUP conversion: */
+		flow[1].rtp_cfg.tx_payloads[0].fixed_payload := flow[0].rtp_cfg.rx_payloads[0].fixed_payload;
+		flow[1].rtp_cfg.rx_payloads[0].payload_type := flow[1].codec_descr[0].pt;
+		/* Expect whatever payload is sent by the other RTPEM, now without AMR-BE_RTP<->AMR-IUUP conversion: */
+		flow[1].rtp_cfg.rx_payloads[0].fixed_payload := flow[0].rtp_cfg.tx_payloads[0].fixed_payload;
+		f_flow_modify(RTPEM[1], ep, call_id, "sendrecv", flow[1]);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_BIDIR);
+		f_sleep(1.0);
+		f_rtpem_mode(RTPEM[1], RTPEM_MODE_BIDIR);
+
+		/* Now, if MGW would keep sending RTP instead of expected IuUP, then that would make the RTPEM[1]
+		 * component to fail, since it would error trying to decode an RTP pkt as IuUP.
+		 * We simply need to make sure some packets are being forwarded to it:
+		 */
+		stats[0][0] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1][0] := f_rtpem_stats_get(RTPEM[1]);
+		f_sleep(1.0);
+		stats[0][1] := f_rtpem_stats_get(RTPEM[0]);
+		stats[1][1] := f_rtpem_stats_get(RTPEM[1]);
+
+		f_rtpem_stats_err_check(stats[0][1]);
+		f_rtpem_stats_err_check(stats[1][1]);
+		if (stats[0][1].num_pkts_rx == stats[0][0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("No packets received in connection 0 after MDCX"));
+		}
+		if (stats[1][1].num_pkts_rx == stats[1][0].num_pkts_rx) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("No packets received in connection 1 after MDCX"));
+		}
+
+		/* Tear down */
+		f_flow_delete(RTPEM[0], mode := RTPEM_MODE_RXONLY);
+		f_flow_delete(RTPEM[1], ep, call_id);
+		f_rtpem_mode(RTPEM[0], RTPEM_MODE_NONE); /* OS#3849 */
+		setverdict(pass);
+	}
+	testcase TC_two_crcx_mdcx_and_iuup_rtp_mdcx_to_iuup() runs on dummy_CT {
+		var template (value) IuUP_RabFlowCombinationList rfcl := {
+			t_IuUP_RFC_AMR_12_2(0),
+			t_IuUP_RFC_AMR_SID(1),
+			t_IuUP_RFC_AMR_NO_DATA(2)
+		};
+		f_tc_two_crcx_mdcx_and_iuup_rtp_mdcx_to_iuup(mp_local_ipv4, mp_remote_ipv4, valueof(rfcl),
+							     mp_local_ipv4, mp_remote_ipv4);
+	}
+	control {
+		execute(TC_selftest());
+		execute(TC_auep_null());
+		execute(TC_crcx());
+		execute(TC_crcx_no_lco());
+		execute(TC_crcx_noprefix());
+		execute(TC_crcx_unsupp_mode());
+		execute(TC_crcx_osmo_ign());
+		execute(TC_crcx_early_bidir_mode());
+		execute(TC_crcx_unsupp_param());
+		execute(TC_crcx_missing_callid());
+		execute(TC_crcx_missing_mode());
+		execute(TC_crcx_unsupp_packet_intv());
+		execute(TC_crcx_illegal_double_lco());
+		execute(TC_crcx_sdp());
+		execute(TC_crcx_wildcarded());
+		execute(TC_crcx_wildcarded_exhaust());
+		execute(TC_mdcx_without_crcx());
+		execute(TC_dlcx_without_crcx());
+		execute(TC_dlcx_non_existant_ep());
+		execute(TC_mdcx_wildcarded());
+		execute(TC_dlcx_wildcarded());
+		execute(TC_crcx_and_dlcx_ep_callid_connid());
+		execute(TC_crcx_and_dlcx_ep_callid());
+		execute(TC_crcx_and_dlcx_ep());
+		execute(TC_crcx_and_dlcx_ep_callid_inval());
+		execute(TC_crcx_and_dlcx_ep_callid_connid_inval());
+		execute(TC_crcx_and_dlcx_retrans());
+
+		execute(TC_crcx_osmux_wildcard());
+		execute(TC_crcx_osmux_fixed());
+		execute(TC_crcx_osmux_fixed_twice());
+		execute(TC_crcx_osmux_257());
+		execute(TC_one_crcx_receive_only_osmux());
+		execute(TC_one_crcx_loopback_osmux());
+		execute(TC_two_crcx_and_rtp_osmux());
+		execute(TC_two_crcx_and_rtp_osmux_bidir());
+		execute(TC_two_crcx_and_rtp_osmux_bidir_amr_bwe());
+		execute(TC_two_crcx_mdcx_and_rtp_osmux_wildcard());
+		execute(TC_two_crcx_mdcx_and_rtp_osmux_fixed());
+
+		execute(TC_crcx_dlcx_30ep());
+
+		execute(TC_rtpem_selftest());
+
+		execute(TC_one_crcx_receive_only_rtp());
+		execute(TC_one_crcx_loopback_rtp());
+		execute(TC_one_crcx_loopback_rtp_ipv6());
+		execute(TC_two_crcx_and_rtp());
+		execute(TC_two_crcx_and_rtp_bidir());
+		execute(TC_two_crcx_diff_pt_and_rtp());
+		execute(TC_two_crcx_diff_pt_and_rtp_bidir());
+		execute(TC_two_crcx_mdcx_and_rtp());
+		execute(TC_two_crcx_and_unsolicited_rtp());
+		execute(TC_two_crcx_and_one_mdcx_rtp_ho());
+		execute(TC_two_crcx_confecho_sendonly_rtp());
+		execute(TC_ts101318_rfc5993_rtp_conversion());
+		execute(TC_ts101318_rfc5993_rtp_conversion_fmtp());
+		execute(TC_amr_oa_bwe_rtp_conversion());
+		execute(TC_amr_oa_oa_rtp_conversion());
+		execute(TC_amr_bwe_bwe_rtp_conversion());
+		execute(TC_amr_oa_oa_no_bwe_rtp_conversion());
+		execute(TC_amr_oa_no_bwe_oa_rtp_conversion());
+		execute(TC_amr_bwe_bwe_no_oa_rtp_conversion());
+		execute(TC_amr_bwe_no_oa_bwe_rtp_conversion());
+
+		execute(TC_conn_timeout());
+
+		execute(TC_e1_crcx_and_dlcx_ep());
+		execute(TC_e1_crcx_with_overlap());
+		execute(TC_e1_crcx_loopback());
+		execute(TC_e1_dlcx_wildcarded());
+
+		execute(TC_crcx_mdcx_ip4());
+		execute(TC_crcx_mdcx_ip6());
+		execute(TC_crcx_iufp_sendrecv());
+		execute(TC_crcx_iufp_recvonly());
+		execute(TC_two_crcx_mdcx_and_rtp_ipv4_ipv6());
+		execute(TC_two_crcx_mdcx_and_rtp_ipv6());
+		execute(TC_two_crcx_and_rtp_osmux_bidir_ipv6());
+		execute(TC_two_crcx_and_rtp_osmux_bidir_ipv4_ipv6());
+		execute(TC_two_crcx_and_rtp_osmux_bidir_ipv6_ipv4());
+		execute(TC_two_crcx_mdcx_and_rtp_osmux_ipv6());
+		execute(TC_two_crcx_mdcx_and_rtp_osmux_ipv4_ipv6());
+		execute(TC_two_crcx_mdcx_and_rtp_osmux_ipv6_ipv4());
+
+		execute(TC_two_crcx_mdcx_and_iuup());
+		execute(TC_two_crcx_mdcx_and_iuup_rfci_unordered());
+		execute(TC_two_crcx_mdcx_and_iuup_mdcx_recvonly());
+		execute(TC_two_crcx_mdcx_and_iuup_rtp());
+		execute(TC_two_crcx_mdcx_and_iuup_rtp_rfci_unordered());
+		execute(TC_two_crcx_mdcx_and_iuup_rtp_mdcx_recvonly());
+		execute(TC_two_crcx_mdcx_and_iuup_rtp_mdcx_to_iuup());
+
+		execute(TC_two_crcx_mdcx_and_rtp_clearmode());
+
+		/* Note: This testcase will trigger an OSMO_ASSERT() bug in
+		 * older versions of osmo-mgw. This eventually leads into
+		 * a failure of all subsequent testcases, so it is important
+		 * not to add new testcaes after this one. */
+		execute(TC_one_crcx_loopback_rtp_implicit());
+	}
+}

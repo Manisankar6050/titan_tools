@@ -1,0 +1,784 @@
+module SIP_Tests {
+
+/* osmo-sip-connector test suite in TTCN-3
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+import from Misc_Helpers all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+import from Osmocom_CTRL_Adapter all;
+
+import from TELNETasp_PortType all;
+import from Osmocom_VTY_Functions all;
+
+import from MNCC_Emulation all;
+import from MNCC_Types all;
+
+import from SDP_Types all;
+import from SDP_Templates all;
+
+import from SIP_Emulation all;
+import from SIPmsg_Types all;
+import from SIP_Templates all;
+
+modulepar {
+	charstring mp_local_host := "127.0.0.2";
+	charstring mp_osmosip_host := "127.0.0.1";
+	integer mp_osmosip_port_ctrl := -1; /* RFU */
+	charstring mp_mncc := "/tmp/mncc";
+}
+
+type component test_CT extends CTRL_Adapter_CT {
+	var MNCC_Emulation_CT vc_MNCC;
+	var SIP_Emulation_CT vc_SIP;
+
+	port TELNETasp_PT SIPVTY;
+}
+
+type component ConnHdlr extends SIP_ConnHdlr, MNCC_ConnHdlr {
+	var ConnHdlrPars g_pars;
+	timer g_Tguard;
+}
+
+type record ConnHdlrPars {
+	float t_guard,
+	CallPars g_cp optional
+}
+
+type record CallPars {
+	boolean is_mo,
+	charstring calling,
+	charstring called,
+
+	uint32_t mncc_call_id optional,
+	CallParsComputed comp optional,
+
+	charstring sip_rtp_addr,
+	uint16_t sip_rtp_port,
+	charstring cn_rtp_addr,
+	uint16_t cn_rtp_port,
+
+	/* Send SDP to MNCC, and expect to receive SDP from MNCC. mncc_with_sdp := false tests legacy compatibility to
+	 * the time when we did not include SDP in MNCC messages. mncc_with_sdp := true expects SDP to pass through the
+	 * SUT osmo-sip-connector unchanged. */
+	boolean mncc_with_sdp
+}
+
+type record CallParsComputed {
+	CallidString sip_call_id,
+	SipAddr sip_url_ext,
+	SipAddr sip_url_gsm,
+	charstring sip_body,
+	integer sip_seq_nr
+}
+
+private template (value) CallPars t_CallPars(boolean is_mo, boolean mncc_with_sdp := true) := {
+	is_mo := is_mo,
+	calling := "12345",
+	called := "98766",
+
+	mncc_call_id := omit,
+	comp := omit,
+	sip_rtp_addr := "1.2.3.4",
+	sip_rtp_port := 1234,
+	cn_rtp_addr := "5.6.7.8",
+	cn_rtp_port := 5678,
+	mncc_with_sdp := mncc_with_sdp
+}
+
+private function f_CallPars_compute(inout CallPars cp) {
+	if (cp.is_mo) {
+		cp.comp.sip_url_ext := valueof(ts_SipAddr(ts_HostPort(mp_local_host, 5060),
+							  ts_UserInfo(cp.called)));
+		cp.comp.sip_url_gsm := valueof(ts_SipAddr(ts_HostPort(mp_osmosip_host, 5060),
+							  ts_UserInfo(cp.calling)));
+		cp.mncc_call_id := f_sip_rand_seq_nr();
+	} else {
+		cp.comp.sip_url_ext := valueof(ts_SipAddr(ts_HostPort(mp_local_host, 5060),
+							  ts_UserInfo(cp.calling)));
+		cp.comp.sip_url_gsm := valueof(ts_SipAddr(ts_HostPort(mp_osmosip_host, 5060),
+							  ts_UserInfo(cp.called)));
+		cp.comp.sip_call_id := hex2str(f_rnd_hexstring(15));
+	}
+	cp.comp.sip_seq_nr := f_sip_rand_seq_nr();
+	cp.comp.sip_body := "";
+}
+
+function f_init_mncc(charstring id) runs on test_CT {
+	id := id & "-MNCC";
+	var MnccOps ops := {
+		create_cb := refers(MNCC_Emulation.ExpectedCreateCallback),
+		unitdata_cb := refers(MNCC_Emulation.DummyUnitdataCallback)
+	};
+
+	vc_MNCC := MNCC_Emulation_CT.create(id) alive;
+	map(vc_MNCC:MNCC, system:MNCC_CODEC_PT);
+	vc_MNCC.start(MNCC_Emulation.main(ops, id, mp_mncc, true));
+}
+
+function f_init() runs on test_CT {
+	//f_ipa_ctrl_start_client(mp_osmosip_host, mp_osmosip_port_ctrl);
+	f_init_mncc("SIP_Test");
+	log("end of f_init_mncc");
+	f_init_sip(vc_SIP, "SIP_Test_SIP_EMU");
+	log("end of f_init_sip");
+
+	map(self:SIPVTY, system:SIPVTY);
+	f_vty_set_prompts(SIPVTY);
+	f_vty_transceive(SIPVTY, "enable");
+	log("end of f_init");
+}
+
+type function void_fn(charstring id) runs on ConnHdlr;
+
+function f_start_handler(void_fn fn, ConnHdlrPars pars)
+runs on test_CT return ConnHdlr {
+	var ConnHdlr vc_conn;
+	var charstring id := testcasename();
+
+	vc_conn := ConnHdlr.create(id) alive;
+
+	connect(vc_conn:SIP, vc_SIP:CLIENT);
+	connect(vc_conn:SIP_PROC, vc_SIP:CLIENT_PROC);
+
+	connect(vc_conn:MNCC, vc_MNCC:MNCC_CLIENT);
+	connect(vc_conn:MNCC_PROC, vc_MNCC:MNCC_PROC);
+
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+private altstep as_Tguard() runs on ConnHdlr {
+	[] g_Tguard.timeout {
+		setverdict(fail, "Tguard timeout");
+		mtc.stop;
+	}
+}
+
+private function f_handler_init(void_fn fn, charstring id, ConnHdlrPars pars)
+runs on ConnHdlr {
+	g_pars := pars;
+	g_Tguard.start(pars.t_guard);
+	activate(as_Tguard());
+
+	/* call the user-supied test case function */
+	fn.apply(id);
+}
+
+
+template (value) ConnHdlrPars t_Pars := {
+	t_guard := 30.0,
+	g_cp := omit
+}
+
+altstep as_SIP_expect_resp(template PDU_SIP_Response sip_expect) runs on ConnHdlr
+{
+	[] SIP.receive(sip_expect);
+	[] SIP.receive {
+		log("FAIL: expected SIP message ", sip_expect);
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received unexpected SIP message");
+	}
+}
+
+function f_SIP_expect_req(template PDU_SIP_Request sip_expect) runs on ConnHdlr return PDU_SIP_Request
+{
+	var PDU_SIP_Request rx;
+	alt {
+		[] SIP.receive(sip_expect) -> value rx;
+		[] SIP.receive {
+			log("FAIL: expected SIP message ", sip_expect);
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Received unexpected SIP message");
+		}
+	}
+	return rx;
+}
+
+/* Update 'last_sdp', and match with expectation of what the current SDP should be.
+ * Useful to ensure that MNCC or SIP send and possibly resend only the expected SDP.
+ * last_sdp keeps the last non-empty rx_sdp, across multiple check_sdp() invocations.
+ * rx_sdp is the SDP charstring just received. If it is nonempty, update last_sdp to rx_sdp.
+ * After updating last_sdp as appropriate, match last_sdp with expect_sdp. */
+private function check_sdp(inout charstring last_sdp,
+			   charstring rx_sdp,
+			   template charstring expect_sdp)
+{
+	/* If there is new SDP, store it. */
+	if (lengthof(rx_sdp) > 0) {
+		if (last_sdp != rx_sdp) {
+			log("SDP update from ", last_sdp, " to ", rx_sdp);
+		}
+
+		/* If MNCC sent SDP data, remember it as the last valid SDP */
+		last_sdp := rx_sdp;
+	}
+	/* Validate expectations of the SDP data */
+	if (not match(last_sdp, expect_sdp)) {
+		log("FAIL: expected SDP ", expect_sdp, " but got ", last_sdp);
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "unexpected SDP");
+	}
+}
+
+/* Establish a mobile terminated call described in 'cp' */
+function f_establish_mt(inout CallPars cp) runs on ConnHdlr {
+	var template (value) From from_addr := ts_From(cp.comp.sip_url_ext.addr, cp.comp.sip_url_ext.params);
+	var template (value) To to_addr := ts_To(cp.comp.sip_url_gsm.addr, cp.comp.sip_url_gsm.params);
+	var template (value) Via via := ts_Via_from(cp.comp.sip_url_ext.addr.nameAddr.addrSpec.hostPort);
+	var template (present) From from_addr_exp := tr_From(tr_Addr_Union_from_val(cp.comp.sip_url_ext.addr), *);
+	var template (present) To to_addr_exp := tr_To(tr_Addr_Union_from_val(cp.comp.sip_url_gsm.addr), *);
+	var template (present) Via via_exp := tr_Via_from(f_tr_HostPort_opt_defport(from_addr_exp.addressField.nameAddr.addrSpec.hostPort));
+	var MNCC_PDU mncc;
+
+	/* The last SDP that the MSC received via MNCC from osmo-sip-connector */
+	var charstring sdp_to_msc := "";
+	/* At first, allow any empty and nonempty SDP. As the test progresses, this may expect specific SDP instead. */
+	var template charstring expect_sdp_to_msc := *;
+
+	/* If cp.mncc_with_sdp == true, expect SDP forwarding like this:
+	 *
+	 *  SDP1: SIP agent's RTP and codec info
+	 *  SDP2: osmo-msc's RTP and codec info
+	 *
+	 *            MNCC   osmo-sip-connector   SIP
+	 *                         |<--SDP1-----           SIP Invite
+	 *                         |----------->           SIP (Invite) Trying
+	 *           <--SDP1-------|                       MNCC SETUP req
+	 *           ------------->|                       MNCC CALL CONF ind
+	 *           <-------------|                       MNCC RTP CREATE (SDP optional, still unchanged from SDP1)
+	 *           -------SDP2-->|                       MNCC RTP CREATE
+	 *           ------------->|                       MNCC ALERT ind
+	 *                         |-------------->        SIP (Invite) Ringing
+	 *  (MT picks up)          |
+	 *           ------------->|                       MNCC SETUP CNF
+	 *           <-------------|                       MNCC RTP CONNECT (SDP optional, still unchanged from SDP1)
+	 *                         |--------SDP2-->        SIP (Invite) OK
+	 *                         |<--------------        SIP ACK
+	 *           <-------------|                       MNCC SETUP COMPL (SDP optional, still unchanged from SDP1)
+	 */
+
+	/* Ask MNCC_Emulation to "expect" a call to the given called number */
+	f_create_mncc_expect(cp.called);
+
+	/* OSC <- SIP: A party sends SIP invite for a MT-call into OSC */
+	SIP.send(ts_SIP_INVITE(cp.comp.sip_call_id, from_addr, to_addr,
+			       via,
+			       ts_Contact_SipAddr(cp.comp.sip_url_ext),
+			       cp.comp.sip_seq_nr,
+			       body := cp.comp.sip_body));
+	if (cp.mncc_with_sdp) {
+		/* We just sent SDP via SIP, now expect the same SDP in MNCC to the MSC */
+		expect_sdp_to_msc := cp.comp.sip_body;
+	}
+
+	/* OSC -> SIP */
+	as_SIP_expect_resp(tr_SIP_Response(cp.comp.sip_call_id, from_addr_exp, to_addr_exp,
+					   via_exp,
+					   *,
+					   "INVITE", 100, ?, "Trying", *));
+
+	alt {
+	/* MSC <- OSC: OSC generates MNCC_SETUP_REQ from INVITE */
+	[] MNCC.receive(tr_MNCC_SETUP_req) -> value mncc {
+			cp.mncc_call_id := mncc.u.signal.callref;
+			/* Expect the SDP sent via SIP to arrive in MNCC */
+			check_sdp(sdp_to_msc, mncc.u.signal.sdp, expect_sdp_to_msc);
+		}
+	[] SIP.receive {
+		setverdict(fail, "Received unexpected SIP response");
+		SIP.send(ts_SIP_ACK(to_addr.addressField.nameAddr.addrSpec,
+				    cp.comp.sip_call_id,
+				    from_addr, to_addr,
+				    via,
+				    cp.comp.sip_seq_nr, omit));
+		mtc.stop;
+		}
+	}
+
+	/* MSC -> OSC: After MS sends CALL CONF in response to SETUP */
+	MNCC.send(ts_MNCC_CALL_CONF_ind(cp.mncc_call_id));
+	/* MSC <- OSC: OSC asks MSC to create RTP socket */
+	MNCC.receive(tr_MNCC_RTP_CREATE(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.rtp.sdp, expect_sdp_to_msc);
+	}
+
+	/* MSC -> OSC: SDP that the MSC will send via MNCC */
+	var charstring cn_sdp := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+		f_sdp_addr2addrtype(cp.cn_rtp_addr) & " " & cp.cn_rtp_addr &
+		"\r\nt=0 0\r\nm=audio " & int2str(cp.cn_rtp_port) &
+		" RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	/* OSC -> SIP: what SDP to expect in SIP from osmo-sip-connector */
+	var template charstring expect_sdp_to_sip := pattern "*" & cp.cn_rtp_addr & "*";
+
+	mncc := valueof(ts_MNCC_RTP_CREATE(cp.mncc_call_id));
+	mncc.u.rtp.is_ipv6 := f_addr_is_ipv6(cp.cn_rtp_addr);
+	mncc.u.rtp.ip := f_addrstr2addr(cp.cn_rtp_addr);
+	mncc.u.rtp.rtp_port := cp.cn_rtp_port;
+	if (cp.mncc_with_sdp) {
+		/* MSC -> OSC: tell OSC our RTP info in SDP form */
+		mncc.u.rtp.sdp := cn_sdp;
+		/* OSC -> SIP: and expect it unchanged on SIP later, but allow osmo-sip-connector to append an
+		 * "a=sendrecv;" */
+		expect_sdp_to_sip := pattern cn_sdp & "*";
+	}
+	MNCC.send(mncc);
+
+	/* MSC -> OSC: After MS is ringing and sent CC ALERTING */
+	MNCC.send(ts_MNCC_ALERT_ind(cp.mncc_call_id));
+
+	/* Now expect SIP response "Ringing" back to MO, containing the same SDP information as in the MNCC RTP CREATE
+	 * sent to OSC above */
+	SIP.clear;
+
+	/* 180 Ringing should not contain any SDP. */
+	as_SIP_expect_resp(tr_SIP_Response(cp.comp.sip_call_id, from_addr_exp, to_addr_exp,
+					   via_exp,
+					   *,
+					   "INVITE", 180, ?, "Ringing", omit));
+
+	/* MSC -> OSC: After MT user has picked up and sent CC CONNECT */
+	MNCC.send(ts_MNCC_SETUP_CNF(cp.mncc_call_id));
+
+	SIP.clear;
+	/* MSC <- OSC: OSC asks MSC to connect its RTP stream to remote end */
+	MNCC.receive(tr_MNCC_RTP_CONNECT(cp.mncc_call_id, f_addrstr2addr(cp.sip_rtp_addr), cp.sip_rtp_port))
+		-> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.rtp.sdp, expect_sdp_to_msc);
+	}
+
+	/* OSC -> SIP: OSC confirms call establishment to SIP side */
+	as_SIP_expect_resp(tr_SIP_Response(cp.comp.sip_call_id, from_addr_exp, to_addr_exp,
+					   via_exp,
+					   contact := ?,
+					   method := "INVITE", status_code := 200,
+					   seq_nr := ?, reason := "OK",
+					   body := expect_sdp_to_sip));
+
+	/* OSC <- SIP: SIP world acknowledges "200 OK" */
+	SIP.send(ts_SIP_ACK(to_addr.addressField.nameAddr.addrSpec,
+			    cp.comp.sip_call_id,
+			    from_addr, to_addr,
+			    via,
+			    cp.comp.sip_seq_nr, omit));
+	/* MSC <- OSC: OSC sends SETUP COMPL to MNCC (which triggers CC CONNECT ACK */
+	MNCC.receive(tr_MNCC_SETUP_COMPL_req(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.signal.sdp, expect_sdp_to_msc);
+	}
+}
+
+/* Establish a mobile originated call described in 'cp' */
+function f_establish_mo(inout CallPars cp) runs on ConnHdlr {
+	var MNCC_number dst := valueof(ts_MNCC_number(cp.called, GSM48_TON_UNKNOWN));
+	var MNCC_number src := valueof(ts_MNCC_number(cp.calling, GSM48_TON_UNKNOWN));
+
+	var template (value) From from_addr := ts_From(cp.comp.sip_url_gsm.addr, cp.comp.sip_url_gsm.params);
+	var template (value) To to_addr := ts_To(cp.comp.sip_url_ext.addr, cp.comp.sip_url_ext.params);
+	var template (value) Via via := ts_Via_from(cp.comp.sip_url_gsm.addr.nameAddr.addrSpec.hostPort);
+	var template (present) From from_addr_exp := tr_From(tr_Addr_Union_from_val(cp.comp.sip_url_gsm.addr), *);
+	var template (present) To to_addr_exp := tr_To(tr_Addr_Union_from_val(cp.comp.sip_url_ext.addr), *);
+	var template (present) Via via_exp := tr_Via_from(f_tr_HostPort_opt_defport(from_addr_exp.addressField.nameAddr.addrSpec.hostPort));
+
+
+	var PDU_SIP_Request sip_req;
+	var integer seq_nr;
+	var MNCC_PDU mncc;
+
+	/* The last SDP that the MSC received via MNCC from osmo-sip-connector */
+	var charstring sdp_to_msc := "";
+	/* At first, allow any empty and nonempty SDP. As the test progresses, this may expect specific SDP instead. */
+	var template charstring expect_sdp_to_msc := *;
+
+	/* If cp.mncc_with_sdp == true, expect SDP forwarding like this:
+	 *
+	 *  SDP1: osmo-msc's RTP and codec info
+	 *  SDP2: SIP agent's RTP and codec info
+	 *
+	 *            MNCC   osmo-sip-connector   SIP
+	 *           -------SDP1-->|                       MNCC SETUP ind
+	 *           <-------------|                       MNCC RTP CREATE (?)
+	 *                         |-----SDP1-->           SIP Invite
+	 *                         |<-----------           SIP (Invite) Trying
+	 *           <-------------|                       MNCC CALL PROC req
+	 *                         |<-----------           SIP (Invite) Ringing
+	 *           <-------------|                       MNCC ALERT req
+	 *                         |        (MT picks up)
+	 *                         |<--SDP2-----           SIP (Invite) OK
+	 *           <--SDP2-------|                       MNCC RTP CONNECT (SDP optional, still unchanged from SDP2)
+	 *           <-------------|                       MNCC SETUP rsp (SDP optional, still unchanged from SDP2)
+	 *           ------------->|                       MNCC SETUP COMPL ind (SDP optional, still unchanged from SDP1)
+	 *                         |------------>          SIP ACK
+	 */
+
+	var charstring cn_sdp := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+		f_sdp_addr2addrtype(cp.cn_rtp_addr) & " " & cp.cn_rtp_addr &
+		"\r\nt=0 0\r\nm=audio " & int2str(cp.cn_rtp_port) &
+		" RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+
+	f_create_sip_expect(cp.comp.sip_url_ext.addr.nameAddr.addrSpec);
+
+	/* MSC -> OSC: MSC sends SETUP.ind after CC SETUP was received from MS */
+	mncc := valueof(ts_MNCC_SETUP_ind(cp.mncc_call_id, dst, src, "262420123456789"));
+	if (cp.mncc_with_sdp) {
+		mncc.u.signal.sdp := cn_sdp;
+	}
+	MNCC.send(mncc);
+
+	/* MSC <- OSC: Create GSM side RTP socket */
+	MNCC.receive(tr_MNCC_RTP_CREATE(cp.mncc_call_id)) {
+		mncc := valueof(ts_MNCC_RTP_CREATE(cp.mncc_call_id));
+		mncc.u.rtp.payload_msg_type := oct2int('0300'O);
+		/* FIXME: makes no sense to send cp.cn_rtp_addr back to the cn. */
+		mncc.u.rtp.is_ipv6 := f_addr_is_ipv6(cp.cn_rtp_addr);
+		mncc.u.rtp.ip := f_addrstr2addr(cp.cn_rtp_addr);
+		mncc.u.rtp.rtp_port := cp.cn_rtp_port;
+		MNCC.send(mncc);
+		}
+
+	/* OSC -> SIP: Send INVITE with GSM side IP/Port in SDP */
+	var template charstring expect_sdp_to_sip := ?;
+	if (cp.mncc_with_sdp) {
+		/* Expect the same SDP as sent to osmo-sip-connector in MNCC, and allow osmo-sip-connector to append an
+		 * "a=sendrecv;" */
+		expect_sdp_to_sip := pattern cn_sdp & "*";
+	}
+	sip_req := f_SIP_expect_req(tr_SIP_INVITE(to_addr_exp.addressField.nameAddr.addrSpec, ?,
+						  from_addr_exp, to_addr_exp,
+						  via_exp,
+						  ?, body := expect_sdp_to_sip));
+	from_addr.fromParams := sip_req.msgHeader.fromField.fromParams;
+	cp.comp.sip_call_id := sip_req.msgHeader.callId.callid;
+	seq_nr := sip_req.msgHeader.cSeq.seqNumber;
+
+	/* OSC <- SIP: Notify call is proceeding */
+	SIP.send(ts_SIP_Response(cp.comp.sip_call_id, from_addr, to_addr,
+				 "INVITE", 100, seq_nr, "Trying", sip_req.msgHeader.via));
+	/* MSC <- OSC: "100 Trying" translated to MNCC_CALL_PROC_REQ */
+	MNCC.receive(tr_MNCC_CALL_PROC_req(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.signal.sdp, "");
+	}
+
+	/* OSC <- SIP: SIP-terminated user is ringing now. 180 Ringing should not contain any SDP. */
+	SIP.send(ts_SIP_Response(cp.comp.sip_call_id, from_addr, to_addr,
+				 "INVITE", 180, seq_nr, "Ringing", sip_req.msgHeader.via, omit));
+
+	/* MSC <- OSC: "180 Ringing" translated to MNCC_ALERT_REQ */
+	MNCC.receive(tr_MNCC_ALERT_req(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.signal.sdp, expect_sdp_to_msc);
+	}
+
+	/* OSC <- SIP: SIP-terminated user has accepted the call */
+	SIP.send(ts_SIP_Response(cp.comp.sip_call_id, from_addr, to_addr,
+				 "INVITE", 200, seq_nr, "OK", sip_req.msgHeader.via,
+				 body := cp.comp.sip_body));
+
+	if (cp.mncc_with_sdp) {
+		/* If we expect SDP forwarding, from now on expect MNCC to reflect the SDP that we just sent on SIP. */
+		expect_sdp_to_msc := cp.comp.sip_body;
+	}
+	/* If we don't expect SDP forwarding, just keep expect_sdp_to_msc := *. */
+
+	MNCC.receive(tr_MNCC_RTP_CONNECT(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.rtp.sdp, expect_sdp_to_msc);
+	}
+	/* MSC <- OSC: "200 OK" translated to MNCC_SETUP_RSP */
+	MNCC.receive(tr_MNCC_SETUP_rsp(cp.mncc_call_id)) -> value mncc {
+		check_sdp(sdp_to_msc, mncc.u.signal.sdp, expect_sdp_to_msc);
+	}
+
+	/* MSC -> OSC: CC CONNECT ACK was received from MS */
+	MNCC.send(ts_MNCC_SETUP_COMPL_ind(cp.mncc_call_id));
+	/* OSC -> SIP: Acknowledge the call */
+	SIP.receive(tr_SIP_ACK(to_addr_exp.addressField.nameAddr.addrSpec,
+			       cp.comp.sip_call_id,
+			       from_addr_exp,
+			       to_addr_exp,
+			       via_exp,
+			       ?, omit));
+}
+
+/* Release call from the mobile side */
+function f_release_mobile(inout CallPars cp) runs on ConnHdlr {
+	var template (value) From from_addr := ts_From(cp.comp.sip_url_gsm.addr, cp.comp.sip_url_gsm.params);
+	var template (value) To to_addr := ts_To(cp.comp.sip_url_ext.addr, cp.comp.sip_url_ext.params);
+	var template (value) Via via := ts_Via_from(cp.comp.sip_url_gsm.addr.nameAddr.addrSpec.hostPort);
+	var template (present) From from_addr_exp := tr_From(tr_Addr_Union_from_val(cp.comp.sip_url_gsm.addr), *);
+	var template (present) To to_addr_exp := tr_To(tr_Addr_Union_from_val(cp.comp.sip_url_ext.addr), *);
+	var template (present) Via via_exp := tr_Via_from(f_tr_HostPort_opt_defport(from_addr_exp.addressField.nameAddr.addrSpec.hostPort));
+	var PDU_SIP_Request sip_req;
+	SIP.clear;
+	/* MSC -> OSC: Simulate a CC DISCONNET from the MT user */
+	MNCC.send(ts_MNCC_DISC_ind(cp.mncc_call_id, ts_MNCC_cause(0)));
+
+	/* OSC -> SIP: Expect BYE from OSC to SIP side */
+	sip_req := f_SIP_expect_req(tr_SIP_BYE(to_addr_exp.addressField.nameAddr.addrSpec,
+					       cp.comp.sip_call_id, from_addr_exp, to_addr_exp,
+					       via_exp,
+					       ?, *));
+	from_addr.fromParams := sip_req.msgHeader.fromField.fromParams;
+
+	/* OSC <- SIP: Acknowledge the BYE */
+	SIP.send(ts_SIP_Response(cp.comp.sip_call_id, from_addr, to_addr,
+					 "BYE", 200, sip_req.msgHeader.cSeq.seqNumber, "OK",
+					 sip_req.msgHeader.via));
+	/* MSC <- OSC: Send REL_REQ to MSC, triggers CC RELEASE REQ to MS */
+	MNCC.receive(tr_MNCC_REL_req(cp.mncc_call_id)); // CAUSE?
+	/* MSC -> OSC: MS has responded with CC CLEAR COMPL, triggers MNCC_REL_CNF */
+	MNCC.send(ts_MNCC_REL_cnf(cp.mncc_call_id, ts_MNCC_cause(0)));
+}
+
+/* Release call from the SIP side */
+function f_release_sip(inout CallPars cp) runs on ConnHdlr {
+	var template (value) From from_addr := ts_From(cp.comp.sip_url_ext.addr, cp.comp.sip_url_ext.params);
+	var template (value) To to_addr := ts_To(cp.comp.sip_url_gsm.addr, cp.comp.sip_url_gsm.params);
+	var template (value) Via via := ts_Via_from(cp.comp.sip_url_ext.addr.nameAddr.addrSpec.hostPort);
+	var template (present) From from_addr_exp := tr_From(tr_Addr_Union_from_val(cp.comp.sip_url_ext.addr), *);
+	var template (present) To to_addr_exp := tr_To(tr_Addr_Union_from_val(cp.comp.sip_url_gsm.addr), *);
+	var template (present) Via via_exp := tr_Via_from(f_tr_HostPort_opt_defport(from_addr_exp.addressField.nameAddr.addrSpec.hostPort));
+	/* OSC <- SIP: SIP-side sends a BYE to OSC */
+	SIP.send(ts_SIP_BYE(cp.comp.sip_call_id, from_addr, to_addr,
+			    via,
+			    cp.comp.sip_seq_nr, omit));
+	/* MSC <- OSC: Expect OSC to cause MNCC Disconnect Request */
+	MNCC.receive(tr_MNCC_DISC_req(cp.mncc_call_id));
+	/* MSC -> OSC: Indicate GSM side release */
+	MNCC.send(ts_MNCC_REL_ind(cp.mncc_call_id, ts_MNCC_cause(0)));
+	/* OSC -> SIP: Confirmation to SIP side */
+	as_SIP_expect_resp(tr_SIP_Response(cp.comp.sip_call_id, from_addr_exp, to_addr_exp,
+					   via_exp,
+					   *,
+					   "BYE", 200, cp.comp.sip_seq_nr, "OK", omit));
+}
+
+/* Successful MT Call, which is subsequently released by GSM side */
+private function f_TC_mt_success_rel_gsm(charstring id) runs on ConnHdlr {
+	var CallPars cp := g_pars.g_cp;
+	f_CallPars_compute(cp);
+	cp.comp.sip_body := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+			    f_sdp_addr2addrtype(cp.sip_rtp_addr) & " " & cp.sip_rtp_addr &
+			    "\r\nt=0 0\r\nm=audio " & int2str(cp.sip_rtp_port) &
+			    " RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	f_sleep(3.0)
+
+	f_establish_mt(cp);
+	/* now call is fully established */
+	f_sleep(2.0);
+	f_release_mobile(cp);
+	setverdict(pass);
+}
+testcase TC_mt_success_rel_gsm() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(false, false));
+	vc_conn := f_start_handler(refers(f_TC_mt_success_rel_gsm), pars);
+	vc_conn.done;
+}
+testcase TC_mt_success_rel_gsm_ipv6() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(false, false));
+	pars.g_cp.sip_rtp_addr := "::1";
+	pars.g_cp.cn_rtp_addr := "::2";
+	vc_conn := f_start_handler(refers(f_TC_mt_success_rel_gsm), pars);
+	vc_conn.done;
+}
+
+/* Successful MT Call, which is subsequently released by SIP side */
+private function f_TC_mt_success_rel_sip(charstring id) runs on ConnHdlr {
+	var CallPars cp := g_pars.g_cp;
+	f_CallPars_compute(cp);
+	cp.comp.sip_body := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+			    f_sdp_addr2addrtype(cp.sip_rtp_addr) & " " & cp.sip_rtp_addr &
+			    "\r\nt=0 0\r\nm=audio " & int2str(cp.sip_rtp_port) &
+			    " RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	f_sleep(3.0)
+
+	f_establish_mt(cp);
+	/* now call is fully established */
+	f_sleep(2.0);
+	f_release_sip(cp);
+	setverdict(pass);
+}
+testcase TC_mt_success_rel_sip() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(false, false));
+	vc_conn := f_start_handler(refers(f_TC_mt_success_rel_sip), pars);
+	vc_conn.done;
+}
+
+
+/* Successful MO Call, which is subsequently released by GSM side */
+private function f_TC_mo_success_rel_gsm(charstring id) runs on ConnHdlr {
+	var CallPars cp := g_pars.g_cp;
+	f_CallPars_compute(cp);
+	cp.comp.sip_body := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+			    f_sdp_addr2addrtype(cp.sip_rtp_addr) & " " & cp.sip_rtp_addr &
+			    "\r\nt=0 0\r\nm=audio " & int2str(cp.sip_rtp_port) &
+			    " RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	f_sleep(3.0)
+
+	f_establish_mo(cp);
+	/* now call is fully established */
+	f_sleep(2.0);
+	f_release_mobile(cp);
+	setverdict(pass);
+}
+testcase TC_mo_success_rel_gsm() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(true, false));
+	vc_conn := f_start_handler(refers(f_TC_mo_success_rel_gsm), pars);
+	vc_conn.done;
+}
+testcase TC_mo_success_rel_gsm_ipv6() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(true, false));
+	pars.g_cp.sip_rtp_addr := "::1";
+	pars.g_cp.cn_rtp_addr := "::2";
+	vc_conn := f_start_handler(refers(f_TC_mo_success_rel_gsm), pars);
+	vc_conn.done;
+}
+
+/* Successful MO Call, which is subsequently released by SIP side */
+private function f_TC_mo_success_rel_sip(charstring id) runs on ConnHdlr {
+	var CallPars cp := g_pars.g_cp;
+	f_CallPars_compute(cp);
+	cp.comp.sip_body := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+			    f_sdp_addr2addrtype(cp.sip_rtp_addr) & " " & cp.sip_rtp_addr &
+			    "\r\nt=0 0\r\nm=audio " & int2str(cp.sip_rtp_port) &
+			    " RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	f_sleep(3.0)
+
+	f_establish_mo(cp);
+	/* now call is fully established */
+	f_sleep(2.0);
+	f_release_sip(cp);
+	setverdict(pass);
+}
+testcase TC_mo_success_rel_sip() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(is_mo := true, mncc_with_sdp := false));
+	vc_conn := f_start_handler(refers(f_TC_mo_success_rel_sip), pars);
+	vc_conn.done;
+}
+
+/* SETUP followed by DISC results in lingering B-leg (OS#3518)*/
+private function f_TC_mo_setup_disc_late_rtp(charstring id) runs on ConnHdlr {
+	var CallPars cp := g_pars.g_cp;
+	f_CallPars_compute(cp);
+	cp.comp.sip_body := "v=0\r\no=Osmocom 0 0 IN IP4 1.1.1.1\r\ns=GSM Call\r\nc=IN " &
+			    f_sdp_addr2addrtype(cp.sip_rtp_addr) & " " & cp.sip_rtp_addr &
+			    "\r\nt=0 0\r\nm=audio " & int2str(cp.sip_rtp_port) &
+			    " RTP/AVP 0\r\na=rtpmap:0 GSM/8000\r\n";
+	f_sleep(3.0);
+
+	var MNCC_number dst := valueof(ts_MNCC_number(cp.called, GSM48_TON_UNKNOWN));
+	var MNCC_number src := valueof(ts_MNCC_number(cp.calling, GSM48_TON_UNKNOWN));
+	var template (value) From from_addr := ts_From(cp.comp.sip_url_gsm.addr, cp.comp.sip_url_gsm.params);
+	var template (value) To to_addr := ts_To(cp.comp.sip_url_ext.addr, cp.comp.sip_url_ext.params);
+	var template (value) Via via := ts_Via_from(cp.comp.sip_url_gsm.addr.nameAddr.addrSpec.hostPort);
+	var template (present) From from_addr_exp := tr_From(tr_Addr_Union_from_val(cp.comp.sip_url_gsm.addr), *);
+	var template (present) To to_addr_exp := tr_To(tr_Addr_Union_from_val(cp.comp.sip_url_ext.addr), *);
+	var template (present) Via via_exp := tr_Via_from(f_tr_HostPort_opt_defport(from_addr_exp.addressField.nameAddr.addrSpec.hostPort));
+
+	f_create_sip_expect(cp.comp.sip_url_ext.addr.nameAddr.addrSpec);
+
+	/* MSC -> OSC: MSC sends SETUP.ind after CC SETUP was received from MS */
+	MNCC.send(ts_MNCC_SETUP_ind(cp.mncc_call_id, dst, src, "262420123456789"));
+
+	/* MSC -> OSC: Simulate a CC DISCONNET from the MT user *before* responding to the RTP_CREATE */
+	MNCC.send(ts_MNCC_DISC_ind(cp.mncc_call_id, ts_MNCC_cause(0)));
+
+	/* MSC <- OSC: Create GSM side RTP socket (too late) */
+	MNCC.receive(tr_MNCC_RTP_CREATE(cp.mncc_call_id)) {
+		var MNCC_PDU mncc := valueof(ts_MNCC_RTP_CREATE(cp.mncc_call_id));
+		mncc.u.rtp.payload_msg_type := oct2int('0300'O);
+		mncc.u.rtp.is_ipv6 := f_addr_is_ipv6(cp.cn_rtp_addr);
+		mncc.u.rtp.ip := f_addrstr2addr(cp.cn_rtp_addr);
+		mncc.u.rtp.rtp_port := cp.cn_rtp_port;
+		MNCC.send(mncc);
+		}
+
+	/* OSC -> SIP: We should never receive INVITE */
+	timer T := 10.0;
+	T.start;
+	alt {
+	[] SIP.receive(tr_SIP_INVITE(to_addr_exp.addressField.nameAddr.addrSpec, ?,
+				     from_addr_exp, to_addr_exp,
+				     via_exp,
+				     ?, ?)) {
+		setverdict(fail, "Received unexpected INVITE");
+		}
+	[] T.timeout {
+		setverdict(pass);
+		}
+	}
+}
+testcase TC_mo_setup_disc_late_rtp() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(is_mo := true, mncc_with_sdp := false));
+	vc_conn := f_start_handler(refers(f_TC_mo_setup_disc_late_rtp), pars);
+	vc_conn.done;
+}
+
+testcase TC_mt_with_sdp() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(is_mo := false, mncc_with_sdp := true));
+	vc_conn := f_start_handler(refers(f_TC_mt_success_rel_gsm), pars);
+	vc_conn.done;
+}
+
+testcase TC_mo_with_sdp() runs on test_CT {
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+	f_init();
+	pars := valueof(t_Pars);
+	pars.g_cp := valueof(t_CallPars(is_mo := true, mncc_with_sdp := true));
+	vc_conn := f_start_handler(refers(f_TC_mo_success_rel_sip), pars);
+	vc_conn.done;
+}
+
+control {
+	execute( TC_mt_success_rel_gsm() );
+	execute( TC_mt_success_rel_gsm_ipv6() );
+	execute( TC_mt_success_rel_sip() );
+	execute( TC_mo_success_rel_gsm() );
+	execute( TC_mo_success_rel_gsm_ipv6() );
+	execute( TC_mo_success_rel_sip() );
+	execute( TC_mo_setup_disc_late_rtp() );
+	execute( TC_mt_with_sdp() );
+	execute( TC_mo_with_sdp() );
+}
+
+
+
+}

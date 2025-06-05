@@ -1,0 +1,275 @@
+/* Utility functions from ogslib imported to TTCN-3
+ *
+ * (C) 2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module LTE_CryptoFunctions {
+
+import from General_Types all;
+import from Misc_Helpers all;
+
+import from Snow3G_Functions all;
+
+import from S1AP_Types all;
+import from S1AP_PDU_Descriptions all;
+
+import from NAS_EPS_Types all;
+import from NAS_EPS_Templates all;
+
+/*********************************************************************************
+ * low-level API (external C/C++ code)
+ *********************************************************************************/
+
+external function f_kdf_kasme(in OCT16 ck, in OCT16 ik, in OCT3 plmn_id,
+			      in OCT6 sqn, in OCT6 ak) return OCT32;
+
+external function f_kdf_nas_int(in integer alg_id, in OCT32 kasme) return OCT32;
+external function f_kdf_nas_enc(in integer alg_id, in OCT32 kasme) return OCT32;
+
+external function f_kdf_enb(in OCT16 kasme, in integer ul_count) return OCT32;
+
+external function f_kdf_nh(in OCT16 kasme, in OCT32 sync_inp) return OCT32;
+
+external function f_kdf_nas_token(in OCT16 kasme, in integer ul_count) return OCT32;
+
+/*********************************************************************************
+ * mid-level API
+ *********************************************************************************/
+
+function f_nas_mac_calc(NAS_ALG_INT alg, octetstring k_nas_int, integer seq_nr,
+				integer bearer, boolean is_downlink, octetstring data) return OCT4 {
+	select (alg) {
+	case (NAS_ALG_IP_EIA0) {
+		return '00000000'O;
+		}
+	case (NAS_ALG_IP_EIA1) {
+		return f_snow_3g_f9(k_nas_int, seq_nr, bearer, is_downlink, data);
+		}
+	case else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unsupported EIA: ", alg));
+		return '00000000'O; /* never reached */
+		}
+	}
+}
+
+function f_nas_encrypt(NAS_ALG_ENC alg, octetstring k_nas_enc, integer count,
+			integer bearer, boolean is_downlink, inout octetstring data) {
+	select (alg) {
+	case (NAS_ALG_ENC_EEA0) { }
+	case (NAS_ALG_ENC_EEA1) {
+		f_snow_3g_f8(k_nas_enc, count, bearer, is_downlink, data);
+		}
+	case else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Unsupported EEA: ", alg));
+		}
+	}
+}
+
+
+/*********************************************************************************
+ * high-level API (full NAS encapsulation/decapsulation)
+ *********************************************************************************/
+
+type record NAS_UE_State {
+	NAS_Role role,		/* ATS implements UE or MME role? */
+
+	NAS_ALG_INT alg_int,	/* NAS Integrity Protection Algorithm */
+	octetstring k_nas_int,	/* NAS Integrity Protection Key */
+	NAS_ALG_ENC alg_enc,	/* NAS Encryption Algorithm */
+	octetstring k_nas_enc,	/* NAS Encryption Key */
+	integer rx_count,	/* frame counter (ATS rx side) */
+	integer tx_count,	/* frame counter (ATS tx side) */
+	boolean new_ctx,	/* Use "New EPS Security Context" when building next sec_hdr_t */
+	boolean use_int,	/* Whether to use "Integrity" in sec_hdr_t */
+	boolean use_enc		/* Whether to use "Ciphering" in sec_hdr_t */
+};
+
+template (value) NAS_UE_State t_NAS_UE_State(NAS_Role role) := {
+	role := role,
+	alg_int := NAS_ALG_IP_EIA0,
+	k_nas_int := ''O,
+	alg_enc := NAS_ALG_ENC_EEA0,
+	k_nas_enc := ''O,
+	rx_count := 0,
+	tx_count := 0,
+	new_ctx := false,
+	use_int := false,
+	use_enc := false
+};
+
+type enumerated NAS_Role {
+	NAS_ROLE_UE,	/* ATS implements/emulates UE */
+	NAS_ROLE_MME	/* ATS implements/emulates MME */
+};
+type enumerated NAS_ALG_INT {
+	NAS_ALG_IP_EIA0,	/* no integrity protection */
+	NAS_ALG_IP_EIA1,	/* SNOW-3G F9 based */
+	NAS_ALG_IP_EIA2,	/* AES based */
+	NAS_ALG_IP_EIA3		/* ZUC */
+};
+type enumerated NAS_ALG_ENC {
+	NAS_ALG_ENC_EEA0,	/* no encryption */
+	NAS_ALG_ENC_EEA1,	/* SNOW-3G F8 based */
+	NAS_ALG_ENC_EEA2,	/* AES based */
+	NAS_ALG_ENC_EEA3	/* ZUC */
+};
+
+/* port between individual per-connection components and this translator */
+type port S1AP_NAS_Conn_PT message {
+	inout S1AP_PDU, PDU_NAS_EPS;
+} with { extension "internal" };
+
+/* determine if a received (from the IUT) message is downlink or not */
+private function f_rx_is_downlink(in NAS_UE_State nus) return boolean
+{
+	if (nus.role == NAS_ROLE_UE) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
+/* determine if a message transmitted to the IUT message is downlink or not */
+private function f_tx_is_downlink(in NAS_UE_State nus) return boolean
+{
+	return not f_rx_is_downlink(nus);
+}
+
+private function f_nas_check_ip(inout NAS_UE_State nus,
+				in PDU_NAS_EPS_SecurityProtectedNASMessage secp_nas) return boolean
+{
+	var octetstring data_with_seq := int2oct(secp_nas.sequenceNumber, 1) & secp_nas.nAS_Message;
+	var OCT4 exp_mac := f_nas_mac_calc(nus.alg_int, nus.k_nas_int, nus.rx_count, 0,
+					   f_rx_is_downlink(nus), data_with_seq);
+
+	if (nus.rx_count != secp_nas.sequenceNumber) {
+		setverdict(fail, "Received NAS SeqNr ", secp_nas.sequenceNumber,
+			   " doesn't match expected SeqNr ", nus.rx_count, ": ", secp_nas, " | nus: ", nus);
+		return false;
+	}
+	if (exp_mac != secp_nas.messageAuthenticationCode) {
+		setverdict(fail, "Received NAS MAC ", secp_nas.messageAuthenticationCode,
+			   " doesn't match expected MAC ", exp_mac, ": ", secp_nas, " | nus: ", nus);
+		return false;
+	}
+	return true;
+}
+
+/* try to decapsulate (MAC verify, decrypt) NAS message */
+function f_nas_try_decaps(inout NAS_UE_State nus, PDU_NAS_EPS nas) return PDU_NAS_EPS
+{
+	var PDU_NAS_EPS_SecurityProtectedNASMessage secp_nas;
+
+	/* transparently pass through any non-protected NAS */
+	if (not match(nas, tr_NAS_EMM_SecurityProtected)) {
+		return nas;
+	}
+
+	/* process any security-protected NAS */
+	secp_nas := nas.ePS_messages.ePS_MobilityManagement.pDU_NAS_EPS_SecurityProtectedNASMessage;
+	select (secp_nas.securityHeaderType) {
+	case ('0011'B) { /* IP with new EPS security context */
+		nus.new_ctx := true;
+		nus.rx_count := 0;
+		nus.alg_int := NAS_ALG_IP_EIA1; /* FIXME: from decoded inner message! */
+		if (not f_nas_check_ip(nus, secp_nas)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "f_nas_check_ip() failed");
+		}
+		nus.rx_count := nus.rx_count + 1;
+		return dec_PDU_NAS_EPS(secp_nas.nAS_Message);
+		}
+	case ('0001'B) { /* IP only */
+		nus.new_ctx := false;
+		if (not f_nas_check_ip(nus, secp_nas)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "f_nas_check_ip() failed");
+		}
+		nus.rx_count := nus.rx_count + 1;
+		return dec_PDU_NAS_EPS(secp_nas.nAS_Message);
+		}
+	case ('0010'B) { /* IP + ciphered */
+		nus.new_ctx := false;
+		if (not f_nas_check_ip(nus, secp_nas)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "f_nas_check_ip() failed");
+		}
+		nus.rx_count := nus.rx_count + 1;
+		f_nas_encrypt(nus.alg_enc, nus.k_nas_enc, nus.rx_count, 0,
+			      f_rx_is_downlink(nus), secp_nas.nAS_Message);
+		return dec_PDU_NAS_EPS(secp_nas.nAS_Message);
+		}
+	case ('0100'B) { /* IP + ciphered; new EPS security context */
+		nus.new_ctx := true;
+		nus.rx_count := 0;
+		if (not f_nas_check_ip(nus, secp_nas)) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "f_nas_check_ip() failed");
+		}
+		f_nas_encrypt(nus.alg_enc, nus.k_nas_enc, nus.rx_count, 0,
+			      f_rx_is_downlink(nus), secp_nas.nAS_Message);
+		nus.rx_count := nus.rx_count + 1;
+		return dec_PDU_NAS_EPS(secp_nas.nAS_Message);
+		}
+	//case ('0101'B) { /* IP + partially ciphered */ }
+	//case ('1100'B) { /* Service Request Message */ }
+	case else  {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, log2str("Implement SecHdrType for ", secp_nas));
+		mtc.stop; /* make compiler happy about not returning. */
+		}
+	}
+}
+
+private function f_nas_determine_sec_hdr_t(boolean encrypt, boolean authenticate, boolean new_ctx)
+return BIT4
+{
+	if (encrypt == false and authenticate == false and new_ctx == false) {
+		return '0000'B;
+	} else if (encrypt == false and authenticate == true and new_ctx == false) {
+		return '0001'B;
+	} else if (encrypt == false and authenticate == true and new_ctx == true) {
+		return '0011'B;
+	} else if (encrypt == true and authenticate == true and new_ctx == true) {
+		return '0100'B;
+	} else if (encrypt == true and authenticate == true and new_ctx == false) {
+		return '0010'B;
+	} else {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "Invalid sec_hdr conditions");
+		return '0000'B; /* never reached, make compiler happy */
+	}
+}
+
+/* encapsulate a NAS message (encrypt, MAC) */
+function f_nas_encaps(inout NAS_UE_State nus, PDU_NAS_EPS nas_in)
+return PDU_NAS_EPS
+{
+	var BIT4 sec_hdr_t;
+	var PDU_NAS_EPS nas_out;
+
+	if (nus.use_enc == false and nus.use_int == false) {
+		return nas_in;
+	}
+
+	if (nus.new_ctx) {
+		nus.tx_count := 0;
+	}
+
+	var octetstring nas_enc := enc_PDU_NAS_EPS(nas_in);
+	if (nus.use_enc) {
+		f_nas_encrypt(nus.alg_enc, nus.k_nas_enc, nus.tx_count, 0,
+			      f_tx_is_downlink(nus), nas_enc);
+	}
+
+	sec_hdr_t := f_nas_determine_sec_hdr_t(nus.use_enc, nus.use_int, nus.new_ctx);
+	nas_out := valueof(ts_NAS_EMM_SecurityProtected(sec_hdr_t, nus.tx_count, nas_enc));
+	if (nus.use_int) {
+		var OCT4 mac := f_nas_mac_calc(nus.alg_int, nus.k_nas_int, nus.tx_count, 0,
+						f_tx_is_downlink(nus), '00'O & nas_enc);
+		nas_out.ePS_messages.ePS_MobilityManagement.pDU_NAS_EPS_SecurityProtectedNASMessage.messageAuthenticationCode := mac;
+	}
+	return nas_out;
+}
+
+} // namespace

@@ -1,0 +1,677 @@
+module DIAMETER_ts29_273_Templates {
+
+/* (C) 2023 by sysmocom s.f.m.c. GmbH <info@sysmocom.de
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Templates for AVPs and messages for TS 29.273
+ */
+
+import from General_Types all;
+import from DIAMETER_Types all;
+import from DIAMETER_Templates all;
+import from DIAMETER_rfc5447_Templates all;
+import from DIAMETER_ts29_229_Templates all;
+import from DIAMETER_ts29_272_Templates all;
+import from Osmocom_Types all;
+import from Misc_Helpers all;
+
+/* 3GPP TS 29.273 Section 8.2 */
+const uint32_t c_DIAMETER_3GPP_SWx_AID := 16777265;
+/* 3GPP TS 29.273 Section 9 */
+const uint32_t c_DIAMETER_3GPP_S6b_AID := 16777272;
+
+/* 5.2.3.3 MIP6-Feature-Vector bits */
+const uint64_t DIA_TS29_373_MIP6_Feature_Vector_PMIP6_SUPPORTED := 		hex2int('0000010000000000'H);
+const uint64_t DIA_TS29_373_MIP6_Feature_Vector_ASSIGN_LOCAL_IP := 		hex2int('0000080000000000'H);
+const uint64_t DIA_TS29_373_MIP6_Feature_Vector_MIP4_SUPPORTED := 		hex2int('0000100000000000'H);
+const uint64_t DIA_TS29_373_MIP6_Feature_Vector_OPTIMIZED_IDLE_MODE_MOBILITY := hex2int('0000200000000000'H);
+const uint64_t DIA_TS29_373_MIP6_Feature_Vector_GTPv2_SUPPORTED := 		hex2int('0000400000000000'H);
+
+/*******************************
+ * SWx 3GPP TS 29.273 section 8
+ *******************************/
+
+/* TS 29.273 8.2.3.1 Non-3GPP-User-Data */
+template (value) GenericAVP ts_AVP_3GPP_Non_3GPP_User_Data(template (value) AAA_3GPP_PDN_Type pdn_type,
+							   template (value) charstring apn,
+							   template (value) uint32_t ambr_max_req_ul := 1000000000,
+							   template (value) uint32_t ambr_max_req_dl := 1000000000) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Non_3GPP_User_Data),
+		avp_data := {
+			avp_AAA_3GPP_Non_3GPP_User_Data := {
+				ts_AVP_3GPP_Non_3GPP_IP_Access(NON_3GPP_SUBSCRIPTION_ALLOWED),
+				ts_AVP_3GPP_Non_3GPP_IP_Access_APN(NON_3GPP_APNS_ENABLE),
+				ts_AVP_3GPP_AMBR(ambr_max_req_ul, ambr_max_req_dl),
+				ts_AVP_3GPP_ContextId(1),
+				ts_AVP_3GPP_ApnConfig(1, pdn_type, apn)
+			}
+		}
+	}
+}
+
+/* TS 29.273 8.2.3.3 Non-3GPP-IP-Access */
+template (value) GenericAVP ts_AVP_3GPP_Non_3GPP_IP_Access(template (value) AAA_3GPP_Non_3GPP_IP_Access val := NON_3GPP_SUBSCRIPTION_ALLOWED) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Non_3GPP_IP_Access),
+		avp_data := {
+			avp_AAA_3GPP_Non_3GPP_IP_Access := val
+		}
+	}
+}
+
+
+/* TS 29.273 8.2.3.4 Non-3GPP-IP-Access-APN */
+template (value) GenericAVP ts_AVP_3GPP_Non_3GPP_IP_Access_APN(template (value) AAA_3GPP_Non_3GPP_IP_Access_APN val := NON_3GPP_APNS_ENABLE) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Non_3GPP_IP_Access_APN),
+		avp_data := {
+			avp_AAA_3GPP_Non_3GPP_IP_Access_APN := val
+		}
+	}
+}
+
+/* TS 29.273 8.2.3.7 APN-Configuration: The APN-Configuration AVP is of type Grouped AVP and is defined in 3GPP TS 29.272 */
+/* TS 29.273 5.2.3.8 AMBR: Please refer to 3GPP TS 29.272 [29] for the encoding of this AVP. */
+
+/* SIP-Auth-Data-Item , 3GPP TS 29.273 8.2.3.9 */
+template (present) GenericAVP tr_AVP_3GPP_SIPAuthDataItem(template (present) uint32_t num := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Auth_Data_Item),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Auth_Data_Item := superset(
+				//tr_AVP_3GPP_SIPItemNumber(num), /* Optional */
+				tr_AVP_3GPP_SIPAuthScheme(?)//, /* Optional */
+				//tr_AVP_3GPP_SIPAuthenticate(?), /* Optional */
+				//tr_AVP_3GPP_SIPAuthorization(?), /* Optional */
+				//tr_AVP_3GPP_SIPAuthContext(?), /* Optional */
+				//tr_AVP_3GPP_ConfidentialityKey(?), /* Optional */
+				//tr_AVP_3GPP_IntegrityKey(?) /* Optional */
+				/* TODO:
+				[ SIP-Digest-Authenticate ]
+				[ Framed-IP-Address ]
+				[ Framed-IPv6-Prefix ]
+				[ Framed-Interface-Id ]
+				[ Line-Identifier ]
+				*[AVP]
+				*/
+			)
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPAuthDataItem(uint32_t num, OCT16 rand, OCT16 ik, OCT16 ck, OCT16 autn, OCT14 auts) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Auth_Data_Item),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Auth_Data_Item := {
+				ts_AVP_3GPP_SIPItemNumber(num),
+				ts_AVP_3GPP_SIPAuthScheme(char2oct("Digest-AKAv1-MD5")),
+				ts_AVP_3GPP_SIPAuthenticate(rand & autn),
+				ts_AVP_3GPP_SIPAuthorization(rand & auts),
+				ts_AVP_3GPP_SIPAuthContext(char2oct("foobar")),
+				ts_AVP_3GPP_ConfidentialityKey(ck),
+				ts_AVP_3GPP_IntegrityKey(ik)
+				/* TODO:
+				[ SIP-Digest-Authenticate ]
+				[ Framed-IP-Address ]
+				[ Framed-IPv6-Prefix ]
+				[ Framed-Interface-Id ]
+				[ Line-Identifier ]
+				*[AVP]
+				*/
+			}
+		}
+	}
+}
+
+/* Multimedia-Auth-Request, 3GPP TS 29.273 8.2.2.1 Authentication Procedure */
+template (present) PDU_DIAMETER
+tr_DIA_SWx_MAR(template (present) hexstring imsi := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Multimedia_Auth,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			tr_AVP_VendorSpecAppId(?, ?),
+			tr_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm),
+			tr_AVP_DestinationRealm(dest_realm),
+			tr_AVP_UserNameImsi(imsi),
+			tr_AVP_3GPP_SIPAuthDataItem(?),
+			tr_AVP_3GPP_SIPNumAuthDataItems(?)
+	));
+
+/* Multimedia-Auth-Answer, 3GPP TS 29.273 8.2.2.1 Authentication Procedure */
+template (value) PDU_DIAMETER
+ts_DIA_SWx_MAA(template (value) hexstring imsi,
+	       template (value) GenericAVP sip_auth_data_item,
+	       template (value) uint32_t vendor_app_id := c_DIAMETER_3GPP_SWx_AID,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "hss.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Multimedia_Auth,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, valueof(vendor_app_id)),
+			ts_AVP_ResultCode(DIAMETER_SUCCESS),
+			ts_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_UserNameImsi(valueof(imsi)),
+			sip_auth_data_item,
+			ts_AVP_3GPP_SIPNumAuthDataItems(1)
+	});
+
+template (value) PDU_DIAMETER
+ts_DIA_SWx_MAA_result(template (value) hexstring imsi,
+		      template (value) GenericAVP result,
+		      template (value) uint32_t vendor_app_id := c_DIAMETER_3GPP_SWx_AID,
+		      template (value) octetstring sess_id := c_def_sess_id,
+		      template (value) charstring orig_host := "hss.localdomain",
+		      template (value) charstring orig_realm := "localdomain",
+		      template (value) UINT32 hbh_id := '00000000'O,
+		      template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Multimedia_Auth,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, valueof(vendor_app_id)),
+			result,
+			ts_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_UserNameImsi(valueof(imsi))
+	});
+
+/* Push-Profile-Request,
+ * 3GPP TS 29.273 8.1.2.3 HSS Initiated Update of User Profile
+ * 3GPP TS 29.273 8.2.2.2 HSS Initiated Update of User Profile Procedure
+ */
+template (value) PDU_DIAMETER
+ts_DIA_SWx_PPR(template (value) hexstring imsi,
+	       template (value) AAA_3GPP_PDN_Type pdn_type,
+	       template (value) charstring apn,
+	       template (value) uint32_t vendor_app_id := c_DIAMETER_3GPP_SWx_AID,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "hss.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_host := "aaa.localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '11000000'B,
+		    cmd_code := Push_Profile,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, valueof(vendor_app_id)),
+			ts_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_DestinationHost(dest_host),
+			ts_AVP_DestinationRealm(dest_realm),
+			ts_AVP_UserNameImsi(imsi),
+			ts_AVP_3GPP_Non_3GPP_User_Data(pdn_type, apn)
+			/* Optional: PPR-Flags */
+			/* TODO:
+			 * *[ Supported-Features ]
+			 */
+	});
+
+/*  Push-Profile-Answer,
+ * 3GPP TS 29.273 8.1.2.3 HSS Initiated Update of User Profile
+ * 3GPP TS 29.273 8.2.2.2 HSS Initiated Update of User Profile Procedure
+ */
+template (present) PDU_DIAMETER
+tr_DIA_SWx_PPA(template (present) GenericAVP tmpl_result := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_host := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Push_Profile,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			tr_AVP_VendorSpecAppId(?, ?),
+			tmpl_result,
+			tr_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+			/* Optional:
+			* [ Access-Network-Info ]
+			* [ Local-Time-Zone ]
+			* *[ Supported-Features ]
+			*/
+	));
+
+/* Server-Assignment-Request,
+ * 3GPP TS 29.273 8.1.2.2.2 UE/PDN Registration/DeRegistration Notification
+ * 3GPP TS 29.273 8.2.2.3 Non-3GPP IP Access Registration Procedure */
+template (present) PDU_DIAMETER
+tr_DIA_SWx_SAR(template (present) hexstring imsi := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?,
+	       template (present) CxDx_3GPP_Server_Assignment_Type server_ass_type := ?,
+	       template (present) charstring service_selection := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Server_Assignment,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			tr_AVP_VendorSpecAppId(?, ?),
+			tr_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm),
+			tr_AVP_DestinationRealm(dest_realm),
+			tr_AVP_UserNameImsi(imsi),
+			tr_AVP_3GPP_ServerAssignmentType(server_ass_type),
+			tr_AVP_ServiceSelection(service_selection)
+	));
+
+/* Server-Assignment-Answer,
+ * 3GPP TS 29.273 8.1.2.2.2 UE/PDN Registration/DeRegistration Notification
+ * 3GPP TS 29.273 8.2.2.3 Non-3GPP IP Access Registration Procedure */
+template (value) PDU_DIAMETER
+ts_DIA_SWx_SAA(template (value) hexstring imsi,
+	       template (value) AAA_3GPP_PDN_Type pdn_type,
+	       template (value) charstring apn,
+	       template (value) uint32_t vendor_app_id := c_DIAMETER_3GPP_SWx_AID,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "hss.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Server_Assignment,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, valueof(vendor_app_id)),
+			ts_AVP_ResultCode(DIAMETER_SUCCESS),
+			ts_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_UserNameImsi(valueof(imsi)),
+			ts_AVP_3GPP_Non_3GPP_User_Data(pdn_type, apn)
+			/* TODO:
+			 * [ 3GPP-AAA-Server-Name ]
+			 * [ OC-Supported-Features ]
+			 * [ OC-OLR ] ]
+			 * *[ Load ]
+			 * *[ Supported-Features ]
+			 */
+	});
+
+/* Registration-Termination-Request (RTR) , 8.2.2.4 Network Initiated De-Registration by HSS Procedure */
+template (value) PDU_DIAMETER
+ts_DIA_SWx_RTR(template (value) hexstring imsi,
+	       template (value) CxDx_3GPP_Reason_Code reason_code := PERMANENT_TERMINATION,
+               template (value) octetstring reason_info := ''O,
+	       template (value) uint32_t vendor_app_id := c_DIAMETER_3GPP_SWx_AID,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "hss.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_host := "aaa.localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '11000000'B,
+		    cmd_code := Registration_Termination,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, valueof(vendor_app_id)),
+			ts_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_DestinationHost(dest_host),
+			ts_AVP_DestinationRealm(dest_realm),
+			ts_AVP_UserNameImsi(imsi),
+			ts_AVP_CxDx_3GPP_Deregistration_Reason(reason_code, reason_info)
+			/* TODO:
+			 * *[ Supported-Features ]
+			 */
+	});
+
+template (present) PDU_DIAMETER
+tr_DIA_SWx_RTA(template (present) GenericAVP tmpl_result := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_host := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Registration_Termination,
+		    app_id := int2oct(c_DIAMETER_3GPP_SWx_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			tr_AVP_VendorSpecAppId(?, ?),
+			tmpl_result,
+			tr_AVP_AuthSessionState(NO_STATE_MAINTAINED),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+	));
+
+/*******************************
+ * S6b 3GPP TS 29.273 section 9
+ *******************************/
+
+ /* TS 29.273 9.2.2.5.1 AA-Request (AAR) */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_AAR(template (present) charstring username_nai := ?,
+	       template (present) MIPv6_NONE_MIP6_Feature_Vector mip6_feat_vec := ?,
+	       template (present) charstring apn := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host := ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Authorize_Authenticate,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			tr_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm),
+			tr_AVP_DestinationRealm(dest_realm),
+			tr_AVP_AuthRequestType(AUTHORIZE_ONLY),
+			tr_AVP_UserName(char2oct_tmpl_present(username_nai)),
+			tr_AVP_MIP6FeatureVector(mip6_feat_vec),
+			tr_AVP_ServiceSelection(apn)
+			/* TODO: Lots other optional */
+	));
+
+template (value) PDU_DIAMETER
+ts_DIA_S6b_AAR(template (value) charstring username_nai,
+	       template (value) MIPv6_NONE_MIP6_Feature_Vector mip6_feat_vec,
+	       template (value) charstring apn,
+	       template (value) MIPv4_NONE_MIP_Home_Agent_Address pgw_addr,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "pgw.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '11000000'B,
+		    cmd_code := Authorize_Authenticate,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			ts_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_DestinationRealm(dest_realm),
+			ts_AVP_AuthRequestType(AUTHORIZE_ONLY),
+			ts_AVP_UserName(char2oct(valueof(username_nai))),
+			ts_AVP_MIP6AgentInfo(pgw_addr),
+			ts_AVP_MIP6FeatureVector(mip6_feat_vec),
+			ts_AVP_ServiceSelection(valueof(apn))
+			/* TODO: Lots other optional */
+	});
+
+/* TS 29.273 9.2.2.2.2 AA-Answer (AAA) */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_AAA(template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?,
+	       template (present) CxDx_3GPP_Server_Assignment_Type server_ass_type := ?,
+	       template (present) charstring service_selection := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Authorize_Authenticate,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			tr_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			tr_AVP_AuthRequestType(AUTHORIZE_ONLY),
+			tr_AVP_ResultCode(DIAMETER_SUCCESS),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+	));
+
+template (value) PDU_DIAMETER
+ts_DIA_S6b_AAA(template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "aaa.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Authorize_Authenticate,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			ts_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			ts_AVP_AuthRequestType(AUTHORIZE_ONLY),
+			ts_AVP_ResultCode(DIAMETER_SUCCESS),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm)
+	});
+
+ /* TS 29.273 9.2.2.3.1 Session-Termination-Request (STR) Command,
+  * Table 9.1.2.3.1/1: S6b Session Termination Request (STR), based on RFC 6733 8.4.1 */
+template (value) PDU_DIAMETER
+ts_DIA_S6b_STR(template (value) hexstring imsi,
+	       template (value) BASE_NONE_Termination_Cause term_cause := DIAMETER_LOGOUT,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "pgw.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '11000000'B,
+		    cmd_code := Session_Termination,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			/* Optional: DRMP */
+			ts_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_DestinationRealm(dest_realm),
+			ts_AVP_TerminationCause(term_cause),
+			ts_AVP_UserNameImsi(valueof(imsi))
+			/* Optional: OC-Supported-Features */
+	});
+
+/* TS 29.273 9.2.2.3.2 Session-Termination-Answer (STA) Command,
+ * Table 9.1.2.3.1/2: S6b Session Termination Answer (STA), based on RFC 6733 8.4.2 */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_STA(template (present) DIAMETER_Resultcode res_code := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Session_Termination,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP */
+			tr_AVP_ResultCode(res_code),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+			/* Lots other Optional */
+	));
+
+
+/* TS 29.273 9.2.2.4.1 Abort-Session-Request (ASR) */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_ASR(template (present) charstring username_nai := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host := ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) charstring dest_host := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Abort_Session,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm),
+			tr_AVP_DestinationRealm(dest_realm),
+			tr_AVP_DestinationHost(dest_host),
+			tr_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			tr_AVP_UserName(char2oct_tmpl_present(username_nai)),
+			tr_AVP_AuthSessionState(NO_STATE_MAINTAINED)
+	));
+
+/* TS 29.273 9.2.2.4.2 Abort-Session-Answer (ASA) */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_ASA(template (present) DIAMETER_Resultcode res_code := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host :=  ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Abort_Session,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP */
+			tr_AVP_ResultCode(res_code),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+	));
+
+template (value) PDU_DIAMETER
+ts_DIA_S6b_ASA(template (value) DIAMETER_Resultcode res_code := DIAMETER_SUCCESS,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "aaa.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Abort_Session,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			ts_AVP_ResultCode(res_code),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm)
+	});
+
+/* TS 29.273 9.2.2.6.1 Re-Auth-Request (RAR)
+ * TS 29.273  Table 9.1.2.5.1/1: S6b Re-authorization request */
+template (present) PDU_DIAMETER
+tr_DIA_S6b_RAR(template (present) charstring username_nai := ?,
+	       template (present) octetstring sess_id := ?,
+	       template (present) charstring orig_host := ?,
+	       template (present) charstring orig_realm := ?,
+	       template (present) charstring dest_realm := ?,
+	       template (present) charstring dest_host := ?,
+	       template (present) UINT32 hbh_id := ?,
+	       template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Re_Auth,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm),
+			tr_AVP_DestinationRealm(dest_realm),
+			tr_AVP_DestinationHost(dest_host),
+			tr_AVP_AuthAppId(int2oct(c_DIAMETER_3GPP_S6b_AID, 4)),
+			tr_AVP_ReAuthRequestType(AUTHORIZE_ONLY),
+			tr_AVP_UserName(char2oct_tmpl_present(username_nai))
+			/* Optional: RAR-Flags, */
+	));
+
+/* TS 29.273 9.2.2.6.2 Re-Auth-Answer (RAA)
+ * TS 29.273 Table 9.1.2.5.1/2: S6b Re-authorization response */
+template (value) PDU_DIAMETER
+ts_DIA_S6b_RAA(template (value) DIAMETER_Resultcode res_code := DIAMETER_SUCCESS,
+	       template (value) octetstring sess_id := c_def_sess_id,
+	       template (value) charstring orig_host := "aaa.localdomain",
+	       template (value) charstring orig_realm := "localdomain",
+	       template (value) charstring dest_realm := "localdomain",
+	       template (value) UINT32 hbh_id := '00000000'O,
+	       template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '01000000'B,
+		    cmd_code := Re_Auth,
+		    app_id := int2oct(c_DIAMETER_3GPP_S6b_AID, 4),
+		    hbh_id := hbh_id, ete_id := ete_id,
+		    avps := {
+			ts_AVP_SessionId(sess_id),
+			/* Optional: DRMP, */
+			ts_AVP_ResultCode(res_code),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm)
+	});
+
+}

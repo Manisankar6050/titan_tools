@@ -1,0 +1,539 @@
+/* Encoding/Decoding routines for GSM System Information messages
+ * according to 3GPP TS 44.018 Version 12.3.0 Release 12
+ *
+ * (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module GSM_Types {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Misc_Helpers all;
+
+type integer GsmArfcn (0..1023);
+type integer UmtsArfcn (0..16383);
+type integer UmtsScramblingCode (0..511);
+const integer GsmMaxFrameNumber := 26*51*2048;
+type integer GsmFrameNumber (0..GsmMaxFrameNumber);
+type integer GsmRxLev (0..63);
+type integer GsmTsc (0..7) with { variant "FIELDLENGTH(8)" };
+type uint32_t GsmTmsi;
+type OCT4 GprsTlli;
+type hexstring GsmMcc length(3);
+type hexstring GsmMnc length(2 .. 3);
+type uint16_t GsmLac;
+type uint16_t GsmCellId;
+type octetstring GroupCallRef length(1 .. 5);
+
+
+/* ARFCN with explicit band discrimination */
+type record GsmBandArfcn {
+	boolean		pcs,
+	boolean		uplink,
+	BIT4		spare,
+	GsmArfcn	arfcn
+} with {
+	variant (arfcn) "BYTEORDER(last)"
+	variant (arfcn) "FIELDLENGTH(10)"
+};
+
+template (value) GsmBandArfcn
+ts_GsmBandArfcn(template (value) GsmArfcn arfcn,
+		template (value) boolean pcs := false,
+		template (value) boolean uplink := false) := {
+	pcs := pcs,
+	uplink := uplink,
+	spare := '0000'B,
+	arfcn := arfcn
+};
+template GsmBandArfcn
+tr_GsmBandArfcn(template (present) GsmArfcn arfcn,
+		template (present) boolean pcs := ?,
+		template (present) boolean uplink := ?) := {
+	pcs := pcs,
+	uplink := uplink,
+	spare := ?,
+	arfcn := arfcn
+};
+
+/* see enum 'gsm_phys_chan_config' in libosmocore */
+type enumerated PchanConfig {
+	GSM_PCHAN_NONE,
+	GSM_PCHAN_CCCH,
+	GSM_PCHAN_CCCH_SDCCH4,
+	GSM_PCHAN_CCCH_SDCCH4_CBCH,
+	GSM_PCHAN_SDCCH8,
+	GSM_PCHAN_SDCCH8_CBCH,
+	GSM_PCHAN_TCHF,
+	GSM_PCHAN_TCHH,
+	GSM_PCHAN_PDCH,
+	/* IPA style dynamic TCH/F+PDCH */
+	GSM_PCHAN_TCHF_PDCH,
+	/* Osmocom style dynamic TCH/H+TCH/F+PDCH */
+	GSM_PCHAN_TCHH_TCHF_PDCH
+};
+
+type enumerated GprsCodingScheme {
+	CS1, CS2, CS3, CS4
+};
+
+function f_gprs_blocksize(GprsCodingScheme cs) return integer {
+	select (cs) {
+	case (CS1) { return 22 }
+	case (CS2) { return 32 }
+	case (CS3) { return 38 }
+	case (CS3) { return 52 }
+	}
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				log2str("Invalid GPRS CS ", cs));
+	return 0;
+}
+
+const GprsTlli TLLI_UNUSED := 'FFFFFFFF'O;
+function f_gen_tlli() return GprsTlli {
+	var GprsTlli tlli := f_rnd_octstring(4);
+	if (tlli == TLLI_UNUSED) {
+		tlli := 'EEEEEEEE'O;
+	}
+	return tlli;
+}
+
+/* 10.5.2.8 */
+type enumerated ChannelNeeded {
+	CHAN_NEED_ANY	(0),
+	CHAN_NEED_SDCCH	(1),
+	CHAN_NEED_TCH_F	(2),
+	CHAN_NEED_TCH_H	(3)
+} with { variant "FIELDLENGTH(2)" };
+type record ChannelNeeded12 {
+	ChannelNeeded	second,
+	ChannelNeeded	first
+} with { variant "" };
+
+
+/* TS 48.058 9.3.1 Channel Number IE */
+type enumerated RslChanNr0 {
+	RSL_CHAN_NR_INVALID	('00000'B),
+	RSL_CHAN_NR_Bm_ACCH	('00001'B),
+	RSL_CHAN_NR_BCCH	('10000'B),
+	RSL_CHAN_NR_RACH	('10001'B),
+	RSL_CHAN_NR_PCH_AGCH	('10010'B),
+	RSL_CHAN_NR_OSMO_PDCH	('11000'B),
+	RSL_CHAN_NR_OSMO_CBCH4	('11001'B),
+	RSL_CHAN_NR_OSMO_CBCH8	('11010'B),
+	RSL_CHAN_NR_OSMO_VAMOS_Bm_ACCH	('11101'B)
+} with { variant "FIELDLENGTH(5)" variant "FIELDORDER(msb)" };
+
+type record RslChanNr2 {
+	BIT4		tag ('0001'B, '1111'B),
+	uint1_t		sub_chan
+} with { variant "FIELDLENGTH(5)" variant "FIELDORDER(msb)" };
+
+type record RslChanNr4 {
+	BIT3		tag ('001'B),
+	uint2_t		sub_chan
+} with { variant "FIELDLENGTH(5)" variant "FIELDORDER(msb)" };
+
+type record RslChanNr8 {
+	BIT2		tag ('01'B),
+	uint3_t		sub_chan
+} with { variant "FIELDLENGTH(5)" variant "FIELDORDER(msb)" };
+
+type union RslChanNrU {
+	RslChanNr0	ch0,
+	RslChanNr2	lm,
+	RslChanNr4	sdcch4,
+	RslChanNr8	sdcch8
+} with {
+	variant "TAG(lm, tag = '0001'B;
+			lm, tag = '1111'B;
+			sdcch4, tag = '001'B;
+			sdcch8, tag = '01'B;
+			ch0, OTHERWISE)"
+	variant "FIELDLENGTH(5)"
+	variant "FIELDORDER(msb)"
+};
+
+type record RslChannelNr {
+	RslChanNrU	u,
+	uint3_t		tn
+} with { variant "FIELDLENGTH(8)" variant "FIELDORDER(msb)" };
+
+template RslChannelNr t_RslChanNr0(template uint3_t tn, template RslChanNr0 cht) := {
+	u := { ch0 := cht },
+	tn := tn
+}
+
+template RslChannelNr t_RslChanNr_RACH(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_RACH);
+template RslChannelNr t_RslChanNr_BCCH(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_BCCH);
+template RslChannelNr t_RslChanNr_PCH_AGCH(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_PCH_AGCH);
+template RslChannelNr t_RslChanNr_Bm(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_Bm_ACCH);
+template RslChannelNr t_RslChanNr_PDCH(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_OSMO_PDCH);
+template RslChannelNr t_RslChanNr_CBCH4(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_OSMO_CBCH4);
+template RslChannelNr t_RslChanNr_CBCH8(template uint3_t tn) := t_RslChanNr0(tn, RSL_CHAN_NR_OSMO_CBCH8);
+template RslChannelNr t_RslChanNr_Lm(template uint3_t tn, template uint1_t sub_slot) := {
+	u := { lm := { tag := '0001'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template RslChannelNr t_RslChanNr_SDCCH4(template uint3_t tn, template uint2_t sub_slot) := {
+	u := { sdcch4 := { tag := '001'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template RslChannelNr t_RslChanNr_SDCCH8(template uint3_t tn, template uint3_t sub_slot) := {
+	u := { sdcch8 := { tag := '01'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template RslChannelNr t_RslChanNr_Osmo_VAMOS_Bm(template uint3_t tn) := {
+	u := { ch0 := RSL_CHAN_NR_OSMO_VAMOS_Bm_ACCH },
+	tn := tn
+}
+
+template RslChannelNr t_RslChanNr_Osmo_VAMOS_Lm(template uint3_t tn, template uint1_t sub_slot) := {
+	u := { lm := { tag := '1111'B, sub_chan := sub_slot } },
+	tn := tn
+}
+
+template (value) RslChannelNr ts_RslChanNr0(uint3_t tn, RslChanNr0 cht) := {
+	u := { ch0 := cht },
+	tn := tn
+}
+template (value) RslChannelNr ts_RslChanNr_RACH(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_RACH);
+template (value) RslChannelNr ts_RslChanNr_BCCH(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_BCCH);
+template (value) RslChannelNr ts_RslChanNr_PCH_AGCH(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_PCH_AGCH);
+template (value) RslChannelNr ts_RslChanNr_Bm(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_Bm_ACCH);
+template (value) RslChannelNr ts_RslChanNr_PDCH(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_OSMO_PDCH);
+template (value) RslChannelNr ts_RslChanNr_CBCH4(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_OSMO_CBCH4);
+template (value) RslChannelNr ts_RslChanNr_CBCH8(uint3_t tn) := ts_RslChanNr0(tn, RSL_CHAN_NR_OSMO_CBCH8);
+template (value) RslChannelNr ts_RslChanNr_Lm(uint3_t tn, uint1_t sub_slot) := {
+	u := { lm := { tag := '0001'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template (value) RslChannelNr ts_RslChanNr_SDCCH4(uint3_t tn, uint2_t sub_slot) := {
+	u := { sdcch4 := { tag := '001'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template (value) RslChannelNr ts_RslChanNr_SDCCH8(uint3_t tn, uint3_t sub_slot) := {
+	u := { sdcch8 := { tag := '01'B, sub_chan := sub_slot } },
+	tn := tn
+}
+template (value) RslChannelNr ts_RslChanNr_Osmo_VAMOS_Bm(uint3_t tn) := {
+	u := { ch0 := RSL_CHAN_NR_OSMO_VAMOS_Bm_ACCH },
+	tn := tn
+}
+template (value) RslChannelNr ts_RslChanNr_Osmo_VAMOS_Lm(uint3_t tn, uint1_t sub_slot) := {
+	u := { lm := { tag := '1111'B, sub_chan := sub_slot } },
+	tn := tn
+}
+
+
+/* TS 48.058 9.3.2 Link ID */
+type enumerated RslLinkIdC {
+	FACCH_SDCCH	(0),
+	SACCH		(1),
+	OSMO_PTCCH	(2) /* Osmocom (trxcon) specific extension */
+} with { variant "FIELDLENGTH(2)" };
+
+type enumerated RslSapi0Prio {
+	SAPI0_PRIO_NORMAL	(0),
+	SAPI0_PRIO_HIGH		(1),
+	SAPI0_PRIO_LOW		(2)
+} with { variant "FIELDLENGTH(2)" };
+
+type uint3_t GsmSapi;
+
+type record RslLinkId {
+	RslLinkIdC	c,
+	boolean		na,
+	RslSapi0Prio	prio,
+	GsmSapi		sapi
+} with { variant "" };
+
+template RslLinkId tr_RslLinkId := {
+	c := ?,
+	na := ?,
+	prio := ?,
+	sapi := ?
+};
+
+template RslLinkId tr_RslLinkID_DCCH(template GsmSapi sapi) modifies tr_RslLinkId := {
+	c := FACCH_SDCCH,
+	na := false,
+	sapi := sapi
+};
+
+template RslLinkId tr_RslLinkID_SACCH(template GsmSapi sapi) modifies tr_RslLinkId := {
+	c := SACCH,
+	na := false,
+	sapi := sapi
+};
+
+template RslLinkId tr_RslLinkID_OSMO_PTCCH(template GsmSapi sapi) modifies tr_RslLinkId := {
+	c := OSMO_PTCCH,
+	na := false,
+	sapi := sapi
+};
+
+template (value) RslLinkId ts_RslLinkID_DCCH(GsmSapi sapi) := {
+	c := FACCH_SDCCH,
+	na := false,
+	prio := SAPI0_PRIO_NORMAL,
+	sapi := sapi
+};
+
+template (value) RslLinkId ts_RslLinkID_SACCH(GsmSapi sapi) := {
+	c := SACCH,
+	na := false,
+	prio := SAPI0_PRIO_NORMAL,
+	sapi := sapi
+};
+
+template (value) RslLinkId ts_RslLinkID_OSMO_PTCCH(GsmSapi sapi) := {
+	c := OSMO_PTCCH,
+	na := false,
+	prio := SAPI0_PRIO_NORMAL,
+	sapi := sapi
+};
+
+function f_hex_is_odd_length(hexstring digits) return bitstring {
+	if (lengthof(digits) rem 2 == 1) {
+		return '1'B;
+	} else {
+		return '0'B;
+	}
+}
+
+
+/* TS 04.12 Section 3.3.1 Block type */
+type record CBCH_BlockType {
+	BIT1	spare,
+	BIT2	lpd,
+	boolean last_block,
+	uint4_t	seq_nr
+};
+template (value) CBCH_BlockType ts_CBCH_BlockType(template (value) uint4_t seq_nr, template (value) boolean last_block) := {
+	spare := '0'B,
+	lpd := '01'B,
+	last_block := last_block,
+	seq_nr := seq_nr
+};
+template CBCH_BlockType tr_CBCH_BlockType(template uint4_t seq_nr := ?, template boolean last_block := ?) := {
+	spare := '0'B,
+	lpd := '01'B,
+	last_block := last_block,
+	seq_nr := seq_nr
+};
+
+/* TS 04.12 Section 3.3 */
+type record CBCH_Block {
+	CBCH_BlockType	block_type,
+	OCT22		payload
+};
+template (value) CBCH_Block ts_CBCH_Block(template (value) uint4_t seq_nr, template (value) boolean last_block, template (value) OCT22 payload) := {
+	block_type := ts_CBCH_BlockType(seq_nr, last_block),
+	payload := payload
+};
+template CBCH_Block tr_CBCH_Block(template uint4_t seq_nr := ?, template boolean last_block := ?, template OCT22 payload := ?) := {
+	block_type := tr_CBCH_BlockType(seq_nr, last_block),
+	payload := payload
+};
+
+
+external function enc_CBCH_Block(in CBCH_Block msg) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_CBCH_Block(in octetstring stream) return CBCH_Block
+	with { extension "prototype(convert) decode(RAW)" };
+
+
+/* Convert RF signal level in dBm to RxLev (TS 45.008 Chapter 8.1.4) */
+function dbm2rxlev(integer dbm) return uint6_t {
+	var integer rxlev := dbm + 110;
+	if (rxlev > 63) {
+		rxlev := 63;
+	} else if (rxlev < 0) {
+		rxlev := 0;
+	}
+	return rxlev;
+}
+
+function rxlev2dbm(uint6_t rxlev) return integer {
+	return -110 + rxlev;
+}
+
+/* convert BER to RxQual value (TS 45.008 Chapter 8.2.4 */
+function ber2rxqual(float ber) return uint3_t {
+	if (ber < 0.2) {
+		return 0;
+	} else if (ber < 0.4) {
+		return 1;
+	} else if (ber < 0.8) {
+		return 2;
+	} else if (ber < 1.6) {
+		return 3;
+	} else if (ber < 3.2) {
+		return 4;
+	} else if (ber < 6.4) {
+		return 5;
+	} else if (ber < 12.8) {
+		return 6;
+	} else {
+		return 7;
+	}
+}
+
+/* convert RxQual to BER (TS 45.008 Chapter 8.2.4 */
+function rxqual2ber(uint3_t rxqual) return float {
+	select (rxqual) {
+	case (0) { return 0.14 }
+	case (1) { return 0.28 }
+	case (2) { return 0.57 }
+	case (3) { return 1.13 }
+	case (4) { return 2.26 }
+	case (5) { return 4.53 }
+	case (6) { return 9.05 }
+	case (7) { return 18.10 }
+	case else { return 1000.0 }
+	}
+}
+
+const float GSM_FRAME_DURATION := 0.12/26.0; /* 4.615 ms */
+const float GSM51_MFRAME_DURATION := 51.0 * GSM_FRAME_DURATION; /* 235.365 ms */
+const float GSM51_MFRAMES_PER_SEC := 1.0 / GSM51_MFRAME_DURATION; /* 4.248 */
+
+/* number of downlink CCCH blocks per second */
+function f_ccch_blocks_per_mframe(boolean combined_ccch) return integer {
+	if (not combined_ccch) {
+		/* 9 blocks per 51 multiframe */
+		return 9;
+	} else {
+		/* 3 blocks per 51 multiframe */
+		return 3;
+	}
+}
+
+/* this ignores any possible paging combining! */
+function f_pch_block_rate_est(boolean combined_ccch, integer bs_ag_blks_res) return float {
+	var integer ccch_per_mframe := f_ccch_blocks_per_mframe(combined_ccch);
+	var integer pch_per_mframe := ccch_per_mframe - bs_ag_blks_res;
+	return GSM51_MFRAMES_PER_SEC * int2float(pch_per_mframe);
+}
+
+/* this ignores any possible imm.ass combining! */
+function f_agch_block_rate_est(boolean combined_ccch, integer bs_ag_blks_res) return float {
+	var integer ccch_per_mframe := f_ccch_blocks_per_mframe(combined_ccch);
+	return GSM51_MFRAMES_PER_SEC * int2float(bs_ag_blks_res);
+}
+
+/* compute TC as per 45.002 6.3.1.3 */
+function f_gsm_compute_tc(integer fn) return integer {
+	return (fn / 51) mod 8;
+}
+
+type hexstring GsmBcdString with { variant "HEXORDER(low)" };
+type GsmBcdString BcdMccMnc with { variant "FIELDLENGTH(6)" };
+
+/* hex2oct()/oct2hex() do not respect the HEXORDER/FIELDLENGTH attributes,
+ * so better use the functions, employing TITAN's RAW codec, dclared below. */
+external function enc_BcdMccMnc(in BcdMccMnc str) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_BcdMccMnc(in octetstring str) return BcdMccMnc
+	with { extension "prototype(convert) decode(RAW)" };
+
+/* Compute BcdMccMnc from a pair of GsmMcc/GsmMnc values */
+function f_build_BcdMccMnc(GsmMcc mcc, GsmMnc mnc) return BcdMccMnc {
+	if (lengthof(mnc) == 2) {
+		mnc := mnc[0] & mnc[1] & 'F'H;
+	}
+	/* 3GPP TS 24.008, Figure 10.5.13
+	 * | MCC digit 2 | MCC digit 1 |  octet 1
+	 * | MNC digit 3 | MCC digit 3 |  octet 2
+	 * | MNC digit 2 | MNC digit 1 |  octet 3
+	 *
+	 * NOTE: TITAN takes care of swapping the nibbles in octets,
+	 * so we use the normal (low-to-high) ordering here. */
+	return mcc[0] & mcc[1] & mcc[2] & mnc[2] & mnc[0] & mnc[1];
+}
+
+/* Compute BcdMccMnc from integer values */
+function f_build_BcdMccMnc_int(uint16_t mcc, uint16_t mnc, boolean mnc_3_digits) return BcdMccMnc {
+	var hexstring mcc_str := str2hex(int2str(mcc));
+	var hexstring mnc_str := str2hex(int2str(mnc));
+	if (mnc_3_digits == true) {
+		return f_build_BcdMccMnc(mcc_str[0] & mcc_str[1] & mcc_str[2],
+					 mnc_str[0] & mnc_str[1] & mnc_str[2]);
+	} else {
+		return f_build_BcdMccMnc(mcc_str[0] & mcc_str[1] & mcc_str[2],
+					 mnc_str[0] & mnc_str[1]);
+	}
+}
+
+testcase TC_selftest_BcdMccMnc() runs on Dummy_CT {
+	if (not match('62F224'O, decmatch BcdMccMnc:'262F42'H)) { setverdict(fail); }
+	if (not match('21F354'O, decmatch BcdMccMnc:'123F45'H)) { setverdict(fail); }
+	if (not match('216354'O, decmatch BcdMccMnc:'123645'H)) { setverdict(fail); }
+
+	if (not match(enc_BcdMccMnc('262F42'H), '62F224'O)) { setverdict(fail); }
+	if (not match(enc_BcdMccMnc('123F45'H), '21F354'O)) { setverdict(fail); }
+	if (not match(enc_BcdMccMnc('123645'H), '216354'O)) { setverdict(fail); }
+
+	if (not match(f_build_BcdMccMnc('262'H,  '42'H), BcdMccMnc:'262F42'H)) { setverdict(fail); }
+	if (not match(f_build_BcdMccMnc('123'H,  '45'H), BcdMccMnc:'123F45'H)) { setverdict(fail); }
+	if (not match(f_build_BcdMccMnc('123'H, '456'H), BcdMccMnc:'123645'H)) { setverdict(fail); }
+
+	if (not match(f_build_BcdMccMnc_int(262, 42, false), BcdMccMnc:'262F42'H)) { setverdict(fail); }
+	if (not match(f_build_BcdMccMnc_int(123, 45, false), BcdMccMnc:'123F45'H)) { setverdict(fail); }
+	if (not match(f_build_BcdMccMnc_int(123, 456, true), BcdMccMnc:'123645'H)) { setverdict(fail); }
+
+	setverdict(pass);
+}
+
+function f_enc_mcc_mnc(GsmMcc mcc, GsmMnc mnc) return OCT3 {
+	if (lengthof(mnc) == 2) {
+		return hex2oct(mcc[1] & mcc[0] & 'F'H & mcc[2] & mnc[1] & mnc[0]);
+	} else {
+		return hex2oct(mcc[1] & mcc[0] & mnc[2] & mcc[2] & mnc[1] & mnc[0]);
+	}
+}
+
+function f_dec_mcc_mnc(in OCT3 mcc_mnc, out GsmMcc mcc, out GsmMnc mnc) {
+	var hexstring hs := oct2hex(mcc_mnc);
+	mcc := hs[1] & hs[0] & hs[3];
+	mnc := hs[5] & hs[4];
+	if (hs[2] != 'F'H) {
+		mnc := mnc & hs[2];
+	}
+}
+
+/* 24.008 10.5.1.3 */
+type record LocationAreaIdentification {
+	BcdMccMnc	mcc_mnc,
+	uint16_t	lac
+} with { variant "" };
+template (value) LocationAreaIdentification ts_LAI(BcdMccMnc mcc_mnc, uint16_t lac) := {
+	mcc_mnc := mcc_mnc,
+	lac := lac
+};
+
+/* 24.008 10.5.5.15 */
+type record RoutingAreaIdentification {
+	LocationAreaIdentification	lai,
+	uint8_t				rac
+} with { variant "" };
+template (value) RoutingAreaIdentification ts_RAI(template (value) LocationAreaIdentification lai, uint8_t rac) := {
+	lai := lai,
+	rac := rac
+};
+
+external function enc_RoutingAreaIdentification(RoutingAreaIdentification rai) return octetstring
+with { extension "prototype(convert)" extension "encode(RAW)" }
+
+/* TS 24.008 10.5.1.1 */
+type uint16_t CellIdentity;
+
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" }

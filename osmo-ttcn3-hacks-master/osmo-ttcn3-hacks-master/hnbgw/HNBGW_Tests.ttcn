@@ -1,0 +1,2775 @@
+module HNBGW_Tests {
+
+/* Integration Tests for OsmoHNBGW
+ * (C) 2021 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This test suite tests OsmoHNBGW while emulating the hNodeB as well as MSC, SGSN, MGW
+ * See README for more details.
+ */
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from GSM_Types all;
+import from Osmocom_Types all;
+import from IPL4asp_Types all;
+import from Native_Functions all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+import from Osmocom_CTRL_Adapter all;
+
+import from StatsD_Types all;
+import from StatsD_CodecPort all;
+import from StatsD_CodecPort_CtrlFunct all;
+import from StatsD_Checker all;
+
+import from Osmocom_VTY_Functions all;
+import from TELNETasp_PortType all;
+
+import from HNBAP_Templates all;
+import from HNBAP_IEs all;
+import from HNBAP_PDU_Descriptions all;
+
+import from RUA_IEs all;
+import from RUA_Templates all;
+import from RUA_Emulation all;
+
+import from Iuh_Emulation all;
+
+import from RANAP_Types all;
+import from RANAP_PDU_Descriptions all;
+import from RANAP_PDU_Contents all;
+import from RANAP_IEs all;
+import from RANAP_Templates all;
+import from RANAP_CodecPort all;
+import from SCCP_Templates all;
+
+import from RAN_Adapter all;
+import from RAN_Emulation all;
+
+import from MGCP_Emulation all;
+import from MGCP_Types all;
+import from MGCP_Templates all;
+import from MGCP_CodecPort all;
+import from SDP_Types all;
+import from SDP_Templates all;
+
+import from PFCP_Types all;
+import from PFCP_Emulation all;
+import from PFCP_Templates all;
+import from PFCP_CodecPort all;
+
+import from TCCConversion_Functions all;
+import from MobileL3_Types all;
+import from MobileL3_CommonIE_Types all;
+import from MobileL3_GMM_SM_Types all;
+import from L3_Templates all;
+import from L3_Common all;
+
+import from SCCPasp_Types all;
+
+import from ConnHdlr all;
+import from Mutex all;
+
+const integer NUM_MSC := 4;
+const integer NUM_SGSN := 4;
+
+const integer FIRST_MSC_IDX := 0;
+const integer FIRST_SGSN_IDX := NUM_MSC;
+
+/* Translate from {msc,sgsn}x{0..n} to the proper index to use in g_cn[].
+ * g_cn[] stores CN links, MSCs and SGSNs in the same array.
+ * For example, for 'sgsn 23', use g_cn[ f_cn_idx(ps_domain := true, cn_nr := 23) ].
+ *
+ * Note the naming:
+ * cn_nr is the number used in the cfg file, as in 'msc 0'.
+ * cn_idx is the array index in g_cn[].
+ */
+private function f_cn_idx(boolean ps_domain, integer cn_nr := 0) return integer
+{
+	if (ps_domain) {
+		return FIRST_SGSN_IDX + cn_nr;
+	}
+	return FIRST_MSC_IDX + cn_nr;
+}
+
+modulepar {
+	/* IP address at which the HNodeB can be reached */
+	charstring mp_hnodeb_ip := "127.0.0.1";
+	integer mp_hnodeb_port := -1;
+
+	/* IP address at which the test binds */
+	charstring mp_hnbgw_ip := "127.0.0.1";
+	integer mp_hnbgw_iuh_port := 29169;
+	integer mp_hnbgw_ctrl_port := 4262;
+
+	/* Our emulated StatsD server: */
+	charstring mp_local_statsd_ip := "127.0.0.1";
+	integer mp_local_statsd_port := 8125;
+	charstring mp_statsd_prefix := "TTCN3.";
+
+	charstring mp_mgw_ip := "127.0.0.1";
+	integer mp_mgw_port := 2427;
+
+	RAN_Configurations mp_cn_cfg := {
+		/* MSCs (NUM_MSC entries) */
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { 23905, "127.0.0.1", 2905, "127.0.0.1" },
+			own_pc := 188,	/* 0.23.4 first MSC emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 0.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 1
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { 23907, "127.0.0.1", 2905, "127.0.0.1" },
+			own_pc := 2,	/* 0.0.2 second MSC emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 0.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 3
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { 23909, "127.0.0.1", 2905, "127.0.0.1" },
+			own_pc := 3,	/* 0.0.3 third MSC emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 0.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 5
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { 23911, "127.0.0.1", 2905, "127.0.0.1" },
+			own_pc := 4,	/* 0.0.4 fourth MSC emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 0.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 7
+		},
+
+		/* SGSNs (NUM_SGSN entries) */
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { /* local */ 23906, "127.0.0.1", /* remote */ 2905, "127.0.0.1" },
+			own_pc := 185,	/* 0.23.1 first SGSN emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 2237, 1.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 2
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { /* local */ 23908, "127.0.0.1", /* remote */ 2905, "127.0.0.1" },
+			own_pc := 10,	/* 0.1.2 second SGSN emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 2237, 1.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 4
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { /* local */ 23910, "127.0.0.1", /* remote */ 2905, "127.0.0.1" },
+			own_pc := 11,	/* 0.1.3 third SGSN emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 2237, 1.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 6
+		},
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { /* local */ 23912, "127.0.0.1", /* remote */ 2905, "127.0.0.1" },
+			own_pc := 12,	/* 0.1.4 fourth SGSN emulation */
+			own_ssn := 142,
+			peer_pc := 189, /* 2237, 1.23.5 osmo-hnbgw */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 8
+		}
+	};
+
+	boolean mp_enable_pfcp_tests := false;
+	/* IP address at which we listen for PFCP to emulate a UPF in ttcn3 */
+	charstring mp_pfcp_ip_local := "127.0.0.1";
+	/* IP address from which the SUT (osmo-hnbgw) sends PFCP requests, and to which the ttcn3 UPF emulation sends
+	 * PFCP responses. */
+	charstring mp_pfcp_ip_remote := "127.0.0.2";
+	charstring mp_pfcp_upf_node_id := "\07osmocom\03org";
+
+	boolean mp_validate_talloc_asn1 := true;
+
+	/* The X31 timer configured at osmo-hnbgw (seconds). This provided an idea on
+	 * minimum time the test must wait to consider this timer triggered */
+	integer mp_hnbgw_timer_x31 := 5;
+}
+
+function MSC_UnitdataCallback(RANAP_PDU ranap) runs on RAN_Emulation_CT return template RANAP_PDU {
+	// TODO: Actually implement unitdata handling
+	return omit;
+}
+
+const RanOps MSC_RanOps := {
+	ranap_create_cb := refers(RAN_Emulation.RanapExpectedCreateCallback),
+	ranap_unitdata_cb := refers(MSC_UnitdataCallback),
+	ranap_connect_ind_auto_res := true,
+	ps_domain := false,
+	decode_dtap := false,
+	role_ms := false,
+	protocol := RAN_PROTOCOL_RANAP,
+	transport := RANAP_TRANSPORT_IuCS,
+	use_osmux := false,
+	bssap_reset_retries := 1,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+}
+
+const integer NUM_HNB := 2;
+
+type component test_CT extends CTRL_Adapter_CT, StatsD_ConnHdlr, PFCP_ConnHdlr {
+	var boolean g_initialized := false;
+
+	/********************* Iu side */
+	var RAN_Adapter g_cn[NUM_MSC + NUM_SGSN];
+
+	/********************* Iuh side */
+	var HnbConfig g_hnb_cfg[NUM_HNB];
+	var Iuh_Emulation_CT vc_Iuh[NUM_HNB];
+	var RUA_Emulation_CT vc_RUA[NUM_HNB];
+	port HNBAP_PT HNBAP[NUM_HNB];
+	/* Number of HNBs to be used/started by the test */
+	var integer g_num_hnbs := NUM_HNB;
+
+	var MGCP_Emulation_CT vc_MGCP;
+	port TELNETasp_PT HNBGWVTY;
+	var StatsD_Checker_CT vc_STATSD;
+	var PFCP_Emulation_CT vc_PFCP;
+	/* global test case guard timer (actual timeout value is set in f_init()) */
+	timer T_guard := 45.0;
+
+	/* The cnlink type 'msc' or 'sgsn', to be used in CTRL commands to obtain counters */
+	var charstring g_ctr_cn_node_name;
+	/* Counter state */
+	var CounterNameValsList g_ctr_cn;
+	var CounterNameValsList g_ctr_hnb;
+
+	var RanOps g_ran_ops := MSC_RanOps;
+
+	var MutexDispCT vc_mutex_disp;
+}
+
+/* global altstep for global guard timer; */
+altstep as_Tguard() runs on test_CT {
+	[] T_guard.timeout {
+			setverdict(fail, "Timeout of T_guard");
+			mtc.stop;
+		}
+}
+
+function f_init_vty(charstring id := "foo") runs on test_CT {
+	if (HNBGWVTY.checkstate("Mapped")) {
+		/* skip initialization if already executed once */
+		return;
+	}
+	map(self:HNBGWVTY, system:HNBGWVTY);
+	f_vty_set_prompts(HNBGWVTY);
+	f_vty_transceive(HNBGWVTY, "enable");
+}
+
+function f_init_mgcp(charstring id) runs on test_CT {
+	id := id & "-MGCP";
+	var MGCPOps ops := {
+		create_cb := refers(MGCP_Emulation.ExpectedCreateCallback),
+		unitdata_cb := refers(MGCP_Emulation.DummyUnitdataCallback)
+	}
+	var MGCP_conn_parameters pars := {
+		callagent_ip := mp_hnbgw_ip,
+		callagent_udp_port := -1,
+		mgw_ip := mp_mgw_ip,
+		mgw_udp_port := mp_mgw_port,
+		multi_conn_mode := false
+	}
+
+	vc_MGCP := MGCP_Emulation_CT.create(id) alive;
+	map(vc_MGCP:MGCP, system:MGCP_CODEC_PT);
+	vc_MGCP.start(MGCP_Emulation.main(ops, pars, id));
+}
+
+private function f_statsd_pfcp_associated() runs on test_CT return boolean
+{
+	var charstring key_name := mp_statsd_prefix & "upf.0.pfcp_associated";
+	var StatsDMetricKeys statsd_keys := { valueof(ts_StatsDMetricKey(key_name, "g")) };
+	var StatsDMetrics statsd_snapshot;
+	var boolean pfcp_associated;
+
+	statsd_snapshot := f_statsd_snapshot(statsd_keys, since_last_snapshot := false);
+	pfcp_associated := statsd_snapshot[0].val == 1;
+
+	return pfcp_associated;
+}
+
+private function f_pfcp_wait_assoc_setup_req(boolean fail_timeout := true) runs on test_CT {
+	var PDU_PFCP m;
+	timer T := 16.0;
+	/* ask PFCPEM to route all PDUs to us */
+	f_PFCPEM_subscribe_bcast();
+
+	T.start;
+	alt {
+	[] PFCP.receive(tr_PFCP_Assoc_Setup_Req()) -> value m {
+			PFCP.send(ts_PFCP_Assoc_Setup_Resp(m.sequence_number, ts_PFCP_Node_ID_fqdn(mp_pfcp_upf_node_id),
+					   ts_PFCP_Cause(REQUEST_ACCEPTED), 1234));
+			setverdict(pass);
+		}
+	[] PFCP.receive(PDU_PFCP:?) {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Got an unexpected PFCP message, was waiting for ", tr_PFCP_Assoc_Setup_Req()));
+		}
+	[fail_timeout] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						log2str("Timeout waiting for PFCP ", tr_PFCP_Assoc_Setup_Req()));
+		}
+	[not fail_timeout] T.timeout {
+			log("Timeout waiting for PFCP ", tr_PFCP_Assoc_Setup_Req());
+		}
+	}
+	T.stop;
+	/* ask PFCPEM to *not* route all PDUs to us anymore */
+	f_PFCPEM_unsubscribe_bcast();
+}
+
+function f_init_pfcp(charstring id) runs on test_CT {
+	id := id & "-PFCP";
+
+	var PFCP_Emulation_Cfg pfcp_cfg := {
+		pfcp_bind_ip := mp_pfcp_ip_local,
+		pfcp_bind_port := PFCP_PORT,
+		pfcp_remote_ip := mp_pfcp_ip_remote,
+		pfcp_remote_port := PFCP_PORT,
+		role := UPF
+	};
+
+	vc_PFCP := PFCP_Emulation_CT.create(id) alive;
+	vc_PFCP.start(PFCP_Emulation.main(pfcp_cfg));
+
+	if (not mp_enable_pfcp_tests) {
+		return;
+	}
+
+	/* Temporarily access Statsd during test startup: */
+	connect(self:STATSD_PROC, vc_STATSD:STATSD_PROC);
+
+	if (not f_statsd_pfcp_associated()) {
+		connect(self:PFCP, vc_PFCP:CLIENT);
+		connect(self:PFCP_PROC, vc_PFCP:CLIENT_PROC);
+		f_pfcp_wait_assoc_setup_req(fail_timeout := true);
+		disconnect(self:PFCP, vc_PFCP:CLIENT);
+		disconnect(self:PFCP_PROC, vc_PFCP:CLIENT_PROC);
+	}
+
+	disconnect(self:STATSD_PROC, vc_STATSD:STATSD_PROC);
+}
+
+function f_init_hnodeb(charstring id, integer hnb_idx, RuaOps rua_ops) runs on test_CT {
+	id := id & "-Iuh" & int2str(hnb_idx);
+
+	/* Iuh lower layer (RUA/HNBAP demux) */
+	var Iuh_conn_parameters iuh_pars;
+	iuh_pars.remote_ip := mp_hnbgw_ip;
+	iuh_pars.remote_sctp_port := mp_hnbgw_iuh_port;
+	iuh_pars.local_ip := mp_hnodeb_ip;
+	iuh_pars.local_sctp_port := mp_hnodeb_port + hnb_idx;
+	vc_Iuh[hnb_idx] := Iuh_Emulation_CT.create(id) alive;
+	connect(self:HNBAP[hnb_idx], vc_Iuh[hnb_idx]:HNBAP);
+
+	vc_RUA[hnb_idx] := RUA_Emulation_CT.create(id & "-RUA") alive;
+	connect(vc_RUA[hnb_idx]:RUA, vc_Iuh[hnb_idx]:RUA);
+
+	/* Start Iuh side components */
+	vc_Iuh[hnb_idx].start(Iuh_Emulation.main(iuh_pars, id));
+	vc_RUA[hnb_idx].start(RUA_Emulation.main(rua_ops, id & "-RUA"));
+}
+
+function f_drop_hnodeb(integer hnb_idx) runs on test_CT
+{
+
+	vc_Iuh[hnb_idx].kill;
+	vc_RUA[hnb_idx].kill;
+	disconnect(self:HNBAP[hnb_idx], vc_Iuh[hnb_idx]:HNBAP);
+	disconnect(vc_RUA[hnb_idx]:RUA, vc_Iuh[hnb_idx]:RUA);
+}
+
+private type record of boolean BooleanList;
+
+private function f_vty_cnlink_allow_attach(TELNETasp_PT pt, boolean ps_domain, BooleanList allow_attach_list)
+{
+	var charstring config := f_vty_transceive_ret(pt, "show running-config");
+
+	var charstring msc_sgsn;
+	if (ps_domain) {
+		msc_sgsn := "sgsn";
+	} else {
+		msc_sgsn := "msc";
+	}
+
+	f_vty_enter_config(pt);
+	for (var integer cn_nr := 0; cn_nr < sizeof(allow_attach_list); cn_nr := cn_nr+1) {
+		if (f_strstr(config, "\n" & msc_sgsn & " " & int2str(cn_nr) & "\n") < 0) {
+			/* There is no 'msc N' for this cn_nr in the running config, so don't create an empty cn by
+			 * stepping into that config node. */
+			log(msc_sgsn, cn_nr, " is not configured, skipping");
+			continue;
+		}
+		f_vty_transceive(pt, msc_sgsn & " " & int2str(cn_nr));
+
+		if (allow_attach_list[cn_nr]) {
+			/* strict := false: ignore if osmo-hnbgw does not support this config option (latest build) */
+			f_vty_transceive(pt, "allow-attach", strict := false);
+		} else {
+			f_vty_transceive(pt, "no allow-attach", strict := false);
+		}
+		f_vty_transceive(pt, "exit");
+	}
+	f_vty_transceive(pt, "exit");
+}
+
+/* Start RAN adapter for CN link N.
+ * e.g. link for 'msc 0' = (ps_domain := false, cn_nr := 0)
+ * link for 'sgsn 3' = (ps_domain := true, cn_nr := 3)
+ */
+private function f_cn_nr_init(boolean ps_domain, integer cn_nr) runs on test_CT {
+	var RanOps ranops := g_ran_ops;
+	ranops.ps_domain := ps_domain;
+	var integer cn_idx := f_cn_idx(ps_domain, cn_nr);
+	var charstring msc_sgsn := "msc";
+	if (ps_domain) {
+		msc_sgsn := "sgsn";
+	}
+	f_ran_adapter_init(g_cn[cn_idx], mp_cn_cfg[cn_idx], "HNBGW_Test." & msc_sgsn & int2str(cn_nr), ranops);
+	f_ran_adapter_start(g_cn[cn_idx]);
+}
+
+private function f_cn_idx_disconnect(integer cn_idx) runs on test_CT {
+	f_ran_adapter_cleanup(g_cn[cn_idx]);
+}
+
+/* global initialization function */
+function f_init(charstring id := "HNBGW", float guard_timeout := 45.0, integer nr_msc := 1, integer nr_sgsn := 1,
+		boolean start_hnb := true) runs on test_CT {
+
+	T_guard.start(guard_timeout);
+	activate(as_Tguard());
+
+	vc_mutex_disp := f_MutexDisp_start();
+
+	f_init_statsd("VirtHNBGW", vc_STATSD, mp_local_statsd_ip, mp_local_statsd_port);
+	f_init_vty("VirtHNBGW");
+	f_ipa_ctrl_start_client(mp_hnbgw_ip, mp_hnbgw_ctrl_port);
+
+	f_init_pfcp(id);
+
+	/* RUA/RANAP emulation on top of lower-layer Iuh */
+	var RuaOps rua_ops := {
+		create_cb := refers(IuhRanapCreateCallback),
+		unitdata_cb := refers(IuhRanapUnitdataCallback)
+	};
+	for (var integer i := 0; i < g_num_hnbs; i := i+1) {
+		g_hnb_cfg[i] := {
+			lai := {
+				mcc_mnc := '00F110'H,
+				lac := 2342 + i
+			},
+			rac := 11 + i,
+			sac := 55,
+			cell_id := 1 + i
+		};
+		f_init_hnodeb(testcasename(), i, rua_ops);
+	}
+
+	/* MSC emulation */
+
+	/* Make sure each MSC's internal state is "DISCONNECTED" at first */
+	for (var integer i := 0; i < NUM_MSC; i := i + 1) {
+		f_vty_transceive(HNBGWVTY, "msc " & int2str(i) & " ranap reset", strict := false);
+	}
+
+	var BooleanList allow_attach := { false, false, false, false };
+	for (var integer i := 0; i < nr_msc; i := i + 1) {
+		var integer cn_idx := FIRST_MSC_IDX + i;
+		allow_attach[i] := true;
+		f_cn_nr_init(ps_domain := false, cn_nr := i);
+	}
+	/* start the test with exactly all enabled MSCs allowed to attach */
+	f_vty_cnlink_allow_attach(HNBGWVTY, false, allow_attach);
+
+	/* SGSN emulation */
+
+	/* Make sure each SGSN's internal state is "DISCONNECTED" at first */
+	for (var integer i := 0; i < NUM_SGSN; i := i + 1) {
+		f_vty_transceive(HNBGWVTY, "sgsn " & int2str(i) & " ranap reset", strict := false);
+	}
+
+	allow_attach := { false, false, false, false };
+	for (var integer i := 0; i < nr_sgsn; i := i + 1) {
+		var integer cn_idx := FIRST_SGSN_IDX + i;
+		allow_attach[i] := true;
+		f_cn_nr_init(ps_domain := true, cn_nr := i);
+	}
+	f_vty_cnlink_allow_attach(HNBGWVTY, true, allow_attach);
+
+	f_init_mgcp(id);
+
+	if (start_hnb) {
+		f_start_hnbs();
+	}
+
+	/* Sometimes, the RUA InitialUE-Message from a test happens too quickly, before the RANAP RESET from
+	 * RAN_Emulation is through, after above f_cn_nr_init(). In the pcap it seems to be a matter of 50 ms. Give some
+	 * grace. */
+	 f_sleep(1.0);
+}
+
+friend function f_shutdown_helper() runs on test_CT {
+	if (mp_validate_talloc_asn1) {
+		f_verify_talloc_bytes(HNBGWVTY, {"asn1_context"}, 1);
+	}
+
+	all component.stop;
+	setverdict(pass);
+	mtc.stop;
+}
+
+/* helper function to start all of the simulated hNodeBs */
+function f_start_hnbs() runs on test_CT {
+	for (var integer i:= 0; i < g_num_hnbs; i := i+1) {
+		f_hnbap_hnb_register(i);
+	}
+}
+
+private function f_hnb_ctr_prefix(HnbConfig hnb_cfg) return charstring
+{
+	var GsmMcc mcc;
+	var GsmMnc mnc;
+	f_dec_mcc_mnc(hex2oct(hnb_cfg.lai.mcc_mnc), mcc, mnc);
+	return mp_statsd_prefix & "hnb." &
+	       hex2str(mcc) & "-" &
+	       hex2str(mnc) & "-" &
+	       "L" & int2str(hnb_cfg.lai.lac) & "-" &
+	       "R" & int2str(hnb_cfg.rac) & "-" &
+	       "S" & int2str(hnb_cfg.sac) & "-" &
+	       "C" & int2str(hnb_cfg.cell_id) & ".";
+}
+
+/***********************************************************************
+ * code running in test_CT, preparing start of per-UE ConnHdlr
+ ***********************************************************************/
+private function f_TestHdlrParams(integer imsi_suffix,
+				  boolean ps_domain := false,
+				  boolean expect_separate_sccp_cr := false,
+				  integer tx_sccp_cr_data_len := 0,
+				  boolean expect_compl_l3_success := true,
+				  integer cn_nr := 0,
+				  template (value) RANAP_IEs.Cause rab_rel_cause := ts_RanapCause_nas_normal)
+ runs on test_CT return TestHdlrParams {
+	var template (value) TestHdlrParams pars;
+	var template (value) MgcpParameters mgcp_pars;
+	var template (value) PfcpParameters pfcp_pars;
+	mgcp_pars := t_MgcpParams(endp_idx := imsi_suffix);
+	pfcp_pars := t_PfcpParams(pfcp_enabled := mp_enable_pfcp_tests,
+				  pfcp_local_addr := mp_pfcp_ip_local,
+				  pfcp_upf_node_id := mp_pfcp_upf_node_id,
+				  upf_f_seid := 1000 + imsi_suffix);
+	pars := t_pars(imsi_suffix,
+		       ps_domain := ps_domain,
+		       expect_separate_sccp_cr := expect_separate_sccp_cr,
+		       tx_sccp_cr_data_len := tx_sccp_cr_data_len,
+		       expect_compl_l3_success := expect_compl_l3_success,
+		       cn_idx := f_cn_idx(ps_domain, cn_nr),
+		       mgcp_pars := mgcp_pars,
+		       pfcp_pars := pfcp_pars,
+		       rab_rel_cause := rab_rel_cause,
+		       hnbgw_timer_x31 := mp_hnbgw_timer_x31);
+	pars.sccp_addr_hnbgw := g_cn[valueof(pars.cn_idx)].sccp_addr_peer;
+	pars.sccp_addr_msc := g_cn[valueof(pars.cn_idx)].sccp_addr_own;
+	return valueof(pars);
+}
+
+/* inbound RUA connection establishment on Iuh side */
+function IuhRanapCreateCallback(ContextId context_id, RUA_IEs.CN_DomainIndicator domain, charstring id)
+runs on RUA_Emulation_CT return RUA_ConnHdlr {
+	log("CreateCallback");
+	return null;
+}
+
+/* inbound RUA connectionless data on Iuh side */
+function IuhRanapUnitdataCallback(RANAP_PDU ranap)
+runs on RUA_Emulation_CT return template RANAP_PDU {
+	log("UnitdataCallback");
+	return omit;
+}
+
+private function f_start_handler_create(TestHdlrParams pars) runs on test_CT return ConnHdlr {
+	var ConnHdlr vc_conn;
+	var charstring id := testcasename() & int2str(pars.hnb_idx);
+
+	vc_conn := ConnHdlr.create(id) alive;
+
+	/* Iuh RUA part */
+	connect(vc_conn:RUA, vc_RUA[pars.hnb_idx]:CLIENT);
+
+	/* MSC or SGSN */
+	connect(vc_conn:BSSAP, g_cn[pars.cn_idx].vc_RAN:CLIENT);
+	connect(vc_conn:BSSAP_PROC, g_cn[pars.cn_idx].vc_RAN:PROC);
+
+	/* MGCP part */
+	connect(vc_conn:MGCP, vc_MGCP:MGCP_CLIENT);
+	connect(vc_conn:MGCP_PROC, vc_MGCP:MGCP_PROC);
+
+	connect(vc_conn:STATSD_PROC, vc_STATSD:STATSD_PROC);
+
+	connect(vc_conn:PFCP, vc_PFCP:CLIENT);
+	connect(vc_conn:PFCP_PROC, vc_PFCP:CLIENT_PROC);
+
+	f_MutexDisp_connect(vc_mutex_disp, vc_conn);
+
+	return vc_conn;
+}
+
+private function f_start_handler_run(ConnHdlr vc_conn, void_fn fn, TestHdlrParams pars) runs on test_CT {
+	var charstring id := testcasename(); // & int2str(pars.ran_idx);
+	pars.hnb := g_hnb_cfg[pars.hnb_idx];
+	vc_conn.start(f_handler_init(fn, id, pars));
+}
+
+function f_start_handler_with_pars(void_fn fn, template (value) TestHdlrParams pars)
+runs on test_CT return ConnHdlr {
+	var ConnHdlr vc_conn;
+	vc_conn := f_start_handler_create(valueof(pars));
+	f_start_handler_run(vc_conn, fn, valueof(pars));
+	return vc_conn;
+}
+
+/* wait for all ConnHdlr in the given list to be .done() */
+private function f_ConnHdlrList_all_done(in ConnHdlrList vc_conns)
+runs on test_CT {
+	for (var integer i := 0; i < lengthof(vc_conns); i := i + 1) {
+		vc_conns[i].done;
+	}
+}
+
+/***********************************************************************
+ * HNBAP Testing
+ ***********************************************************************/
+
+
+function f_hnbap_hnb_register(integer hnb_idx := 0, boolean expect_reject := false) runs on test_CT
+{
+	timer T := 2.0;
+
+	HNBAP[hnb_idx].send(ts_HNBAP_HNBRegisterRequest(char2oct("TTCN3-HNB-" & int2str(hnb_idx)),
+					hex2oct(g_hnb_cfg[hnb_idx].lai.mcc_mnc),
+					int2bit(g_hnb_cfg[hnb_idx].cell_id, 28),
+					int2oct(g_hnb_cfg[hnb_idx].lai.lac, 2),
+					int2oct(g_hnb_cfg[hnb_idx].rac, 1),
+					int2oct(g_hnb_cfg[hnb_idx].sac, 2)));
+
+	T.start;
+	alt {
+	[] HNBAP[hnb_idx].receive(tr_HNBAP_HNBRegisterAccept(?)) {
+		if (expect_reject) {
+			setverdict(fail, "Rx HNB Register Accept while expecting reject");
+		} else {
+			setverdict(pass);
+		}
+	}
+	[] HNBAP[hnb_idx].receive(tr_HNBAP_HNBRegisterReject(?)) {
+		if (expect_reject) {
+			setverdict(pass);
+		} else {
+			setverdict(fail, "Rx HNB Register Reject while expecting accept");
+		}
+	}
+	[] HNBAP[hnb_idx].receive(IUHEM_Event:?) {
+		repeat;
+	}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for HNB Register response");
+	}
+	}
+}
+
+function f_hnbap_ue_register(integer hnb_idx := 0, template (present) UE_Identity ue_id, boolean expect_reject := false) runs on test_CT
+{
+	timer T := 2.0;
+
+	HNBAP[hnb_idx].send(ts_HNBAP_UERegisterRequest(ue_id));
+
+	T.start;
+	alt {
+	[] HNBAP[hnb_idx].receive(tr_HNBAP_UERegisterAccept(ue_id)) {
+		if (expect_reject) {
+			setverdict(fail, "Rx UE Register Accept while expecting reject");
+		} else {
+			setverdict(pass);
+		}
+	}
+	[] HNBAP[hnb_idx].receive(tr_HNBAP_UERegisterReject(ue_id, ?)) {
+		if (expect_reject) {
+			setverdict(pass);
+		} else {
+			setverdict(fail, "Rx UE Register Reject while expecting accept");
+		}
+	}
+	[] HNBAP[hnb_idx].receive(IUHEM_Event:?) {
+		repeat;
+	}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for UE Register response");
+	}
+	}
+}
+
+
+testcase TC_hnb_register() runs on test_CT {
+	g_num_hnbs := 1;
+	f_init(start_hnb := false);
+	f_hnbap_hnb_register(0);
+	f_shutdown_helper();
+}
+
+/* Try to register the same HNB from 2 different concurrent connections. Second
+ * one should be rejected. */
+testcase TC_hnb_register_duplicate() runs on test_CT {
+	g_num_hnbs := 2;
+	f_init(start_hnb := false);
+
+	/* Make HNB REQ look as if it came from the same HnodeB (LAI+SAC),
+	 * but from different IP address (underlaying link): */
+	g_hnb_cfg[1] := g_hnb_cfg[0];
+	f_hnbap_hnb_register(0);
+	f_hnbap_hnb_register(1, expect_reject := true);
+
+	f_verify_talloc_count(HNBGWVTY, {"struct hnb_context"}, expect_count := 1);
+
+	f_shutdown_helper();
+}
+
+/* Try to register the same HNB in the same connection already established, aka
+ * duplicate HNB Register Request. It should be accepted and new configuration
+ * applied. TS 25.469 8.2.4 */
+testcase TC_hnb_register_duplicate_reuse_sctp_assoc() runs on test_CT {
+	g_num_hnbs := 1;
+	f_init(start_hnb := false);
+	f_hnbap_hnb_register(0);
+	f_hnbap_hnb_register(0);
+	f_verify_talloc_count(HNBGWVTY, {"struct hnb_context"}, expect_count := 1);
+	f_shutdown_helper();
+}
+
+/* Drop HNBAP conn (HNBAP DEREG) and reconnect it (HNBAP REG) using same SCTP association.
+ * Related: OS#5676, SYS#6113 */
+testcase TC_hnb_reregister_reuse_sctp_assoc() runs on test_CT {
+	g_num_hnbs := 1;
+	f_init(start_hnb := false);
+	f_hnbap_hnb_register(0);
+	HNBAP[0].send(ts_HNBAP_HNBDe_Register(ts_HnbapCause(unspecified)));
+	f_hnbap_hnb_register(0);
+	f_verify_talloc_count(HNBGWVTY, {"struct hnb_context"}, expect_count := 1);
+	f_shutdown_helper();
+}
+
+/* Default list of counters for a 'hnb' entity */
+const CounterNameVals counternames_hnb := {
+	{ "iuh:established", 0 }
+};
+
+private function f_ctrs_hnb_init(integer hnb_start := 0, integer hnb_count := 1,
+				 CounterNameVals counternames := counternames_hnb) runs on test_CT {
+	g_ctr_hnb := f_counter_name_vals_get_n(IPA_CTRL, "hnb", hnb_count, counternames, start_idx := hnb_start);
+	log("initial hnb rate counters: ", g_ctr_hnb);
+}
+
+/*  f_ctrs_hnb_init();
+ *  f_do_thing(on_hnb := 0);
+ *  f_do_thing(on_hnb := 0);
+ *  f_do_other(on_hnb := 1);
+ *  f_ctrs_hnb_add(0, "thing", 2);
+ *  f_ctrs_hnb_add(1, "other");
+ *  f_ctrs_hnb_verify();
+ */
+private function f_ctrs_hnb_verify() runs on test_CT {
+	log("verifying hnb rate counters: ", g_ctr_hnb);
+	f_counter_name_vals_expect_n(IPA_CTRL, "hnb", g_ctr_hnb);
+}
+
+/* convenience: f_ctrs_hnb_add() and f_ctrs_hnb_verify() in one call.
+ *  f_ctrs_hnb_init();
+ *  f_do_thing(on_hnb := 0);
+ *  f_do_thing(on_hnb := 0);
+ *  f_do_thing(on_hnb := 0);
+ *  f_ctrs_hnb_expect(0, "thing", 3);
+ */
+private function f_ctrs_hnb_expect(integer hnb_nr, charstring countername, integer val := 1) runs on test_CT {
+	f_ctrs_hnb_add(hnb_nr, countername, val);
+	f_ctrs_hnb_verify();
+}
+
+private function f_ctrs_hnb_add(integer hnb_nr, charstring countername, integer val := 1) runs on test_CT {
+	f_counter_name_vals_list_add(g_ctr_hnb, hnb_nr, countername, val);
+}
+
+/* Set all counters for this hnb instance to a specific value. Useful to expect a disconnected and discarded hnb,
+ * because -1 is returned by f_counter_name_vals_get_n() when the hnb is not present on the CTRL interface. */
+private function f_ctrs_hnb_set_all(integer hnb_nr, integer val) runs on test_CT {
+	for (var integer i := 0; i < lengthof(counternames_hnb); i := i + 1) {
+		f_counter_name_vals_list_set(g_ctr_hnb, hnb_nr, counternames_hnb[i].name, val);
+	}
+}
+
+private function f_vty_run_hnbgw(TELNETasp_PT pt, charstring cmd)
+{
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "hnbgw");
+	f_vty_transceive(pt, cmd);
+	f_vty_transceive(pt, "end");
+}
+
+testcase TC_hnb_disconnected_timeout() runs on test_CT {
+	g_num_hnbs := 1;
+	f_init(start_hnb := true);
+
+	f_vty_run_hnbgw(HNBGWVTY, "timer hnbgw X35 5");
+
+	/* Init the counters when the hnb already exists. There should be a nonzero iuh:established count now. */
+	f_ctrs_hnb_init();
+
+	/* Drop the Iuh link */
+	f_drop_hnodeb(0);
+	f_sleep(1.0);
+
+	/* The hNodeB persistent state should still be around, because X35 has not yet elapsed. */
+	f_ctrs_hnb_verify();
+
+	f_sleep(5.0);
+	/* We get -1 counters when the CTRL interface returned an error for the requested counter, meaning that the
+	 * hnb_persistent no longer exists. Verify that it is gone: */
+	f_ctrs_hnb_set_all(0, -1);
+	f_ctrs_hnb_verify();
+
+	f_sleep(1.0);
+
+	/* Connect again. */
+	var RuaOps rua_ops := {
+		create_cb := refers(IuhRanapCreateCallback),
+		unitdata_cb := refers(IuhRanapUnitdataCallback)
+	};
+	f_init_hnodeb(testcasename(), 0, rua_ops);
+
+	/* still disconnected until actually registered on HNBAP */
+	f_ctrs_hnb_verify();
+
+	f_hnbap_hnb_register(0);
+	/* The hNodeB has come back to existence, so expect 0, not -1 anymore: */
+	f_ctrs_hnb_set_all(0, 0);
+	/* Also we've registered once. */
+	f_ctrs_hnb_add(0, "iuh:established", 1);
+	f_ctrs_hnb_verify();
+	f_sleep(1.0);
+
+	/* Again drop the Iuh link, wait for X35 and see that it's gone again. */
+	f_drop_hnodeb(0);
+	f_ctrs_hnb_verify();
+	f_sleep(6.0);
+	f_ctrs_hnb_set_all(0, -1);
+	f_ctrs_hnb_verify();
+
+	f_shutdown_helper();
+}
+
+/* regular UE registration */
+testcase TC_ue_register() runs on test_CT {
+	var UE_Identity ue_id := { iMSI := imsi_hex2oct(f_gen_imsi(1)) };
+	g_num_hnbs := 1;
+	f_init(start_hnb := true);
+	f_hnbap_ue_register(0, ue_id);
+	f_shutdown_helper();
+}
+
+/* regular UE registration (UE Identity: TMSI+LAI) */
+testcase TC_ue_register_tmsi_lai() runs on test_CT {
+	var UE_Identity ue_id := { tMSILAI := { tMSI := oct2bit(f_gen_tmsi(0)),
+						lAI := { pLMNID := '00F110'O, lAC := '2342'O }
+					      }
+				 };
+	g_num_hnbs := 1;
+	f_init(start_hnb := true);
+	f_hnbap_ue_register(0, ue_id);
+	f_shutdown_helper();
+}
+
+
+/* UE registration from unregistered HNB */
+testcase TC_ue_register_before_hnb_register() runs on test_CT {
+	var UE_Identity ue_id := { iMSI := imsi_hex2oct(f_gen_imsi(1)) };
+	g_num_hnbs := 1;
+	f_init(start_hnb := false);
+	f_hnbap_ue_register(0, ue_id, expect_reject := true);
+	f_shutdown_helper();
+}
+
+/***********************************************************************
+ * RUA / RANAP Testing
+ ***********************************************************************/
+
+/* Create an Iuh connection; send InitialUE; expect it to appear on new SCCP conenction */
+friend function f_tc_initial_ue(charstring id) runs on ConnHdlr {
+	var RANAP_PDU tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+}
+testcase TC_ranap_cs_initial_ue() runs on test_CT {
+	var ConnHdlr vc_conn;
+
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_initial_ue), f_TestHdlrParams(1));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_ranap_ps_initial_ue() runs on test_CT {
+	var ConnHdlr vc_conn;
+
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_initial_ue), f_TestHdlrParams(2, true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+private function f_vty_set_sccp_max_optional_data(TELNETasp_PT pt, integer val := -1)
+{
+	var charstring valstr;
+	if (val < 0) {
+		valstr := "standard";
+	} else {
+		valstr := int2str(val);
+	}
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "cs7 instance 0");
+	f_vty_transceive(pt, "sccp max-optional-data " & valstr);
+	f_vty_transceive(pt, "end");
+}
+
+testcase TC_ranap_cs_initial_ue_empty_cr() runs on test_CT {
+	var ConnHdlr vc_conn;
+
+	g_num_hnbs := 1;
+	f_init();
+
+	f_vty_set_sccp_max_optional_data(HNBGWVTY, 0);
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_initial_ue), f_TestHdlrParams(1, expect_separate_sccp_cr := true));
+	vc_conn.done;
+
+	/* reset */
+	f_vty_set_sccp_max_optional_data(HNBGWVTY);
+
+	f_shutdown_helper();
+}
+testcase TC_ranap_ps_initial_ue_empty_cr() runs on test_CT {
+	var ConnHdlr vc_conn;
+
+	g_num_hnbs := 1;
+	f_init();
+
+	f_vty_set_sccp_max_optional_data(HNBGWVTY, 0);
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_initial_ue), f_TestHdlrParams(2, true, expect_separate_sccp_cr := true));
+	vc_conn.done;
+
+	/* reset */
+	f_vty_set_sccp_max_optional_data(HNBGWVTY);
+
+	f_shutdown_helper();
+}
+
+type record Testdata_CR_Limit {
+	integer data_len,
+	integer max_optional_data,
+	boolean expect_separate_sccp_cr
+};
+type record of Testdata_CR_Limit Testdata_CR_Limits;
+
+testcase TC_sccp_cr_limit() runs on test_CT {
+	g_num_hnbs := 1;
+	f_init();
+
+	const Testdata_CR_Limits tests := {
+		{ data_len := 130, max_optional_data := -1, expect_separate_sccp_cr := false },
+		{ data_len := 131, max_optional_data := -1, expect_separate_sccp_cr := true },
+
+		{ data_len := 100, max_optional_data := 100, expect_separate_sccp_cr := false },
+		{ data_len := 101, max_optional_data := 100, expect_separate_sccp_cr := true },
+
+		{ data_len := 200, max_optional_data := 200, expect_separate_sccp_cr := false },
+		{ data_len := 201, max_optional_data := 200, expect_separate_sccp_cr := true }
+	};
+
+	var integer csps;
+	for (csps := 0; csps < 2; csps := csps + 1) {
+		var boolean ps_domain := (csps > 0);
+
+		var integer i;
+		for (i := 0; i < lengthof(tests); i := i + 1) {
+			var Testdata_CR_Limit t := tests[i];
+			f_logp(HNBGWVTY,
+			       "TEST PART TC_sccp_cr_limit ps_domain=" & f_bool2str(ps_domain)
+			       & " data_len=" & int2str(t.data_len)
+			       & " max_optional_data=" & int2str(t.max_optional_data)
+			       & " expect_separate_sccp_cr=" & f_bool2str(t.expect_separate_sccp_cr)
+			       );
+
+			f_vty_set_sccp_max_optional_data(HNBGWVTY, t.max_optional_data);
+			var ConnHdlr vc_conn;
+			vc_conn := f_start_handler_with_pars(refers(f_tc_initial_ue),
+							     f_TestHdlrParams(100 + i,
+									      ps_domain := ps_domain,
+									      expect_separate_sccp_cr := t.expect_separate_sccp_cr,
+									      tx_sccp_cr_data_len := t.data_len));
+			vc_conn.done;
+		}
+	}
+
+	/* reset */
+	f_vty_set_sccp_max_optional_data(HNBGWVTY);
+
+	f_shutdown_helper();
+}
+
+private function f_tc_rab_assignment(charstring id) runs on ConnHdlr {
+	var charstring hnb0_ctr_prefix := f_hnb_ctr_prefix(g_pars.hnb);
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+
+	f_statsd_reset();
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	/* Expect stats to be 0 */
+	var StatsDExpects expect := {
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.req", mtype := "c", min := 0, max := 0},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.cnf", mtype := "c", min := 0, max := 0},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.fail", mtype := "c", min := 0, max := 0}
+	};
+	f_statsd_expect(expect);
+
+	f_create_rab_cs();
+
+	expect := {
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.req", mtype := "c", min := 1, max := 1},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.cnf", mtype := "c", min := 1, max := 1},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.fail", mtype := "c", min := 0, max := 0}
+	};
+	f_statsd_expect(expect);
+
+	f_cn_iu_release_procedure(mgcp_teardown := true);
+}
+testcase TC_rab_assignment() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_assignment), f_TestHdlrParams(3));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Same as TC_rab_assignment, but 16 subscribers in parallel.
+ * Currently 16 is the maximum we can create due to array sizes of RAN_Emulation.ttcn.
+ * Stats are removed since it's difficult to count with several conns concurrently doing stuff.
+ */
+private function f_tc_rab_assignment_concurrent(charstring id) runs on ConnHdlr {
+	var charstring hnb0_ctr_prefix := f_hnb_ctr_prefix(g_pars.hnb);
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+
+	f_statsd_reset();
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_cs();
+
+	/* Wait some time with connection up */
+	f_sleep(2.0);
+
+	f_cn_iu_release_procedure(mgcp_teardown := true);
+}
+testcase TC_rab_assignment_concurrent() runs on test_CT {
+	var ConnHdlrList vc_conn_list := {};
+	g_num_hnbs := 1;
+	f_init();
+	f_sleep(1.0);
+	const integer num_conns := 16;
+
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		var ConnHdlr vc_conn;
+		vc_conn := f_start_handler_with_pars(refers(f_tc_rab_assignment_concurrent), f_TestHdlrParams(i));
+		vc_conn_list := vc_conn_list & { vc_conn };
+	}
+
+	f_ConnHdlrList_all_done(vc_conn_list);
+	f_shutdown_helper();
+}
+
+friend function f_tc_rab_assign_fail(charstring id) runs on ConnHdlr {
+	var charstring hnb0_ctr_prefix := f_hnb_ctr_prefix(g_pars.hnb);
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+	timer T := 5.0;
+
+	f_statsd_reset();
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	/* Expect stats to be 0 */
+	var StatsDExpects expect := {
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.req", mtype := "c", min := 0, max := 0},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.cnf", mtype := "c", min := 0, max := 0},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.fail", mtype := "c", min := 0, max := 0}
+	};
+	f_statsd_expect(expect);
+
+	f_rab_ass_req_cs();
+
+	/* Send RAB failed list in response */
+	tx := valueof(ts_RANAP_RabAssResp(rab_fl := ts_RAB_FL(t_RAB_id(23), g_pars.rab_rel_cause)));
+	f_iuh2iu(tx);
+
+	expect := {
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.req", mtype := "c", min := 1, max := 1},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.cnf", mtype := "c", min := 0, max := 0},
+		{name := hnb0_ctr_prefix & "ranap.cs.rab_act.fail", mtype := "c", min := 1, max := 1}
+	};
+	f_statsd_expect(expect);
+
+
+	T.start;
+	alt {
+	[] as_mgcp_dlcx() {}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for DLCX");
+	}
+	}
+	T.stop;
+}
+
+testcase TC_rab_assign_fail() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_assign_fail), f_TestHdlrParams(4, rab_rel_cause := ts_RanapCause_radio_conn_lost));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+friend function f_tc_rab_release(charstring id) runs on ConnHdlr {
+	var charstring hnb0_ctr_prefix := f_hnb_ctr_prefix(g_pars.hnb);
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+	timer T := 15.0;
+
+	f_statsd_reset();
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_cs();
+
+	var charstring ctr_name;
+	if (g_pars.rab_rel_cause == valueof(ts_RanapCause_nas_normal)) {
+		ctr_name := "ranap.cs.rab_rel.req.normal";
+	} else {
+		ctr_name := "ranap.cs.rab_rel.req.abnormal";
+	}
+
+	/* Expect stats to be 0 */
+	var StatsDExpects expect := {
+		{name := hnb0_ctr_prefix & ctr_name, mtype := "c", min := 0, max := 0}
+	};
+	f_statsd_expect(expect);
+
+	/* Send RAB Release */
+	tx := valueof(ts_RANAP_RabAssReq(rab_rl := ts_RAB_RL(t_RAB_id(23), g_pars.rab_rel_cause)));
+	BSSAP.send(tx);
+
+	T.start;
+
+	alt {
+	[] as_mgcp_dlcx() {}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for DLCX");
+	}
+	}
+	T.stop;
+
+	f_rua_expect(tx);
+
+	expect := {
+		{name := hnb0_ctr_prefix & ctr_name, mtype := "c", min := 1, max := 1}
+	};
+	f_statsd_expect(expect);
+}
+
+/* RAB release with Cause NAS/Normal (successful/orderly release) */
+testcase TC_rab_release() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_release), f_TestHdlrParams(5));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* RAB release with Cause abnormal */
+testcase TC_rab_release_abnormal() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_release),
+					     f_TestHdlrParams(8, rab_rel_cause := ts_RanapCause_radio_conn_lost));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+friend function f_tc_rab_assign_mgcp_to(charstring id) runs on ConnHdlr {
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+	var template RAB_SetupOrModifyList rab_sml;
+	timer T := 15.0;
+
+	T.start;
+	f_create_mgcp_expect(ExpectCriteria:{omit,omit,omit});
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+
+	/* Send RAB Assignment Request */
+	rab_sml := ts_RAB_SML(t_RAB_id(23),
+			      f_ts_RAB_TLA(g_pars.mgcp_pars.cn_rtp_ip),
+			      t_RAB_binding_port(g_pars.mgcp_pars.cn_rtp_port));
+	tx := valueof(ts_RANAP_RabAssReq(rab_sml));
+	BSSAP.send(tx);
+
+	/* Ignore MGCP CRCX */
+	alt {
+	[] MGCP.receive(tr_CRCX) -> value mgcp_cmd {
+		log("Ignoreing CRCX1", mgcp_cmd);
+		repeat;
+		}
+	[] BSSAP.receive(tr_RANAP_IuReleaseRequest(?)) { }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for IuRelease");
+		}
+	}
+
+	f_cn_iu_release_procedure();
+}
+
+testcase TC_rab_assign_mgcp_to() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_assign_mgcp_to), f_TestHdlrParams(6));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Test case where IuUP IP address announced by HNB and updated through MDCX
+ * makes MGW select a new local IuUP address. HNBGW is expected to update the HNB
+ * through RAB-Modify-Req. */
+testcase TC_rab_assign_mgw_iuup_addr_chg() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+	var template (value) TestHdlrParams pars := f_TestHdlrParams(3);
+	/* Emulate change of local IuUP IP address after rx MDCX: */
+	pars.mgcp_pars.mgw_conn_ran.mgw_rtp_ip_mdcx := "127.3.2.1";
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rab_assignment), pars);
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Create an Iuh connection; send InitialUE; transceive data both directions */
+friend function f_tc_ranap_bidir(charstring id) runs on ConnHdlr {
+	/* HNB -> MSC: InitialUE */
+	f_iuh2iu_connect(f_build_initial_ue(g_pars));
+
+	/* MSC <- HNB: DirectTransfer */
+	f_iu2iuh(ts_RANAP_DirectTransfer(f_rnd_octstring(10)));
+	/* MSC -> HNB: DirectTransfer */
+	f_iuh2iu(ts_RANAP_DirectTransfer(f_rnd_octstring(10)));
+
+	/* HNB <- MSC:  CommonID */
+	f_iu2iuh(ts_RANAP_CommonId(hex2oct(g_pars.imsi)));
+}
+testcase TC_ranap_cs_bidir() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ranap_bidir), f_TestHdlrParams(3));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_ranap_ps_bidir() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ranap_bidir), f_TestHdlrParams(4, true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+
+private function f_tc_ranap_mo_disconnect(charstring id) runs on ConnHdlr {
+	/* HNB->MSC: InitialUE */
+	f_iuh2iu_connect(f_build_initial_ue(g_pars));
+
+	g_pars.rab_rel_cause := valueof(ts_RanapCause_radio_conn_release);
+
+	/* HNB->MSC: Request CN to start Iu-Release procedure: */
+	f_iuh2iu(ts_RANAP_IuReleaseRequest(g_pars.rab_rel_cause));
+	/* HNB<-MSC: CN starts Iu-Release procedure: */
+	f_cn_iu_release_procedure();
+}
+testcase TC_ranap_cs_mo_disconnect() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ranap_mo_disconnect), f_TestHdlrParams(5));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_ranap_ps_mo_disconnect() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ranap_mo_disconnect), f_TestHdlrParams(6, true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* SCCP Connect Req is answererd with Connect Refused: */
+private function f_tc_ranap_creq_cref_ConnHdlr(charstring id) runs on ConnHdlr {
+	/* HNB -> MSC: InitialUE */
+	f_iuh2iu_connect(f_build_initial_ue(g_pars));
+
+	/* This triggers a tx of SCCP CREF CN -> HNBGW: */
+	BSSAP.send(ts_MSC_CONN_PRIM_DISC_REQ(sccp_par_reason_end_user_failure));
+	/* HNBGW disconnects the session on the RUA side as a result: */
+	RUA.receive(RUA_Disc_Ind:?);
+}
+private function f_tc_ranap_creq_cref(integer imsi_suffix, boolean ps_domain) runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	/* Instruct RAN_Emulation to avoid accepting the conn, we'll trigger an
+	 * SCCP CREF by sending a DISC REQ primitive in ConnHdlr. */
+	g_ran_ops.ranap_connect_ind_auto_res := false;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ranap_creq_cref_ConnHdlr), f_TestHdlrParams(imsi_suffix, ps_domain));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_ranap_cs_creq_cref() runs on test_CT {
+	f_tc_ranap_creq_cref(7, false);
+}
+testcase TC_ranap_ps_creq_cref() runs on test_CT {
+	f_tc_ranap_creq_cref(8, true);
+}
+
+/* scenario: HNB transmits RUA Disconnect while conn is still being established
+ * on SCCP side (HNBGW sent CR, waiting for CC from CN). */
+private function f_tc_rua_disconnect_during_sccp_cr_cc(charstring id) runs on ConnHdlr {
+	/* HNB->MSC: InitialUE */
+	f_iuh2iu_connect(f_build_initial_ue(g_pars));
+
+	/* CREQ was received at CN, now HNB decides to disconnect the RUA conn: */
+	RUA.send(RUA_Disc_Req:{{misc:=unspecified}, omit});
+
+	/* Let some time for RUA Disconnect to reach the HNBGW: */
+	f_sleep(1.0);
+
+	/* Now tx SCCP CC from CN to HNBGW: */
+	BSSAP.send(ts_MSC_CONN_PRIM_CONNECT_RES);
+
+	/* now that SCCP conn is connected, HNBGW should tear it down because the RUA conn was released in previous step: */
+	BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND);
+	/* Let RAN_Emulation some time to answer RLSD with RLC: */
+	f_sleep(1.0);
+}
+private function f_TC_rua_disconnect_during_sccp_cr_cc(boolean is_ps) runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	/* Instruct RAN_Emulation to avoid accepting the conn, we'll trigger an
+	 * SCCP CREF by sending a DISC REQ primitive in ConnHdlr. */
+	g_ran_ops.ranap_connect_ind_auto_res := false;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rua_disconnect_during_sccp_cr_cc), f_TestHdlrParams(6, is_ps));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_cs_rua_disconnect_during_sccp_cr_cc() runs on test_CT {
+	f_TC_rua_disconnect_during_sccp_cr_cc(false);
+}
+testcase TC_ps_rua_disconnect_during_sccp_cr_cc() runs on test_CT {
+	f_TC_rua_disconnect_during_sccp_cr_cc(true);
+}
+
+/* Scenario: HNB tears down the RUA/Iu conn by first sending RUA_DATA[RANAP
+ * IuReleaseReq], followed shortly by a RUA Disconnect with no RANAP and
+ * Cause!=Normal. HNBGW should release the SCCP connection through RLSD since it's
+ * impossible to terminate the Iu connection in a normal condition. (SYS#6602) */
+private function f_tc_cs_iu_release_req_rua_disconnect(charstring id) runs on ConnHdlr {
+	var RANAP_PDU tx;
+	timer T := 5.0;
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_cs();
+
+	RUA.send(ts_RANAP_IuReleaseRequest(ts_RanapCause_radio_rab_preempted));
+	BSSAP.receive(tr_RANAP_IuReleaseRequest(ts_RanapCause_radio_rab_preempted));
+
+	RUA.send(RUA_Disc_Req:{{misc:=unspecified}, omit});
+
+	/* HNBGW tears down related MGW sessions: */
+	T.start;
+	alt {
+	[] as_mgcp_dlcx() {}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for DLCX");
+	}
+	}
+	T.stop;
+
+	/* We cannot guarantee we can send Iu-ReleaseCommand at RANAP_Emulation
+	 * before it receives the RLSD from HNBGW, hence we don't send it. If we
+	 * sent it, it would be ignored by HNBGW since the RUA conn is already
+	 * disconnected:
+	 * BSSAP.send(ts_RANAP_IuReleaseCommand(ts_RanapCause_radio_rab_preempted));
+	 */
+
+	BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND);
+	/* Let RAN_Emulation some time to answer RLSD with RLC: */
+	f_sleep(1.0);
+}
+testcase TC_cs_iu_release_req_rua_disconnect() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_cs_iu_release_req_rua_disconnect), f_TestHdlrParams(9));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Same as TC_cs_iu_release_req_rua_disconnect, but with PS RAB */
+private function f_tc_ps_iu_release_req_rua_disconnect(charstring id) runs on ConnHdlr {
+	var RANAP_PDU tx;
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_ps();
+
+	RUA.send(ts_RANAP_IuReleaseRequest(ts_RanapCause_radio_rab_preempted));
+	BSSAP.receive(tr_RANAP_IuReleaseRequest(ts_RanapCause_radio_rab_preempted));
+
+	RUA.send(RUA_Disc_Req:{{misc:=unspecified}, omit});
+
+	/* HNBGW tears down related PFCP sessions: */
+	if (g_pars.pfcp_pars.pfcp_enabled) {
+		as_pfcp_handle_del_req();
+	}
+
+	/* We cannot guarantee we can send Iu-ReleaseCommand at RANAP_Emulation
+	 * before it receives the RLSD from HNBGW, hence we don't send it. If we
+	 * sent it, it would be ignored by HNBGW since the RUA conn is already
+	 * disconnected:
+	 * BSSAP.send(ts_RANAP_IuReleaseCommand(ts_RanapCause_radio_rab_preempted));
+	 */
+
+	BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND);
+	/* Let RAN_Emulation some time to answer RLSD with RLC: */
+	f_sleep(1.0);
+}
+testcase TC_ps_iu_release_req_rua_disconnect() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ps_iu_release_req_rua_disconnect), f_TestHdlrParams(9, true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* scenario: HNB transmits a RUA DirectTransfer after having transmitted a RUA Connect
+ * (with RANAP payload) and conn is still being established on SCCP side (HNBGW sent CR,
+ * waiting for CC from CN). */
+private function f_tc_rua_dt_during_sccp_wait_cc(charstring id) runs on ConnHdlr {
+	/* HNB->MSC: InitialUE */
+	var RANAP_PDU tx_ranap_pdu := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(f_build_initial_ue(g_pars));
+
+	/* CREQ was received at CN, now UE/HNB decides to transmit RANAP PDU (Iu Release REq).
+	 * This has been seen in a production setup on the field, with a high
+	 * latency+jitter satellite network between HNB and HNBGW.
+	 * We expect HNBGW to queue the msg until the SCCP conn is confirmed. */
+	tx_ranap_pdu := valueof(ts_RANAP_IuReleaseRequest(ts_RanapCause_nas_normal));
+	RUA.send(tx_ranap_pdu);
+
+	/* Let some time for RUA DirectTransfer to reach the HNBGW: */
+	f_sleep(1.0);
+
+	/* Now tx SCCP CC from CN to HNBGW: */
+	BSSAP.send(ts_MSC_CONN_PRIM_CONNECT_RES);
+
+	/* now that SCCP conn is connected, HNBGW should forward the previously queued RANAP PDU: */
+	f_bssap_expect(tx_ranap_pdu);
+
+	/* Validate that we can indeed forward some Downlink data CN may have sent to HNBGW meanwhile.
+	 * This would usually be for instance a Attach Accept or similar. */
+	tx_ranap_pdu := valueof(ts_RANAP_DirectTransfer(f_rnd_octstring(10)));
+	f_iu2iuh(tx_ranap_pdu);
+
+	f_cn_iu_release_procedure();
+}
+private function f_TC_rua_dt_during_sccp_wait_cc(boolean is_ps) runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	/* Instruct RAN_Emulation to avoid accepting the conn, we'll trigger an
+	 * SCCP CC by sending a N-CONNECT RESP primitive in ConnHdlr. */
+	g_ran_ops.ranap_connect_ind_auto_res := false;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_rua_dt_during_sccp_wait_cc), f_TestHdlrParams(6, is_ps));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+testcase TC_cs_rua_dt_during_sccp_wait_cc() runs on test_CT {
+	f_TC_rua_dt_during_sccp_wait_cc(false);
+}testcase TC_ps_rua_dt_during_sccp_wait_cc() runs on test_CT {
+	f_TC_rua_dt_during_sccp_wait_cc(true);
+}
+
+friend function f_tc_ps_rab_assignment(charstring id) runs on ConnHdlr {
+	var RANAP_PDU tx;
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_ps();
+	f_sleep(2.0);
+
+	f_cn_iu_release_procedure(pfcp_teardown := g_pars.pfcp_pars.pfcp_enabled);
+}
+testcase TC_ps_rab_assignment() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+	f_sleep(1.0);
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_ps_rab_assignment), f_TestHdlrParams(7, ps_domain := true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Same as TC_ps_rab_assignment, but 16 subscribers in parallel.
+ * Currently 16 is the maximum we can create due to array sizes of RAN_Emulation.ttcn.
+ */
+testcase TC_ps_rab_assignment_concurrent() runs on test_CT {
+	var ConnHdlrList vc_conn_list := {};
+	g_num_hnbs := 1;
+	f_init();
+	f_sleep(1.0);
+	const integer num_conns := 16;
+
+	for (var integer i := 0; i < num_conns; i := i + 1) {
+		var ConnHdlr vc_conn;
+		var TestHdlrParams pars := f_TestHdlrParams(i, ps_domain := true);
+		vc_conn := f_start_handler_with_pars(refers(f_tc_ps_rab_assignment), pars);
+		vc_conn_list := vc_conn_list & { vc_conn };
+	}
+
+	f_ConnHdlrList_all_done(vc_conn_list);
+	f_shutdown_helper();
+}
+
+/* PS RAB release with Cause NAS/Normal (successful/orderly release).
+ * This can happen when MS sent a "SM Deactivate PDP Context Request", then CN answers with
+ * "SM Deactivate PDP Context Accept" followed by a "RAB Assign Req (ReleaseList)" */
+friend function f_ps_tc_rab_release(charstring id) runs on ConnHdlr {
+	var charstring hnb0_ctr_prefix := f_hnb_ctr_prefix(g_pars.hnb);
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+	timer T := 15.0;
+
+	f_statsd_reset();
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_ps();
+
+	var charstring ctr_name;
+	if (g_pars.rab_rel_cause == valueof(ts_RanapCause_nas_normal)) {
+		ctr_name := "ranap.ps.rab_rel.req.normal";
+	} else {
+		ctr_name := "ranap.ps.rab_rel.req.abnormal";
+	}
+
+	/* Expect stats to be 0 */
+	var StatsDExpects expect := {
+		{name := hnb0_ctr_prefix & ctr_name, mtype := "c", min := 0, max := 0}
+	};
+	f_statsd_expect(expect);
+
+	/* Send RAB Release */
+	tx := valueof(ts_RANAP_RabAssReq(rab_rl := ts_RAB_RL(t_RAB_id(23), g_pars.rab_rel_cause)));
+	BSSAP.send(tx);
+	f_rua_expect(tx);
+
+	tx := valueof(ts_RANAP_RabAssResp(rab_rl := ts_RAB_RLD(t_RAB_id(23))));
+	RUA.send(tx);
+
+	if (g_pars.pfcp_pars.pfcp_enabled) {
+		T.start;
+		alt {
+		[] as_pfcp_handle_del_req() {}
+		[] T.timeout {
+			Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+						"Timeout waiting for PFCP Sess Del Req");
+			}
+		}
+		T.stop;
+	}
+
+	f_bssap_expect(tx);
+
+	expect := {
+		{name := hnb0_ctr_prefix & ctr_name, mtype := "c", min := 1, max := 1}
+	};
+	f_statsd_expect(expect);
+}
+testcase TC_ps_rab_release() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_ps_tc_rab_release), f_TestHdlrParams(5, true));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+/* PS RAB release with Cause abnormal */
+testcase TC_ps_rab_release_abnormal() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_ps_tc_rab_release),
+					     f_TestHdlrParams(8, true, rab_rel_cause := ts_RanapCause_radio_conn_lost));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* Default list of counters for a 'cn' entity to test the cnpool feature. */
+const CounterNameVals counternames_cnpool := {
+	{ "cnpool:subscr:new", 0 },
+	{ "cnpool:subscr:known", 0 },
+	{ "cnpool:subscr:reattach", 0 },
+	{ "cnpool:subscr:attach_lost", 0 },
+	{ "cnpool:subscr:paged", 0 }
+};
+private function f_ctrs_cn_init(boolean ps_domain, integer cn_count := 0,
+				CounterNameVals counternames := counternames_cnpool) runs on test_CT {
+	if (ps_domain) {
+		g_ctr_cn_node_name := "sgsn";
+		if (cn_count == 0) {
+			cn_count := NUM_SGSN;
+		}
+	} else {
+		g_ctr_cn_node_name := "msc";
+		if (cn_count == 0) {
+			cn_count := NUM_MSC;
+		}
+	}
+	g_ctr_cn := f_counter_name_vals_get_n(IPA_CTRL, g_ctr_cn_node_name, cn_count, counternames);
+	log("initial " & g_ctr_cn_node_name & " rate counters: ", g_ctr_cn);
+}
+
+/*  f_ctrs_cn_init();
+ *  f_do_thing(on_cn := 0);
+ *  f_do_thing(on_cn := 0);
+ *  f_do_other(on_cn := 1);
+ *  f_ctrs_cn_add(0, "thing", 2);
+ *  f_ctrs_cn_add(1, "other");
+ *  f_ctrs_cn_verify();
+ */
+private function f_ctrs_cn_verify() runs on test_CT {
+	log("verifying", g_ctr_cn_node_name, " rate counters: ", g_ctr_cn);
+	f_counter_name_vals_expect_n(IPA_CTRL, g_ctr_cn_node_name, g_ctr_cn);
+}
+
+/* convenience: f_ctrs_cn_add() and f_ctrs_cn_verify() in one call.
+ *  f_ctrs_cn_init();
+ *  f_do_thing(on_cn := 0);
+ *  f_do_thing(on_cn := 0);
+ *  f_do_thing(on_cn := 0);
+ *  f_ctrs_cn_expect(0, "thing", 3);
+ */
+private function f_ctrs_cn_expect(integer cn_nr, charstring countername, integer val := 1) runs on test_CT {
+	f_ctrs_cn_add(cn_nr, countername, val);
+	f_ctrs_cn_verify();
+}
+
+private function f_ctrs_cn_add(integer cn_nr, charstring countername, integer val := 1) runs on test_CT {
+	f_counter_name_vals_list_add(g_ctr_cn, cn_nr, countername, val);
+}
+
+private function f_tc_cnpool_compl_l3(charstring id) runs on ConnHdlr {
+	f_perform_compl_l3(g_pars.nas_pdu, expect_success := g_pars.expect_compl_l3_success);
+}
+
+private function f_TC_cnpool_compl_l3(boolean ps_domain, octetstring nas_pdu, integer cn_nr,
+				      template (omit) charstring inc_countername := omit,
+				      boolean expect_compl_l3_success := true) runs on test_CT {
+	var ConnHdlr vc_conn;
+	var template (value) TestHdlrParams pars := f_TestHdlrParams(0, ps_domain := ps_domain, cn_nr := cn_nr);
+	pars.nas_pdu := nas_pdu;
+	pars.expect_compl_l3_success := expect_compl_l3_success;
+	log("XXX ", pars);
+	vc_conn := f_start_handler_with_pars(refers(f_tc_cnpool_compl_l3), pars);
+	vc_conn.done;
+
+	if (not istemplatekind(inc_countername, "omit")) {
+		f_ctrs_cn_expect(cn_nr, valueof(inc_countername));
+	}
+}
+
+function f_TC_cnpool_compl_l3_list(boolean ps_domain, ro_octetstring compl3, Osmocom_Types.ro_integer cn_nrs,
+				   template (omit) charstring inc_countername,
+				   boolean expect_compl_l3_success := true) runs on test_CT {
+	var integer n := lengthof(compl3);
+	if (n < lengthof(cn_nrs)) {
+		n := lengthof(cn_nrs);
+	}
+	for (var integer i := 0; i < n; i := i + 1) {
+		var integer cn_nr := cn_nrs[i mod lengthof(cn_nrs)];
+		f_TC_cnpool_compl_l3(ps_domain, compl3[i mod lengthof(compl3)], cn_nr, inc_countername,
+				     expect_compl_l3_success);
+	}
+}
+
+type enumerated Compl3Type {
+	/* CS */
+	LU,
+	CMSERV,
+	PAGRESP,
+	IMSIDETACH,
+
+	/* PS */
+	ATTACHREQ,
+	RAUREQ,
+	DETREQ
+};
+
+private function f_gen_one_compl_l3(Compl3Type compl3type, template (value) MobileIdentityLV mi,
+		integer ps_nri := -1
+		) return octetstring
+{
+	/* CS */
+	if (compl3type == LU) {
+		return enc_PDU_ML3_MS_NW(valueof(ts_LU_REQ(LU_Type_IMSI_Attach, valueof(mi), '00F110'O)));
+	}
+	if (compl3type == CMSERV) {
+		return enc_PDU_ML3_MS_NW(valueof(ts_CM_SERV_REQ(CM_TYPE_MO_CALL, valueof(mi))));
+	}
+	if (compl3type == PAGRESP) {
+		return enc_PDU_ML3_MS_NW(valueof(ts_PAG_RESP(valueof(mi))));
+	}
+	if (compl3type == IMSIDETACH) {
+		return enc_PDU_ML3_MS_NW(valueof(ts_ML3_MO_MM_IMSI_DET_Ind(valueof(mi))));
+	}
+
+	/* PS */
+	var template (omit) NetworkResourceIdentifierContainerTLV nri := omit;
+	if (ps_nri >= 0) {
+		nri := valueof(ts_GMM_NRI(ps_nri));
+	}
+
+	if (compl3type == ATTACHREQ) {
+		return enc_PDU_L3_MS_SGSN(valueof(ts_GMM_ATTACH_REQ(valueof(mi), f_RAI('001'H, '01'H, '2a2a'O, '17'O),
+						nri := nri)));
+	}
+	if (compl3type == RAUREQ) {
+		return enc_PDU_L3_MS_SGSN(valueof(ts_GMM_RAU_REQ(valueof(mi), GPRS_UPD_T_PERIODIC,
+								 f_RAI('001'H, '01'H, '2a2a'O, '17'O),
+								 nri := nri)));
+	}
+	if (compl3type == DETREQ) {
+		return enc_PDU_L3_MS_SGSN(valueof(ts_GMM_DET_REQ_MO_mi(c_GMM_DTT_MO_GPRS, power_off := false,
+								       p_tmsi := valueof(ts_MI_TLV(mi.mobileIdentityV)))));
+	}
+
+	setverdict(fail, "unknown complete layer 3 type");
+	mtc.stop;
+}
+
+type record of Compl3Type ro_Compl3Type;
+type record of MobileIdentityLV ro_MobileIdentityLV;
+type record of octetstring ro_octetstring;
+
+/* Generate a list of n Complete Layer 3 NAS PDUs,
+ * rotating through the message kinds listed in 'types' and the mobile identities in mis.
+ */
+private function f_gen_compl_l3(ro_Compl3Type types, ro_MobileIdentityLV mis, integer n) return ro_octetstring
+{
+	var ro_octetstring res := {};
+	for (var integer i := 0; i < n; i := i + 1) {
+		var integer ti := i mod lengthof(types);
+		var integer mi := i mod lengthof(mis);
+		res[i] := f_gen_one_compl_l3(types[ti], mis[mi]);
+	}
+	return res;
+}
+
+private function f_gen_mi_imsi(integer n) return MobileIdentityLV
+{
+	return valueof(ts_MI_IMSI_LV(f_gen_imsi(n)));
+}
+
+private function f_gen_mi_imsis(integer n) return ro_MobileIdentityLV
+{
+	var ro_MobileIdentityLV mis := {};
+	for (var integer i := 0; i < n; i := i + 1) {
+		mis[i] := f_gen_mi_imsi(n);
+	}
+	return mis;
+}
+
+function f_vty_set_roundrobin_next(TELNETasp_PT VTY, boolean ps_domain, integer cn_nr)
+{
+	var charstring msc_sgsn;
+	if (ps_domain) {
+		msc_sgsn := "sgsn";
+	} else {
+		msc_sgsn := "msc";
+	}
+	f_vty_transceive(VTY, "cnpool roundrobin next " & msc_sgsn & " " & int2str(cn_nr));
+}
+
+private function f_gen_compl3_by_domain(boolean ps_domain, integer n, template (omit) ro_MobileIdentityLV mis := omit) return ro_octetstring{
+	var ro_Compl3Type types;
+	if (ps_domain) {
+		types := { ATTACHREQ, RAUREQ, DETREQ };
+	} else {
+		types := { LU, CMSERV, PAGRESP, IMSIDETACH };
+	}
+	if (istemplatekind(mis, "omit")) {
+		mis := f_gen_mi_imsis(n);
+	}
+	return f_gen_compl_l3(types, valueof(mis), n);
+}
+
+/* Various Complete Layer 3 by IMSI all end up with the first MSC, because the other MSCs are not connected. */
+testcase TC_mscpool_L3Compl_on_1_cnlink() runs on test_CT {
+	f_TC_cnpool_L3Compl_on_1_cnlink(ps_domain := false);
+}
+testcase TC_sgsnpool_L3Compl_on_1_cnlink() runs on test_CT {
+	f_TC_cnpool_L3Compl_on_1_cnlink(ps_domain := true);
+}
+function f_TC_cnpool_L3Compl_on_1_cnlink(boolean ps_domain) runs on test_CT {
+
+	f_init();
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 4);
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3, {0, 0, 0, 0}, "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* Three Layer 3 Complete by IMSI are round-robin'ed across two connected MSCs */
+testcase TC_mscpool_L3Complete_by_imsi_round_robin() runs on test_CT {
+	f_TC_cnpool_L3Complete_by_imsi_round_robin(ps_domain := false);
+}
+testcase TC_sgsnpool_L3Complete_no_nri_round_robin() runs on test_CT {
+	f_TC_cnpool_L3Complete_by_imsi_round_robin(ps_domain := true);
+}
+function f_TC_cnpool_L3Complete_by_imsi_round_robin(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3);
+
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3,
+				  /* Third Complete Layer 3 wraps back to msc 0 */
+				  cn_nrs := {0, 1, 0},
+				  inc_countername := "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* Three LU by TMSI are round-robin'ed across two connected MSCs, because they contain a NULL-NRI (0, 1)
+ * (configured in osmo-hnbgw.cfg). */
+testcase TC_mscpool_LU_by_tmsi_null_nri_0_round_robin() runs on test_CT {
+	f_TC_cnpool_LU_by_tmsi_null_nri_N_round_robin(ps_domain := false, nri_val := 0);
+}
+/* For NRI == 1, one of the MSC also has the NULL-NRI as part of its owned NRIs, but the NULL-NRI setting is stronger
+ * than that. */
+testcase TC_mscpool_LU_by_tmsi_null_nri_1_round_robin() runs on test_CT {
+	f_TC_cnpool_LU_by_tmsi_null_nri_N_round_robin(ps_domain := false, nri_val := 1);
+}
+function f_TC_cnpool_LU_by_tmsi_null_nri_N_round_robin(boolean ps_domain, integer nri_val) runs on test_CT {
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_MobileIdentityLV mis := { valueof(ts_MI_TMSI_NRI_LV(nri_val)) };
+	var ro_octetstring compl3;
+	if (ps_domain) {
+		compl3 := {
+			f_gen_one_compl_l3(ATTACHREQ, mis[0], nri_val)
+		};
+	} else {
+		compl3 := f_gen_compl_l3({LU}, mis, 1);
+	}
+
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3,
+				  /* The third Complete Layer 3 wraps back to msc 0 */
+				  {0, 1, 0},
+				  "cnpool:subscr:reattach");
+	f_shutdown_helper();
+}
+
+/* Three Layer 3 Complete by TMSI are round-robin'ed across two connected MSCs, because they contain an NRI not
+ * assigned to any MSC (configured in osmo-hnbgw.cfg). */
+testcase TC_mscpool_L3Complete_by_tmsi_unassigned_nri_round_robin() runs on test_CT {
+	f_TC_cnpool_L3Complete_by_tmsi_unassigned_nri_round_robin(ps_domain := false);
+}
+function f_TC_cnpool_L3Complete_by_tmsi_unassigned_nri_round_robin(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	/* 3 NRIs that are not assigned to any MSC */
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(1000)),
+		valueof(ts_MI_TMSI_NRI_LV(768)),
+		valueof(ts_MI_TMSI_NRI_LV(819))
+	};
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3, mis);
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3, { 0, 1, 0 }, "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* Three Layer 3 Complete by TMSI are round-robin'ed across two connected MSCs, because they contain an NRI
+ * assigned to a CN link that is currently not connected (configured in osmo-hnbgw.cfg). */
+testcase TC_mscpool_L3Complete_by_tmsi_valid_nri_msc_not_connected_round_robin() runs on test_CT {
+	f_TC_cnpool_L3Complete_by_tmsi_valid_nri_msc_not_connected_round_robin(ps_domain := false);
+}
+function f_TC_cnpool_L3Complete_by_tmsi_valid_nri_msc_not_connected_round_robin(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	/* 3 NRIs that are assigned to an unconnected MSC */
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(512)),
+		valueof(ts_MI_TMSI_NRI_LV(767)),
+		valueof(ts_MI_TMSI_NRI_LV(750))
+	};
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3, mis);
+
+	f_TC_cnpool_compl_l3(ps_domain, compl3[0], cn_nr := 0);
+	f_ctrs_cn_add(2, "cnpool:subscr:attach_lost");
+	f_ctrs_cn_add(0, "cnpool:subscr:new");
+	f_ctrs_cn_verify();
+
+	f_TC_cnpool_compl_l3(ps_domain, compl3[1], cn_nr := 1);
+	f_ctrs_cn_add(2, "cnpool:subscr:attach_lost");
+	f_ctrs_cn_add(1, "cnpool:subscr:new");
+	f_ctrs_cn_verify();
+
+	f_TC_cnpool_compl_l3(ps_domain, compl3[2], cn_nr := 0);
+	f_ctrs_cn_add(2, "cnpool:subscr:attach_lost");
+	f_ctrs_cn_add(0, "cnpool:subscr:new");
+	f_ctrs_cn_verify();
+
+	f_shutdown_helper();
+}
+
+/* Three Layer 3 Complete by TMSI with valid NRI for the second MSC are all directed to the second MSC (configured in
+ * osmo-hnbgw.cfg). */
+testcase TC_mscpool_L3Complete_by_tmsi_valid_nri_1() runs on test_CT {
+	f_TC_cnpool_L3Complete_valid_nri_1(ps_domain := false);
+}
+testcase TC_sgsnpool_L3Complete_valid_nri_1() runs on test_CT {
+	f_TC_cnpool_L3Complete_valid_nri_1(ps_domain := true);
+}
+function f_TC_cnpool_L3Complete_valid_nri_1(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* All TMSIs in this test point at the second MSC, set the round robin to point at the first MSC to make sure
+	 * this is not using round-robin. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3;
+
+	/* 3 NRIs of the second MSC's range (256-511) */
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(256)),
+		valueof(ts_MI_TMSI_NRI_LV(260)),
+		valueof(ts_MI_TMSI_NRI_LV(511))
+	};
+	if (ps_domain) {
+		compl3 := {
+			f_gen_one_compl_l3(RAUREQ, mis[0], 256),
+			f_gen_one_compl_l3(RAUREQ, mis[1], 260),
+			f_gen_one_compl_l3(RAUREQ, mis[2], 511)
+		};
+	} else {
+		compl3 := f_gen_compl3_by_domain(ps_domain, 3, mis);
+	}
+
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3, {1, 1, 1}, "cnpool:subscr:known");
+
+	f_shutdown_helper();
+}
+
+/* Layer 3 Complete by TMSI with valid NRI for the third MSC are directed to the third MSC (configured in osmo-hnbgw.cfg),
+ * while a round-robin remains unaffected by that. */
+testcase TC_mscpool_L3Complete_by_tmsi_valid_nri_2() runs on test_CT {
+	f_TC_cnpool_L3Complete_valid_nri_2(ps_domain := false);
+}
+testcase TC_sgsnpool_L3Complete_valid_nri_2() runs on test_CT {
+	f_TC_cnpool_L3Complete_valid_nri_2(ps_domain := true);
+}
+function f_TC_cnpool_L3Complete_valid_nri_2(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 3, nr_sgsn := 3);
+	f_sleep(1.0);
+
+	/* All TMSIs in this test point at the third MSC, set the round robin to point at the second MSC to make sure
+	 * this is not using round-robin. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 1);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3;
+
+	/* 2 NRIs of the third MSC's range (512-767) */
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(512)),
+		valueof(ts_MI_TMSI_NRI_LV(678))
+	};
+	if (ps_domain) {
+		compl3 := {
+			f_gen_one_compl_l3(ATTACHREQ, mis[0], 512),
+			f_gen_one_compl_l3(ATTACHREQ, mis[1], 678)
+		};
+	} else {
+		compl3 := f_gen_compl3_by_domain(ps_domain, 2, mis);
+	}
+
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3, {2, 2}, "cnpool:subscr:known");
+
+	/* The above forwardings to third MSC have not affected the round robin, which still points at the second MSC */
+	f_TC_cnpool_compl_l3_list(ps_domain, f_gen_compl3_by_domain(ps_domain, 1), {1}, "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* LU with a TMSI but indicating a different PLMN in its previous LAI: ignore the NRI. */
+testcase TC_mscpool_LU_by_tmsi_from_other_PLMN() runs on test_CT {
+	f_TC_cnpool_nri_from_other_PLMN(ps_domain := false);
+}
+testcase TC_sgsnpool_nri_from_other_PLMN() runs on test_CT {
+	f_TC_cnpool_nri_from_other_PLMN(ps_domain := true);
+}
+function f_TC_cnpool_nri_from_other_PLMN(boolean ps_domain) runs on test_CT {
+
+	f_init(nr_msc := 3, nr_sgsn := 3);
+	f_sleep(1.0);
+
+	/* The TMSIs in this test points at the second MSC, but since it is from a different PLMN, round-robin is used
+	 * instead, and hits msc 0. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3;
+
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(260)),
+		valueof(ts_MI_TMSI_NRI_LV(555))
+	};
+	if (ps_domain) {
+		compl3 := {
+			/* An NRI of the second MSC's range (256-511), but a PLMN that doesn't match with osmo-hnbgw.cfg */
+			enc_PDU_L3_MS_SGSN(valueof(ts_GMM_ATTACH_REQ(mis[0], f_RAI('999'H, '99'H, '2a2a'O,
+										   '17'O),
+								     nri := ts_GMM_NRI(260)
+								    ))),
+			/* An NRI of the third MSC's range (512-767) and a matching PLMN gets directed by NRI. */
+			f_gen_one_compl_l3(ATTACHREQ, mis[1], 555)
+		}
+	} else {
+		compl3 :=  {
+			/* An NRI of the second MSC's range (256-511), but a PLMN that doesn't match with osmo-hnbgw.cfg */
+			enc_PDU_ML3_MS_NW(valueof(ts_LU_REQ(LU_Type_IMSI_Attach, mis[0], '99F999'O))),
+			/* An NRI of the third MSC's range (512-767) and a matching PLMN gets directed by NRI. */
+			enc_PDU_ML3_MS_NW(valueof(ts_LU_REQ(LU_Type_IMSI_Attach, mis[1], '00F110'O)))
+		};
+	}
+
+	/* Foreign NRI: roundrobin */
+	f_TC_cnpool_compl_l3(ps_domain, compl3[0], cn_nr := 0, inc_countername := "cnpool:subscr:new");
+
+	/* Local NRI: matching msc */
+	f_TC_cnpool_compl_l3(ps_domain, compl3[1], cn_nr := 2, inc_countername := "cnpool:subscr:known");
+
+	f_shutdown_helper();
+}
+
+/* Make sure that whichever MSC paged a subscriber will also get the Paging Response. Page by IMSI, which would be
+ * round-robined to another MSC, to make sure the Paging->Response relation is stronger than the NRI->MSC mapping. */
+friend function f_tc_mscpool_paging_imsi(charstring id) runs on ConnHdlr {
+	var hexstring imsi := '001010000000123'H;
+	var RANAP_IEs.CN_DomainIndicator domain_ind;
+	if (g_pars.ps_domain) {
+		domain_ind := ps_domain;
+	} else {
+		domain_ind := cs_domain;
+	}
+	var template (value) RANAP_PDU paging := ts_RANAP_Paging(domain_ind, imsi_hex2oct(imsi));
+	BSSAP.send(ts_RANAP_UNITDATA_req(g_pars.sccp_addr_hnbgw, g_pars.sccp_addr_msc, paging));
+	/* TODO: Expect RUA ConnectionlessTransfer Paging (on all HNB).
+	 * We could verify the Paging sent from osmo-hnbgw to RUA with some effort,
+	 * but, this test does not care whether the Paging was forwarded to RUA or not, only that osmo-hnbgw *received*
+	 * the Paging. In the CN pool decisions, osmo-hnbgw should match up Paging Response to an earlier Paging.
+	 */
+
+	f_sleep(1.0);
+
+	/* Despite the round robin pointing at the second MSC ('roundrobin next msc 1'), the earlier Paging for the same IMSI
+	 * causes this Paging Response to go to the first MSC ('msc 0'). */
+	f_perform_compl_l3(f_gen_one_compl_l3(PAGRESP, ts_MI_IMSI_LV(imsi)));
+	f_sleep(1.0);
+}
+
+testcase TC_mscpool_paging_imsi() runs on test_CT {
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := false;
+
+	/* Testing a Paging on the first MSC to get a Paging Response back to the first MSC. Set round robin to the
+	 * second MSC to make sure we're getting the Paging logic, not a coincidental round robin match. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ConnHdlr vc_conn1;
+	var template (value) TestHdlrParams pars1 := f_TestHdlrParams(0, ps_domain := ps_domain, cn_nr := 0);
+	vc_conn1 := f_start_handler_with_pars(refers(f_tc_mscpool_paging_imsi), pars1);
+	vc_conn1.done;
+	f_ctrs_cn_expect(0, "cnpool:subscr:paged");
+	f_shutdown_helper();
+}
+
+/* Make sure that whichever MSC paged a subscriber will also get the Paging Response.  Page by TMSI with an NRI value
+ * that matches a different MSC, to make sure the Paging->Response relation is stronger than the NRI->MSC mapping. */
+friend function f_tc_mscpool_paging_tmsi(charstring id) runs on ConnHdlr {
+	var hexstring imsi := '001010000000124'H;
+	var integer nri_v := 300; /* <-- second MSC's NRI */
+	var octetstring tmsi := f_gen_tmsi(suffix := 0, nri_v := nri_v);
+
+	var RANAP_IEs.CN_DomainIndicator domain_ind;
+	if (g_pars.ps_domain) {
+		domain_ind := ps_domain;
+	} else {
+		domain_ind := cs_domain;
+	}
+	var template (value) RANAP_PDU paging := ts_RANAP_Paging_temp_id(domain_ind, imsi_hex2oct(imsi),
+									 ts_RANAP_TemporaryUE_ID_TMSI(tmsi));
+	BSSAP.send(ts_RANAP_UNITDATA_req(g_pars.sccp_addr_hnbgw, g_pars.sccp_addr_msc, paging));
+	/* TODO: Expect RUA ConnectionlessTransfer Paging (on all HNB).
+	 * We could verify the Paging sent from osmo-hnbgw to RUA with some effort,
+	 * but, this test does not care whether the Paging was forwarded to RUA or not, only that osmo-hnbgw *received*
+	 * the Paging. In the CN pool decisions, osmo-hnbgw should match up Paging Response to an earlier Paging.
+	 */
+
+	f_sleep(1.0);
+
+	/* Despite the round robin pointing at the third MSC ('roundrobin next msc 2'), the earlier Paging for the same
+	 * TMSI causes this Paging Response to go to the first MSC ('msc 0'). */
+	f_perform_compl_l3(f_gen_one_compl_l3(PAGRESP, ts_MI_TMSI_NRI_LV(nri_v)));
+	f_sleep(1.0);
+}
+testcase TC_mscpool_paging_tmsi() runs on test_CT {
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := false;
+
+	/* Testing a Paging on the first MSC to get a Paging Response back to the first MSC. Set round robin to the
+	 * third MSC to make sure we're getting the Paging logic, not a coincidental round robin match. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ConnHdlr vc_conn1;
+	var template (value) TestHdlrParams pars1 := f_TestHdlrParams(0, ps_domain := ps_domain, cn_nr := 0);
+	vc_conn1 := f_start_handler_with_pars(refers(f_tc_mscpool_paging_tmsi), pars1);
+	vc_conn1.done;
+	f_ctrs_cn_expect(0, "cnpool:subscr:paged");
+	f_shutdown_helper();
+}
+
+/* Make sure that whichever MSC paged a subscriber will also get the Paging Response. Page by IMSI, which would be
+ * round-robined to another MSC, to make sure the Paging->Response relation is stronger than the NRI->MSC mapping. */
+friend function f_tc_mscpool_paging_imsi_lai_registered(charstring id) runs on ConnHdlr {
+	var hexstring imsi := '001010000000123'H;
+	var RANAP_IEs.CN_DomainIndicator domain_ind;
+	var template (value) RANAP_IEs.LAI lai := ts_RANAP_LAI(hex2oct(g_pars.hnb.lai.mcc_mnc),
+							       int2oct(g_pars.hnb.lai.lac, 2));
+	var template (value) RANAP_IEs.PagingAreaID pag_area_id := ts_RANAP_PagingAreaID_LAI(lai);
+	if (g_pars.ps_domain) {
+		domain_ind := ps_domain;
+	} else {
+		domain_ind := cs_domain;
+	}
+	var template (value) RANAP_PDU paging := ts_RANAP_Paging_pag_area_id(domain_ind, imsi_hex2oct(imsi), pag_area_id);
+	BSSAP.send(ts_RANAP_UNITDATA_req(g_pars.sccp_addr_hnbgw, g_pars.sccp_addr_msc, paging));
+	/* TODO: Expect RUA ConnectionlessTransfer Paging (on subset of HNB).
+	 * We could verify the Paging sent from osmo-hnbgw to RUA with some effort,
+	 * but, this test does not care whether the Paging was forwarded to RUA or not, only that osmo-hnbgw *received*
+	 * the Paging. In the CN pool decisions, osmo-hnbgw should match up Paging Response to an earlier Paging.
+	 */
+
+	f_sleep(1.0);
+
+	/* Despite the round robin pointing at the second MSC ('roundrobin next msc 1'), the earlier Paging for the same IMSI
+	 * causes this Paging Response to go to the first MSC ('msc 0'). */
+	f_perform_compl_l3(f_gen_one_compl_l3(PAGRESP, ts_MI_IMSI_LV(imsi)));
+	f_sleep(1.0);
+}
+
+/* Test CN sending a RANAP Paging Command with Paging Area ID IE (LAI) present requesting a registered HNB: */
+testcase TC_mscpool_paging_imsi_lai_registered() runs on test_CT {
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := false;
+
+	/* Testing a Paging on the first MSC to get a Paging Response back to the first MSC. Set round robin to the
+	 * second MSC to make sure we're getting the Paging logic, not a coincidental round robin match. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ConnHdlr vc_conn1;
+	var template (value) TestHdlrParams pars1 := f_TestHdlrParams(0, ps_domain := ps_domain, cn_nr := 0);
+	vc_conn1 := f_start_handler_with_pars(refers(f_tc_mscpool_paging_imsi_lai_registered), pars1);
+	vc_conn1.done;
+	f_ctrs_cn_expect(0, "cnpool:subscr:paged");
+	f_shutdown_helper();
+}
+
+/* Make sure that whichever MSC paged a subscriber will also get the Paging Response. Page by IMSI, which would be
+ * round-robined to another MSC, to make sure the Paging->Response relation is stronger than the NRI->MSC mapping. */
+friend function f_tc_mscpool_paging_imsi_rai_registered(charstring id) runs on ConnHdlr {
+	var hexstring imsi := '001010000000123'H;
+	var RANAP_IEs.CN_DomainIndicator domain_ind;
+	var template (value) RANAP_IEs.LAI lai := ts_RANAP_LAI(hex2oct(g_pars.hnb.lai.mcc_mnc),
+							       int2oct(g_pars.hnb.lai.lac, 2));
+	var template (value) RANAP_IEs.RAI rai := ts_RANAP_RAI(lai,
+							       int2oct(g_pars.hnb.rac, 1));
+	var template (value) RANAP_IEs.PagingAreaID pag_area_id := ts_RANAP_PagingAreaID_RAI(rai);
+	if (g_pars.ps_domain) {
+		domain_ind := ps_domain;
+	} else {
+		domain_ind := cs_domain;
+	}
+	var template (value) RANAP_PDU paging := ts_RANAP_Paging_pag_area_id(domain_ind, imsi_hex2oct(imsi), pag_area_id);
+	BSSAP.send(ts_RANAP_UNITDATA_req(g_pars.sccp_addr_hnbgw, g_pars.sccp_addr_msc, paging));
+	/* TODO: Expect RUA ConnectionlessTransfer Paging (on subset of HNB).
+	 * We could verify the Paging sent from osmo-hnbgw to RUA with some effort,
+	 * but, this test does not care whether the Paging was forwarded to RUA or not, only that osmo-hnbgw *received*
+	 * the Paging. In the CN pool decisions, osmo-hnbgw should match up Paging Response to an earlier Paging.
+	 */
+
+	f_sleep(1.0);
+
+	/* Despite the round robin pointing at the second MSC ('roundrobin next msc 1'), the earlier Paging for the same IMSI
+	 * causes this Paging Response to go to the first MSC ('msc 0'). */
+	f_perform_compl_l3(f_gen_one_compl_l3(PAGRESP, ts_MI_IMSI_LV(imsi)));
+	f_sleep(1.0);
+}
+
+/* Test CN sending a RANAP Paging Command with Paging Area ID IE (LAI) present requesting a registered HNB: */
+testcase TC_mscpool_paging_imsi_rai_registered() runs on test_CT {
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := true;
+
+	/* Testing a Paging on the first MSC to get a Paging Response back to the first MSC. Set round robin to the
+	 * second MSC to make sure we're getting the Paging logic, not a coincidental round robin match. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ConnHdlr vc_conn1;
+	var template (value) TestHdlrParams pars1 := f_TestHdlrParams(0, ps_domain := ps_domain, cn_nr := 0);
+	vc_conn1 := f_start_handler_with_pars(refers(f_tc_mscpool_paging_imsi_rai_registered), pars1);
+	vc_conn1.done;
+	f_ctrs_cn_expect(0, "cnpool:subscr:paged");
+	f_shutdown_helper();
+}
+
+/* For round-robin, skip a CN link that has 'no allow-attach' set. */
+testcase TC_mscpool_no_allow_attach_round_robin() runs on test_CT {
+
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := false;
+
+	/* Mark the second MSC as offloading, round-robin should skip this MSC now. */
+	f_vty_cnlink_allow_attach(HNBGWVTY, ps_domain, {true, false, true});
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	f_TC_cnpool_compl_l3_list(ps_domain, f_gen_compl3_by_domain(ps_domain, 3),
+				  /* msc 1 is skipped */
+				  {0, 2, 0},
+				  "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* An MSC that has 'no allow-attach' set should still serve subscribers that are already attached according to their
+ * TMSI NRI. */
+testcase TC_mscpool_no_allow_attach_valid_nri() runs on test_CT {
+
+	f_init(nr_msc := 3);
+	f_sleep(1.0);
+
+	var boolean ps_domain := false;
+
+	/* Mark the second MSC as offloading, round-robin should skip this MSC now. */
+	f_vty_cnlink_allow_attach(HNBGWVTY, ps_domain, {true, false, true});
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_MobileIdentityLV mis := {
+		valueof(ts_MI_TMSI_NRI_LV(260)),
+		valueof(ts_MI_IMSI_LV('001010000000002'H)),
+		valueof(ts_MI_IMSI_LV('001010000000003'H))
+	};
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3, mis);
+
+	/* Round robin points at msc 0, but the valid NRI directs to msc 1, even though msc 1 has 'no allow-attach'. */
+	f_TC_cnpool_compl_l3(ps_domain, compl3[0], cn_nr := 1, inc_countername := "cnpool:subscr:known");
+
+	/* Normal round robin skips msc 1, because it has 'no allow-attach' */
+	f_TC_cnpool_compl_l3(ps_domain, compl3[1], cn_nr := 0, inc_countername := "cnpool:subscr:new");
+	f_TC_cnpool_compl_l3(ps_domain, compl3[2], cn_nr := 2, inc_countername := "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* When a peer point-code gets an SCCP N-PCSTATE saying it is unreachable, immediately mark the CN link as unusable. */
+testcase TC_mscpool_sccp_n_pcstate_detaches_cnlink() runs on test_CT {
+	f_TC_cnpool_sccp_n_pcstate_detaches_cnlink(ps_domain := false);
+}
+testcase TC_sgsnpool_sccp_n_pcstate_detaches_cnlink() runs on test_CT {
+	f_TC_cnpool_sccp_n_pcstate_detaches_cnlink(ps_domain := true);
+}
+function f_TC_cnpool_sccp_n_pcstate_detaches_cnlink(boolean ps_domain) runs on test_CT
+{
+
+	f_init(nr_msc := 2, nr_sgsn := 2);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3);
+
+	f_TC_cnpool_compl_l3(ps_domain, compl3[0], cn_nr := 0, inc_countername := "cnpool:subscr:new");
+	f_TC_cnpool_compl_l3(ps_domain, compl3[1], cn_nr := 1, inc_countername := "cnpool:subscr:new");
+
+	f_logp(HNBGWVTY, "disconnecting msc0");
+	f_cn_idx_disconnect(f_cn_idx(ps_domain, 0));
+
+	/* Now round-robin would wrap to the first MSC, but since the first MSC is disconnected, it wraps around to the
+	 * second. */
+	f_TC_cnpool_compl_l3(ps_domain, compl3[2], cn_nr := 1, inc_countername := "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+/* When a CN link point-code gets an SCCP N-PCSTATE saying it is now reachable, immediately trigger RESET and bring up the
+ * MSC. */
+testcase TC_mscpool_sccp_n_pcstate_attaches_cnlink() runs on test_CT {
+	f_TC_cnpool_sccp_n_pcstate_attaches_cnlink(ps_domain := false);
+}
+testcase TC_sgsnpool_sccp_n_pcstate_attaches_cnlink() runs on test_CT {
+	f_TC_cnpool_sccp_n_pcstate_attaches_cnlink(ps_domain := true);
+}
+function f_TC_cnpool_sccp_n_pcstate_attaches_cnlink(boolean ps_domain) runs on test_CT
+{
+	f_init(nr_msc := 1, nr_sgsn := 1);
+	f_sleep(1.0);
+
+	/* Control which MSC gets chosen next by the round-robin, otherwise
+	 * would be randomly affected by which other tests ran before this. */
+	f_vty_set_roundrobin_next(HNBGWVTY, ps_domain, 0);
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 3);
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	/* There is only one MSC, round robin stays on msc0 */
+	f_TC_cnpool_compl_l3(ps_domain := ps_domain, nas_pdu := compl3[0], cn_nr := 0, inc_countername := "cnpool:subscr:new");
+	f_TC_cnpool_compl_l3(ps_domain := ps_domain, nas_pdu := compl3[1], cn_nr := 0, inc_countername := "cnpool:subscr:new");
+
+	f_logp(HNBGWVTY, "connecting cnlink 1");
+	f_cn_nr_init(ps_domain, 1);
+	f_vty_cnlink_allow_attach(HNBGWVTY, ps_domain, { true, true });
+	f_sleep(1.0);
+
+	/* This time round-robin wraps to the second MSC, because it is now online. */
+	f_TC_cnpool_compl_l3(ps_domain := ps_domain, nas_pdu := compl3[2], cn_nr := 1, inc_countername := "cnpool:subscr:new");
+
+	f_shutdown_helper();
+}
+
+private function f_vty_add_sccp_addr(TELNETasp_PT pt, charstring addr_name, charstring pc, integer cs7_nr := 0)
+{
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "cs7 instance 0");
+	f_vty_transceive(pt, "sccp-address " & addr_name);
+	f_vty_transceive(pt, "point-code " & pc);
+	f_vty_transceive(pt, "end");
+}
+
+private function f_vty_set_cnlink_addr(TELNETasp_PT pt, charstring cnlink_and_nr, charstring addr_name)
+{
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, cnlink_and_nr);
+	f_vty_transceive(pt, "remote-addr " & addr_name);
+	f_vty_transceive(pt, "end");
+}
+
+private function f_vty_apply_sccp(TELNETasp_PT pt)
+{
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "apply sccp");
+	f_vty_transceive(pt, "end");
+}
+
+/* With a cnlink up, change the SCCP address, and verify that it restarts upon vty 'apply sccp' */
+private function f_tc_apply_sccp(charstring id) runs on ConnHdlr
+{
+	f_perform_compl_l3(f_gen_compl3_by_domain(g_pars.ps_domain, 1)[0]);
+
+	f_sleep(1.0);
+	f_logp(HNBGWVTY, "Changing SCCP address, don't apply yet");
+
+	f_vty_add_sccp_addr(HNBGWVTY, "msc-foo", "0.42.4");
+	f_vty_set_cnlink_addr(HNBGWVTY, "msc 0", "msc-foo");
+
+	/* No effect yet, link still open both ways */
+	f_sleep(1.0);
+	f_iuh2iu(ts_RANAP_DirectTransfer(f_rnd_octstring(10)));
+	f_iu2iuh(ts_RANAP_DirectTransfer(f_rnd_octstring(10)));
+
+	f_logp(HNBGWVTY, "Apply SCCP address changes");
+	f_vty_apply_sccp(HNBGWVTY);
+
+	/* We modified the SCCP configuration, expect disconnect of UE that was active on the aborted link. */
+	RUA.receive(RUA_Disc_Ind:?);
+	BSSAP.receive(tr_MSC_CONN_PRIM_DISC_IND);
+
+	/* Would be nice to test reconnection on the other point-code, too. That would require another cnlink in
+	 * osmo-stp.cfg and module parameters... */
+
+	f_sleep(1.0);
+}
+testcase TC_apply_sccp() runs on test_CT
+{
+	f_init();
+	f_sleep(1.0);
+
+	var ConnHdlr vc_conn;
+	var template (value) TestHdlrParams pars := f_TestHdlrParams(0);
+	vc_conn := f_start_handler_with_pars(refers(f_tc_apply_sccp), pars);
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* In the field, we encountered a "normal" RAB Assignment that concludes successfully, followed by another RAB
+ * Assignment that has different SDU subflow parameters, and does not contain RTP information. At the time of writing,
+ * it seems that the second RAB Assignment causes a crash. Play through this scenario. */
+friend function f_tc_second_rab_assignment(charstring id) runs on ConnHdlr {
+	var MgcpCommand mgcp_cmd;
+	var RANAP_PDU tx;
+	timer T := 5.0;
+
+	tx := f_build_initial_ue(g_pars);
+	f_iuh2iu_connect(tx);
+
+	f_create_rab_cs();
+
+	/* Now send a second RAB Assignment with different subflows and omitting transportLayerInformation. (Assuming
+	 * the first RAB Assignment's transportLayerInformation remains in use unchanged.) */
+	var template RAB_SetupOrModifyList rab_sml;
+	rab_sml := ts_RAB_SML2(t_RAB_id(23),
+			       ts_RabParams,
+			       user_plane_info := omit,
+			       transport_layer_info := omit);
+	tx := valueof(ts_RANAP_RabAssReq(rab_sml));
+	BSSAP.send(tx);
+	T.start;
+
+	/* Expect this secondary RAB Assignment to go through unchanged. */
+	f_rua_expect(tx);
+
+	/* I'm guessing that the RAB Assignment Response also omits transportLayerInformation, so far not known because
+	 * osmo-hnbgw crashed before we could receive the response. */
+
+	/* Send back RAB Assignment Response via Iuh */
+	var template RAB_SetupOrModifiedList rab_smdl;
+	rab_smdl := ts_RAB_SMdL_no_tla(t_RAB_id(23));
+	tx := valueof(ts_RANAP_RabAssResp(rab_smdl));
+	RUA.send(tx);
+	f_bssap_expect(tx);
+
+	/* Send Iu Release */
+	f_cn_iu_release_procedure(mgcp_teardown := true);
+}
+
+testcase TC_second_rab_assignment() runs on test_CT {
+	var ConnHdlr vc_conn;
+	g_num_hnbs := 1;
+	f_init();
+
+	vc_conn := f_start_handler_with_pars(refers(f_tc_second_rab_assignment), f_TestHdlrParams(3));
+	vc_conn.done;
+
+	f_shutdown_helper();
+}
+
+/* When no CN was found for a UE / domain, make sure osmo-hnbgw returns a Disconnect (OS#6283) */
+function f_TC_cnpool_L3Compl_no_cn(boolean ps_domain) runs on test_CT {
+
+	/* Have one MSC and one SGSN but do not allow attaching.
+	 * I would use no MSCs and no SGSNs, but then we need many tweaks to allow test startup without any "BSSAP"
+	 * port. */
+	f_init();
+	f_vty_cnlink_allow_attach(HNBGWVTY, ps_domain, {false});
+
+	f_ctrs_cn_init(ps_domain := ps_domain);
+
+	var ro_octetstring compl3 := f_gen_compl3_by_domain(ps_domain, 4);
+	f_TC_cnpool_compl_l3_list(ps_domain, compl3, {0, 0, 0, 0}, omit,
+				  expect_compl_l3_success := false);
+
+	f_shutdown_helper();
+}
+testcase TC_mscpool_L3Compl_no_cn() runs on test_CT {
+	f_TC_cnpool_L3Compl_no_cn(ps_domain := false);
+}
+testcase TC_sgsnpool_L3Compl_no_cn() runs on test_CT {
+	f_TC_cnpool_L3Compl_no_cn(ps_domain := true);
+}
+
+control {
+	execute(TC_hnb_register());
+	execute(TC_hnb_register_duplicate());
+	execute(TC_hnb_register_duplicate_reuse_sctp_assoc());
+	execute(TC_hnb_disconnected_timeout());
+	execute(TC_ue_register());
+	execute(TC_ue_register_tmsi_lai());
+	execute(TC_ue_register_before_hnb_register());
+	execute(TC_ranap_cs_initial_ue());
+	execute(TC_ranap_ps_initial_ue());
+	execute(TC_ranap_cs_initial_ue_empty_cr());
+	execute(TC_ranap_ps_initial_ue_empty_cr());
+	execute(TC_ranap_cs_bidir());
+	execute(TC_ranap_ps_bidir());
+	execute(TC_rab_assignment());
+	execute(TC_rab_assignment_concurrent());
+	execute(TC_rab_release());
+	execute(TC_rab_release_abnormal());
+	execute(TC_rab_assign_fail());
+	execute(TC_rab_assign_mgcp_to());
+	execute(TC_rab_assign_mgw_iuup_addr_chg());
+	execute(TC_ranap_cs_mo_disconnect());
+	execute(TC_ranap_ps_mo_disconnect());
+	execute(TC_ranap_cs_creq_cref());
+	execute(TC_ranap_ps_creq_cref());
+	execute(TC_ps_rua_disconnect_during_sccp_cr_cc());
+	execute(TC_cs_rua_disconnect_during_sccp_cr_cc());
+	execute(TC_cs_iu_release_req_rua_disconnect());
+	execute(TC_ps_iu_release_req_rua_disconnect());
+	execute(TC_cs_rua_dt_during_sccp_wait_cc());
+	execute(TC_ps_rua_dt_during_sccp_wait_cc());
+	execute(TC_ps_rab_assignment());
+	execute(TC_ps_rab_assignment_concurrent());
+	execute(TC_ps_rab_release());
+	execute(TC_ps_rab_release_abnormal());
+
+	execute( TC_mscpool_L3Compl_on_1_cnlink() );
+	execute( TC_mscpool_L3Complete_by_imsi_round_robin() );
+	execute( TC_mscpool_LU_by_tmsi_null_nri_0_round_robin() );
+	execute( TC_mscpool_LU_by_tmsi_null_nri_1_round_robin() );
+	execute( TC_mscpool_L3Complete_by_tmsi_unassigned_nri_round_robin() );
+	execute( TC_mscpool_L3Complete_by_tmsi_valid_nri_msc_not_connected_round_robin() );
+	execute( TC_mscpool_L3Complete_by_tmsi_valid_nri_1() );
+	execute( TC_mscpool_L3Complete_by_tmsi_valid_nri_2() );
+	execute( TC_mscpool_L3Compl_no_cn() );
+	execute( TC_mscpool_LU_by_tmsi_from_other_PLMN() );
+	execute( TC_mscpool_paging_imsi() );
+	execute( TC_mscpool_paging_tmsi() );
+	execute( TC_mscpool_paging_imsi_lai_registered() );
+	execute( TC_mscpool_paging_imsi_rai_registered() );
+	execute( TC_mscpool_no_allow_attach_round_robin() );
+	execute( TC_mscpool_no_allow_attach_valid_nri() );
+	execute( TC_mscpool_sccp_n_pcstate_detaches_cnlink() );
+	execute( TC_mscpool_sccp_n_pcstate_attaches_cnlink() );
+
+	execute( TC_sgsnpool_L3Compl_on_1_cnlink() );
+	execute( TC_sgsnpool_L3Complete_no_nri_round_robin() );
+	execute( TC_sgsnpool_L3Complete_valid_nri_1() );
+	execute( TC_sgsnpool_L3Complete_valid_nri_2() );
+	execute( TC_sgsnpool_L3Compl_no_cn() );
+	execute( TC_sgsnpool_nri_from_other_PLMN() );
+	execute( TC_sgsnpool_sccp_n_pcstate_detaches_cnlink() );
+	execute( TC_sgsnpool_sccp_n_pcstate_attaches_cnlink() );
+
+	execute(TC_second_rab_assignment());
+	execute(TC_hnb_reregister_reuse_sctp_assoc());
+
+	/* Run at the end since it messes with the SCCP config */
+	execute( TC_apply_sccp() );
+}
+
+}

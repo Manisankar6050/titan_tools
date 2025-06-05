@@ -1,0 +1,2871 @@
+module BSSMAP_Templates {
+
+/* BSSMAP Templates, building on top of BSSAP_Types from Ericsson.
+ *
+ * (C) 2017-2023 by Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+import from Misc_Helpers all;
+import from GSM_Types all;
+import from BSSAP_Types all;
+
+type integer BssmapCause;
+type integer SpeechVersion;
+type integer Channel;
+type integer ChannelMode;
+//type octetstring BSSMAP_oldToNewBSSIEs;
+
+// Old BSS to New BSS Information - 48.008 subclause 3.2.2.58
+type record BSSMAP_oldToNewBSSIEs
+{
+  BSSAMAP_IE_LastUsedEUTRANPLMNId LastUsedEUTRANPLMNId optional
+  /* TODO: add other FIELDS here from specs */
+}
+external function enc_BSSMAP_oldToNewBSSIEs(in BSSMAP_oldToNewBSSIEs val) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+
+/* 48.008 3.2.2.5 - this actually belongs to BSSAP_Types.ttcn */
+type enumerated myBSSMAP_Cause {
+	/* 000 / 001: Normal event */
+	GSM0808_CAUSE_RADIO_INTERFACE_MESSAGE_FAILURE			('0000000'B),
+	GSM0808_CAUSE_RADIO_INTERFACE_FAILURE				('0000001'B),
+	GSM0808_CAUSE_UPLINK_QUALITY					('0000010'B),
+	GSM0808_CAUSE_UPLINK_STRENGTH					('0000011'B),
+	GSM0808_CAUSE_DOWNLINK_QUALITY					('0000100'B),
+	GSM0808_CAUSE_DOWNLINK_STRENGTH					('0000101'B),
+	GSM0808_CAUSE_DISTANCE						('0000110'B),
+	GSM0808_CAUSE_O_AND_M_INTERVENTION				('0000111'B),
+	GSM0808_CAUSE_RESPONSE_TO_MSC_INVOCATION			('0001000'B),
+	GSM0808_CAUSE_CALL_CONTROL					('0001001'B),
+	GSM0808_CAUSE_RADIO_INTERFACE_FAILURE_REVERSION			('0001010'B),
+	GSM0808_CAUSE_HANDOVER_SUCCESSFUL				('0001011'B),
+	GSM0808_CAUSE_BETTER_CELL					('0001100'B),
+	GSM0808_CAUSE_DIRECTED_RETRY					('0001101'B),
+	GSM0808_CAUSE_JOINED_GROUP_CALL_CHANNEL				('0001110'B),
+	GSM0808_CAUSE_TRAFFIC						('0001111'B),
+	GSM0808_CAUSE_REDUCE_LOAD_IN_SERVING_CELL			('0010000'B),
+	GSM0808_CAUSE_TRAFFIC_LOAD_IN_TGT_HIGHER_THAN_IN_SRC_CELL	('0010001'B),
+	GSM0808_CAUSE_RELOCATION_TRIGGERED				('0010010'B),
+	GSM0808_CAUSE_REQUSTED_OPT_NOT_AUTHORISED			('0010100'B),
+	GSM0808_CAUSE_ALT_CHAN_CONFIG_REQUESTED				('0010101'B),
+	GSM0808_CAUSE_RESP_TO_INT_HO_ENQ_MSG				('0010110'B),
+	GSM0808_CAUSE_INT_HO_ENQUIRY_REJECT				('0010111'B),
+	GSM0808_CAUSE_REDUNDANCY_LEVEL_NOT_ADEQUATE			('0011000'B),
+	/* reserved */
+	/* 010: Resource unavailable */
+	GSM0808_CAUSE_EQUIPMENT_FAILURE					('0100000'B),
+	GSM0808_CAUSE_NO_RADIO_RESOURCE_AVAILABLE			('0100001'B),
+	GSM0808_CAUSE_RQSTED_TERRESTRIAL_RESOURCE_UNAVAILABLE		('0100010'B),
+	GSM0808_CAUSE_CCCH_OVERLOAD					('0100011'B),
+	GSM0808_CAUSE_PROCESSOR_OVERLOAD				('0100100'B),
+	GSM0808_CAUSE_BSS_NOT_EQUIPPED					('0100101'B),
+	GSM0808_CAUSE_MS_NOT_EQUIPPED					('0100110'B),
+	GSM0808_CAUSE_INVALID_CELL					('0100111'B),
+	GSM0808_CAUSE_TRAFFIC_LOAD					('0101000'B),
+	GSM0808_CAUSE_PREEMPTION					('0101001'B),
+	GSM0808_CAUSE_DTM_HO_SGSN_FAILURE				('0101010'B),
+	GSM0808_CAUSE_DTM_HO_PS_ALLOC_FAILURE				('0101011'B),
+	/* reserved */
+	/* 011: Service or option not available, but implemented */
+	GSM0808_CAUSE_RQSTED_TRANSCODING_RATE_ADAPTION_UNAVAILABLE	('0110000'B),
+	GSM0808_CAUSE_CIRCUIT_POOL_MISMATCH				('0110001'B),
+	GSM0808_CAUSE_SWITCH_CIRCUIT_POOL				('0110010'B),
+	GSM0808_CAUSE_RQSTED_SPEECH_VERSION_UNAVAILABLE			('0110011'B),
+	GSM0808_CAUSE_LSA_NOT_ALLOWED					('0110100'B),
+	GSM0808_CAUSE_REQ_CODEC_TYPE_OR_CONFIG_UNAVAIL			('0110101'B),
+	GSM0808_CAUSE_REQ_A_IF_TYPE_UNAVAIL				('0110110'B),
+	GSM0808_CAUSE_INVALID_CSG_CELL					('0110111'B),
+	/* reserved */
+	/* 100: Service or option not implemented or currently disabled */
+	GSM0808_CAUSE_REQ_REDUND_LEVEL_NOT_AVAIL			('0111111'B),
+	GSM0808_CAUSE_CIPHERING_ALGORITHM_NOT_SUPPORTED			('1000000'B),
+	GSM0808_CAUSE_GERAN_IU_MODE_FAILURE				('1000001'B),
+	GSM0808_CAUSE_INC_RELOC_NOT_SUPP_DT_PUESBINE_FEATURE		('1000010'B),
+	GSM0808_CAUSE_ACCESS_RESTRICTED_DUE_TO_SHARED_NETWORKS		('1000011'B),
+	GSM0808_CAUSE_REQ_CODEC_TYPE_OR_CONFIG_NOT_SUPP			('1000100'B),
+	GSM0808_CAUSE_REQ_A_IF_TYPE_NOT_SUPP				('1000101'B),
+	GSM0808_CAUSE_REQ_REDUND_LVL_NOT_SUPP				('1000110'B),
+	/* reserved */
+	/* 101: Invalid message */
+	GSM0808_CAUSE_TERRESTRIAL_CIRCUIT_ALREADY_ALLOCATED		('1010000'B),
+	GSM0808_CAUSE_INVALID_MESSAGE_CONTENTS				('1010001'B),
+	GSM0808_CAUSE_INFORMATION_ELEMENT_OR_FIELD_MISSING		('1010010'B),
+	GSM0808_CAUSE_INCORRECT_VALUE					('1010011'B),
+	GSM0808_CAUSE_UNKNOWN_MESSAGE_TYPE				('1010100'B),
+	GSM0808_CAUSE_UNKNOWN_INFORMATION_ELEMENT			('1010101'B),
+	GSM0808_CAUSE_DTM_HO_INVALID_PS_IND				('1010110'B),
+	GSM0808_CAUSE_CALL_ID_ALREADY_ALLOC				('1010111'B),
+	/* reserved */
+	/* 110: protocol error */
+	GSM0808_CAUSE_PROTOCOL_ERROR_BETWEEN_BSS_AND_MSC		('1100000'B),
+	GSM0808_CAUSE_VGCS_VBS_CALL_NON_EXISTANT			('1100001'B),
+	GSM0808_CAUSE_DTM_HO_TIMER_EXPIRY				('1100010'B)
+} with { variant "FIELDLENGTH(7)" };
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Transparent: Data Rate */
+const OCT1 GSM0808_DATA_RATE_TRANSP_32k0    := ('3a'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_28k8    := ('39'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_14k4    := ('18'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_9k6     := ('10'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_4k8     := ('11'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_2k4	    := ('12'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_1k2	    := ('13'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_600	    := ('14'O);
+const OCT1 GSM0808_DATA_RATE_TRANSP_1200_75 := ('15'O);
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Non-Transparent: Radio Interface Data Rate (preferred) */
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_12000_6000 := ('00'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_43k5       := ('34'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_29k0       := ('31'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_14k5       := ('14'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_12k0       := ('10'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_6k0        := ('11'O);
+
+/* 3GPP TS 48.008 3.2.2.11 Channel Type
+ * Non-Transparent: Allowed Radio Interface Data Rate (all possible allowed) */
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_43k5 := ('40'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_32k0 := ('20'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_29k0 := ('10'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_14k5 := ('08'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_12k0 := ('02'O);
+const OCT1 GSM0808_DATA_RATE_NON_TRANSP_ALLOWED_6k0  := ('01'O);
+
+type enumerated BSSMAP_LcsCause {
+	BSSMAP_LCS_CAUSE_UNSPECIFIED		('00000000'B),
+	BSSMAP_LCS_CAUSE_SYSTEM_FAILURE		('00000001'B),
+	BSSMAP_LCS_CAUSE_PROTOCOL_ERROR		('00000010'B),
+	BSSMAP_LCS_CAUSE_DATA_MISSING_IN_REQ	('00000011'B),
+	BSSMAP_LCS_CAUSE_UNEXP_DATA_IN_REQ	('00000100'B),
+	BSSMAP_LCS_CAUSE_POS_METH_FAILURE	('00000101'B),
+	BSSMAP_LCS_CAUSE_TGT_MS_UNREACHABLE	('00000110'B),
+	BSSMAP_LCS_CAUSE_REQUEST_ABORTED	('00000111'B),
+	BSSMAP_LCS_CAUSE_FACILITY_NOTSUPP	('00001000'B),
+	BSSMAP_LCS_CAUSE_INTER_BSC_HO		('00001001'B),
+	BSSMAP_LCS_CAUSE_INTRA_BSC_HO		('00001010'B),
+	BSSMAP_LCS_CAUSE_CONGESTION		('00001011'B),
+	BSSMAP_LCS_CAUSE_INTER_NSE_CHG		('00001100'B),
+	BSSMAP_LCS_CAUSE_RA_UPDAT		('00001101'B),
+	BSSMAP_LCS_CAUSE_PTMSI_REALLOC		('00001110'B),
+	BSSMAP_LCS_CAUSE_GPRS_SUSPENSION	('00001111'B)
+} with { variant "FIELDLENGTH(8)" };
+
+template PDU_BSSAP ts_BSSAP_BSSMAP := {
+	discriminator := '0'B,
+	spare := '0000000'B,
+	dlci := omit,
+	lengthIndicator := 0,	/* overwritten by codec */
+	pdu := {
+		bssmap := ?
+	}
+}
+
+template PDU_BSSAP tr_BSSAP_BSSMAP := {
+	discriminator := '0'B,
+	spare := '0000000'B,
+	dlci := *,
+	lengthIndicator := ?,
+	pdu := {
+		bssmap := ?
+	}
+}
+
+template PDU_BSSAP ts_BSSAP_DTAP(octetstring dtap, template OCT1 dlci := omit) := {
+	discriminator := '1'B,
+	spare := '0000000'B,
+	dlci := dlci,
+	lengthIndicator := 0,	/* overwritten by codec */
+	pdu := {
+		dtap := dtap
+	}
+}
+
+template PDU_BSSAP tr_BSSAP_DTAP := {
+	discriminator := '1'B,
+	spare := '0000000'B,
+	dlci := *,
+	lengthIndicator := ?,
+	pdu := {
+		dtap := ?
+	}
+}
+
+template (value) BSSMAP_IE_Cause ts_BSSMAP_IE_Cause(BssmapCause val) := {
+	elementIdentifier := '04'O,
+	lengthIndicator := 0,
+	causeValue := int2bit(val, 7),
+	extensionCauseValue := '0'B,
+	spare1 := omit
+}
+template BSSMAP_IE_Cause tr_BSSMAP_IE_Cause(template (present) myBSSMAP_Cause val) := {
+	elementIdentifier := '04'O,
+	lengthIndicator := ?,
+	causeValue := f_tr_causeValue(val),
+	extensionCauseValue := ?,
+	spare1 := *
+}
+private function f_tr_causeValue(template (present) myBSSMAP_Cause val)
+return template (present) BIT7 {
+	if (istemplatekind(val, "?")) {
+		return ?;
+	} else {
+		var integer int_val := enum2int(valueof(val));
+		return int2bit(valueof(int_val), 7);
+	}
+}
+
+template (value) BSSMAP_IE_SpeechVersion ts_BSSMAP_IE_SpeechVersion(SpeechVersion val) := {
+	elementIdentifier := '40'O,
+	speechVersionIdentifier := int2bit(val, 7),
+	spare1_1 := '0'B
+}
+
+template (value) BSSMAP_IE_CurrentChannelType1 ts_BSSMAP_IE_CurrentChannelType1(Channel c, ChannelMode cm) := {
+	elementIdentifier := '31'O,
+	channel := int2bit(c, 4),
+	channelMode := int2bit(cm, 4)
+}
+
+template (value) BSSMAP_oldToNewBSSIEs ts_BSSMAP_oldToNewBSSIEs(template (omit) BSSAMAP_IE_LastUsedEUTRANPLMNId last_used_eutran_plmn) := {
+	LastUsedEUTRANPLMNId := last_used_eutran_plmn
+}
+function f_ts_BSSMAP_oldToNewBSSIEs(template (omit) BSSAMAP_IE_LastUsedEUTRANPLMNId last_used_eutran_plmn)
+	 return template (omit) BSSMAP_oldToNewBSSIEs {
+	if (istemplatekind(last_used_eutran_plmn, "omit")) {
+		return omit;
+	} else {
+		return ts_BSSMAP_oldToNewBSSIEs(last_used_eutran_plmn);
+	}
+}
+template (value) BSSMAP_IE_OldToNewBSSInfo ts_BSSMAP_IE_OldToNewBSSInfo(template (value) BSSMAP_oldToNewBSSIEs val) := {
+	elementIdentifier := '3A'O,
+	lengthIndicator := 0,	/* overwritten by codec */
+	oldToNewBSSIEs := enc_BSSMAP_oldToNewBSSIEs(valueof(val))
+}
+function f_ts_BSSMAP_IE_OldToNewBSSInfo(template (omit) BSSMAP_oldToNewBSSIEs val)
+	 return template (omit) BSSMAP_IE_OldToNewBSSInfo {
+	if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		return ts_BSSMAP_IE_OldToNewBSSInfo(val);
+	}
+}
+
+template BSSMAP_IE_OldToNewBSSInfo tr_BSSMAP_IE_OldToNewBSSInfo(template (value) BSSMAP_oldToNewBSSIEs val) := {
+	elementIdentifier := '3A'O,
+	lengthIndicator := ?,	/* overwritten by codec */
+	oldToNewBSSIEs := enc_BSSMAP_oldToNewBSSIEs(valueof(val))
+}
+function f_tr_BSSMAP_IE_OldToNewBSSInfo(template BSSMAP_oldToNewBSSIEs val := *)
+	 return template BSSMAP_IE_OldToNewBSSInfo {
+	if (istemplatekind(val, "*")) {
+		return *;
+	} else if (istemplatekind(val, "?")) {
+		return ?;
+	} else if (istemplatekind(val, "omit")) {
+		return omit;
+	} else {
+		return tr_BSSMAP_IE_OldToNewBSSInfo(val);
+	}
+}
+
+template (value) BSSMAP_IE_Osmo_OsmuxSupport tr_BSSMAP_IE_Osmo_OsmuxSupport := {
+	elementIdentifier := 'F0'O
+}
+
+private function f_enc_osmux_support(boolean osmux_enabled) return template (omit) BSSMAP_IE_Osmo_OsmuxSupport {
+	if (osmux_enabled) {
+		return tr_BSSMAP_IE_Osmo_OsmuxSupport;
+	}
+	return omit;
+}
+
+template (value) PDU_BSSAP ts_BSSMAP_Reset(BssmapCause cause, boolean osmux_enabled := false) modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			reset := {
+				messageType := '30'O,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				a_InterfaceSelectorForReset := omit,
+				osmuxSupport := f_enc_osmux_support(osmux_enabled)
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_Reset(boolean osmux_enabled := false) modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			reset := {
+				messageType := '30'O,
+				cause := ?,
+				a_InterfaceSelectorForReset := *,
+				osmuxSupport := f_enc_osmux_support(osmux_enabled)
+			}
+		}
+	}
+}
+
+template (value) PDU_BSSAP ts_BSSMAP_ResetAck(boolean osmux_enabled := false) modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			resetAck := {
+				messageType := '31'O,
+				a_InterfaceSelectorForReset := omit,
+				osmuxSupport := f_enc_osmux_support(osmux_enabled)
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ResetAck(boolean osmux_enabled := false) modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			resetAck := {
+				messageType := '31'O,
+				a_InterfaceSelectorForReset := *,
+				osmuxSupport := f_enc_osmux_support(osmux_enabled)
+			}
+		}
+	}
+}
+
+template BSSMAP_IE_CellIdentifier ts_BSSMAP_IE_CellID := {
+	elementIdentifier := '05'O,
+	lengthIndicator := 0,
+	cellIdentifierDiscriminator := '0000'B,
+	spare1_4 := '0000'B,
+	cellIdentification := ?
+}
+
+template BSSMAP_IE_CellIdentifier tr_BSSMAP_IE_CellID := {
+	elementIdentifier := '05'O,
+	lengthIndicator := ?,
+	cellIdentifierDiscriminator := ?,
+	spare1_4 := '0000'B,
+	cellIdentification := ?
+}
+
+type uint16_t BssmapLAC;
+type uint16_t BssmapCI;
+type uint16_t BssmapSAC;
+
+template BSSMAP_IE_CellIdentifier ts_CellId_CGI(hexstring mcc, hexstring mnc, BssmapLAC lac, BssmapCI ci)
+modifies ts_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_CGI := ts_BSSMAP_CI_CGI(mcc, mnc, lac, ci)
+	}
+}
+
+template (present) BSSMAP_IE_CellIdentifier tr_CellId_CGI(template (present) OCT3 mcc_mnc,
+							  template (present) BssmapLAC lac,
+							  template (present) BssmapCI ci)
+modifies tr_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_CGI := tr_BSSMAP_CI_CGI(mcc_mnc, lac, ci)
+	}
+}
+
+template (value) BSSMAP_IE_CellIdentifier ts_CellID_LAC_CI(BssmapLAC lac, BssmapCI ci)
+modifies ts_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_LAC_CI := {
+			lac := int2oct(lac, 2),
+			ci := int2oct(ci, 2)
+		}
+	}
+}
+
+template (present) BSSMAP_IE_CellIdentifier tr_CellID_LAC_CI(template (present) BssmapLAC lac,
+							     template (present) BssmapCI ci)
+modifies tr_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_LAC_CI := {
+			lac := f_tr_LAC(lac),
+			ci := f_tr_CI(ci)
+		}
+	}
+}
+
+template BSSMAP_IE_CellIdentifier ts_CellId_CI(BssmapCI ci)
+modifies ts_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_CI := int2oct(ci, 2)
+	}
+}
+
+template (present) BSSMAP_IE_CellIdentifier tr_CellId_CI(template (present) BssmapCI ci)
+modifies tr_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_CI := f_tr_CI(ci)
+	}
+}
+
+template BSSMAP_IE_CellIdentifier ts_CellId_none
+modifies ts_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_noCell := ''O
+	}
+}
+
+template BSSMAP_IE_CellIdentifier tr_CellId_none
+modifies tr_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_noCell := ''O
+	}
+}
+
+template (value) BSSMAP_IE_CellIdentifier ts_CellID_SAI(OCT3 mcc_mnc, BssmapLAC lac, BssmapSAC sac)
+modifies ts_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_SAI := {
+			mcc_mnc := mcc_mnc,
+			lac := int2oct(lac, 2),
+			sac := int2oct(sac, 2)
+		}
+	}
+}
+
+template (present) BSSMAP_IE_CellIdentifier tr_CellID_SAI(template (present) OCT3 mcc_mnc,
+							  template (present) BssmapLAC lac,
+							  template (present) BssmapSAC sac)
+modifies tr_BSSMAP_IE_CellID := {
+	cellIdentification := {
+		cI_SAI := {
+			mcc_mnc := mcc_mnc,
+			lac := f_tr_LAC(lac),
+			sac := f_tr_SAC(sac)
+		}
+	}
+}
+
+private function f_tr_LAC(template (present) BssmapLAC lac)
+return template (present) OCT2 {
+	if (istemplatekind(lac, "?")) {
+		return ?;
+	} else {
+		return int2oct(valueof(lac), 2);
+	}
+}
+
+private function f_tr_SAC(template (present) BssmapSAC sac)
+return template (present) OCT2 {
+	if (istemplatekind(sac, "?")) {
+		return ?;
+	} else {
+		return int2oct(valueof(sac), 2);
+	}
+}
+
+private function f_tr_CI(template (present) BssmapCI ci)
+return template (present) OCT2 {
+	if (istemplatekind(ci, "?")) {
+		return ?;
+	} else {
+		return int2oct(valueof(ci), 2);
+	}
+}
+
+
+template (value) BSSMAP_IE_Layer3Information ts_BSSMAP_IE_L3Info(template (value) octetstring l3info) := {
+	elementIdentifier := '17'O,
+	lengthIndicator := 0,
+	layer3info := l3info
+}
+
+template (present) BSSMAP_IE_Layer3Information tr_BSSMAP_IE_L3Info(template (present) octetstring l3info) := {
+	elementIdentifier := '17'O,
+	lengthIndicator := ?,
+	layer3info := l3info
+}
+
+
+template PDU_BSSAP ts_BSSMAP_ComplL3(BSSMAP_IE_CellIdentifier cell_id, octetstring l3_info)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			completeLayer3Information := {
+				messageType := '57'O,
+				cellIdentifier := cell_id,
+				layer3Information := ts_BSSMAP_IE_L3Info(l3_info),
+				chosenChannel := omit,
+				lSAIdentifier := omit,
+				aPDU := omit,
+				codecList := omit,
+				redirectAttemptFlag := omit,
+				sendSequenceNumber := omit,
+				iMSI := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ComplL3(template octetstring l3_info := ?,
+				     template BSSMAP_IE_CellIdentifier cell_id := ?,
+				     template BSSMAP_IE_SpeechCodecList codec_list := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			completeLayer3Information := {
+				messageType := '57'O,
+				cellIdentifier := cell_id,
+				layer3Information := tr_BSSMAP_IE_L3Info(l3_info),
+				chosenChannel := *,
+				lSAIdentifier := *,
+				aPDU := *,
+				codecList := codec_list,
+				redirectAttemptFlag := *,
+				sendSequenceNumber := *,
+				iMSI := *
+			}
+		}
+	}
+}
+
+template BSSMAP_IE_CellIdentifierList ts_BSSMAP_IE_CidList(template BSSMAP_FIELD_CellIdentificationList cid_list) := {
+	elementIdentifier := '1A'O,
+	lengthIndicator := 0, /* overwritten */
+	cellIdentifierDiscriminator := '0000'B, /* overwritten */
+	spare1_4 := '0000'B,
+	cellIdentificationList := cid_list
+}
+
+const OCT1 ChRate_ANY := '00'O;
+const OCT1 ChRate_TCHF	:= '08'O;
+const OCT1 ChRate_TCHH	:= '09'O;
+const OCT1 ChRate_TCHForH_Fpref := '0A'O;
+const OCT1 ChRate_TCHForH_Hpref := '0B'O;
+const OCT1 ChRate_TCHForH_Fpref_nochg := '1A'O;
+const OCT1 ChRate_TCHForH_Hpref_nochg := '1B'O;
+const OCT1 ChRate_TCHForH := '0F'O;
+const OCT1 ChRate_TCHForH_nochg := '1F'O;
+
+const OCT1 Spdi_TCHF_FR  := '01'O;
+const OCT1 Spdi_TCHF_EFR := '11'O;
+const OCT1 Spdi_TCHF_AMR := '21'O;
+const OCT1 Spdi_TCHH_HR  := '05'O;
+const OCT1 Spdi_TCHH_AMR := '25'O;
+
+template (value) BSSMAP_IE_ChannelType ts_BSSMAP_IE_ChannelType := {
+	elementIdentifier := '0B'O,	/* overwritten */
+	lengthIndicator := 0,		/* overwritten */
+	speechOrDataIndicator := '0001'B,	/* speech */
+	spare1_4 := '0000'B,
+	channelRateAndType := ChRate_TCHF,
+	speechId_DataIndicator := Spdi_TCHF_FR
+}
+
+template (present) BSSMAP_IE_ChannelType tr_BSSMAP_IE_ChannelType(template (present) BIT4 speech_data_ind,
+								  template (present) OCT1 chan_rate_type,
+								  template (present) octetstring speech_id) := {
+	elementIdentifier := '0B'O,
+	lengthIndicator := ?,
+	speechOrDataIndicator := speech_data_ind,
+	spare1_4 := '0000'B,
+	channelRateAndType := chan_rate_type,
+	speechId_DataIndicator := speech_id
+}
+
+template (value) BSSMAP_IE_ChannelType ts_BSSMAP_IE_ChannelTypeCTM modifies ts_BSSMAP_IE_ChannelType := {
+	speechOrDataIndicator := '0100'B	/* speech + CTM */
+}
+
+template (value) BSSMAP_IE_ChannelType ts_BSSMAP_IE_ChannelTypeCSD := {
+	elementIdentifier := '0B'O,	/* overwritten */
+	lengthIndicator := 0,		/* overwritten */
+	speechOrDataIndicator := '0010'B,	/* data */
+	spare1_4 := '0000'B,
+	channelRateAndType := ChRate_TCHF,
+	speechId_DataIndicator := '10'O	/* 9600 bps / transparent */
+}
+
+template (value) BSSMAP_IE_ChannelType ts_BSSMAP_IE_ChannelTypeSIGNAL := {
+	elementIdentifier := '0B'O,	/* overwritten */
+	lengthIndicator := 0,		/* overwritten */
+	speechOrDataIndicator := '0011'B,	/* data */
+	spare1_4 := '0000'B,
+	channelRateAndType := ChRate_ANY,
+	speechId_DataIndicator := '00'O	/* spare */
+}
+
+template (value) BSSMAP_IE_EncryptionInformation ts_BSSMAP_IE_EncrInfo(OCT8 kc, OCT1 algs := '05'O) := {
+	elementIdentifier := '0A'O,
+	lengthIndicator := 0,	/* overwritten */
+	permittedAlgorithms := algs,
+	key := kc
+}
+
+template BSSMAP_IE_EncryptionInformation tr_BSSMAP_IE_EncrInfo(template OCT8 kc := ?, template OCT1 algs := ?) := {
+	elementIdentifier := '0A'O,
+	lengthIndicator := ?,	/* overwritten */
+	permittedAlgorithms := algs,
+	key := kc
+}
+
+template BSSMAP_IE_ChosenEncryptionAlgorithm ts_BSSMAP_IE_ChosenEncryptionAlgorithm(OCT1 algorithmIdentifier) := {
+	elementIdentifier := '2C'O,
+	algorithmIdentifier := algorithmIdentifier
+}
+
+template BSSMAP_IE_ChosenEncryptionAlgorithm tr_BSSMAP_IE_ChosenEncryptionAlgorithm(template OCT1 algorithmIdentifier := ?) := {
+	elementIdentifier := '2C'O,
+	algorithmIdentifier := algorithmIdentifier
+}
+
+template (value) BSSMAP_IE_CircuitIdentityCode ts_BSSMAP_IE_CIC(uint11_t span, uint5_t ts) := {
+	elementIdentifier := '01'O,	/* overwritten */
+	cicHigh := bit2oct(substr(int2bit(span, 11) << 5, 0, 8)),
+	cicLow := bit2oct((substr(int2bit(span, 11), 8, 3) << 5) & int2bit(ts, 5))
+}
+
+function f_bssmap_ie_cic_2_int(BSSMAP_IE_CircuitIdentityCode cic_ie) return integer {
+	var integer cic := (oct2int(cic_ie.cicHigh) * 256) + oct2int(cic_ie.cicLow);
+	return cic;
+}
+
+template (value) BSSMAP_IE_AoIP_TransportLayerAddress ts_BSSMAP_IE_AoIP_TLA(BSSMAP_FIELD_IPAddress addr,
+									    uint16_t udp_port,
+									    integer len) := {
+	elementIdentifier := '7C'O,
+	lengthIndicator := len, /* overwritten */
+	ipAddress := addr,
+	uDPPortValue := udp_port
+}
+template (value) BSSMAP_IE_AoIP_TransportLayerAddress ts_BSSMAP_IE_AoIP_TLA4(OCT4 ip, uint16_t pt) :=
+							ts_BSSMAP_IE_AoIP_TLA({ipv4:=ip}, pt, 6);
+template (value) BSSMAP_IE_AoIP_TransportLayerAddress ts_BSSMAP_IE_AoIP_TLA6(OCT16 ip, uint16_t pt) :=
+							ts_BSSMAP_IE_AoIP_TLA({ipv6:=ip}, pt, 18);
+
+function f_ts_BSSMAP_IE_AoIP_TLA(charstring addr, uint16_t udp_port)
+		return template (value) BSSMAP_IE_AoIP_TransportLayerAddress  {
+	if (f_addr_is_ipv6(addr)) {
+		var OCT16 ip6 := f_inet6_addr(addr);
+		return ts_BSSMAP_IE_AoIP_TLA6(ip6, udp_port);
+	} else {
+		var OCT4 ip := f_inet_addr(addr);
+		return ts_BSSMAP_IE_AoIP_TLA4(ip, udp_port);
+	}
+}
+
+template BSSMAP_IE_AoIP_TransportLayerAddress tr_BSSMAP_IE_AoIP_TLA(template BSSMAP_FIELD_IPAddress addr,
+								    template uint16_t udp_port,
+								    template integer len := ?) := {
+	elementIdentifier := '7C'O,
+	lengthIndicator := len,
+	ipAddress := addr,
+	uDPPortValue := udp_port
+}
+template BSSMAP_IE_AoIP_TransportLayerAddress tr_BSSMAP_IE_AoIP_TLA4(template OCT4 ip, template uint16_t pt) :=
+	tr_BSSMAP_IE_AoIP_TLA({ipv4:=ip}, pt, 6);
+template BSSMAP_IE_AoIP_TransportLayerAddress tr_BSSMAP_IE_AoIP_TLA6(template OCT16 ip, template uint16_t pt) :=
+	tr_BSSMAP_IE_AoIP_TLA({ipv6:=ip}, pt, 18);
+
+function f_tr_BSSMAP_IE_AoIP_TLA(charstring addr, template uint16_t udp_port)
+		return template BSSMAP_IE_AoIP_TransportLayerAddress  {
+	if (f_addr_is_ipv6(addr)) {
+		var OCT16 ip6 := f_inet6_addr(addr);
+		return tr_BSSMAP_IE_AoIP_TLA6(ip6, udp_port);
+	} else {
+		var OCT4 ip := f_inet_addr(addr);
+		return tr_BSSMAP_IE_AoIP_TLA4(ip, udp_port);
+	}
+}
+
+template (present) BSSMAP_IE_KC128 tr_BSSMAP_IE_Kc128(template (present) OCT16 kc128) := {
+	elementIdentifier := '83'O,
+	kC128_Value := kc128
+}
+
+template (value) BSSMAP_IE_KC128 ts_BSSMAP_IE_Kc128(OCT16 kc128) := {
+	elementIdentifier := '83'O,
+	kC128_Value := kc128
+}
+
+/* 3.2.2.103 */
+template (value) BSSMAP_FIELD_CodecElement ts_CodecBase := {
+	codecType := GSM_FR,
+	tF := '0'B,
+	pT := '0'B,
+	pI := '0'B,
+	fI := '1'B,
+	extendedCodecType := omit,
+	s0_7 := omit,
+	s8_15 := omit
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecFR modifies ts_CodecBase := {
+	codecType := GSM_FR
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecEFR modifies ts_CodecBase := {
+	codecType := GSM_EFR
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecHR modifies ts_CodecBase := {
+	codecType := GSM_HR
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecAMR_F modifies ts_CodecBase := {
+	codecType := FR_AMR,
+	s0_7 :=  '11111111'B,
+	s8_15 := '01010111'B	/* S11, S13 and S15 are reserved and coded with zeroes */
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecAMR_H modifies ts_CodecBase := {
+	codecType := HR_AMR,
+	s0_7 :=  '00111111'B,
+	s8_15 := '00000111'B	/* S6 - S7 and S11 – S15 are reserved and coded with zeroes */
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecAMR_WB modifies ts_CodecBase := {
+	codecType := FR_AMR_WB,
+	s0_7 :=  '00000001'B
+}
+template (value) BSSMAP_FIELD_CodecElement ts_CodecCSData modifies ts_CodecBase := {
+	codecType := CodecExtension,
+	tF := '0'B, /* Spare */
+	pT := '0'B, /* CSDoTDM */
+	pI := '1'B, /* CSDoIP */
+	fI := '0'B, /* Spare */
+	extendedCodecType := 'FD'O, /* CSData */
+	s0_7 := '00000000'B /* R2, R3, Spare */
+}
+template BSSMAP_IE_SpeechCodecList ts_BSSMAP_IE_CodecList(template BSSMAP_FIELD_CodecElements elem) := {
+	elementIdentifier := '7D'O,
+	lengthIndicator := 0, /* overwritten */
+	codecElements := valueof(elem)
+}
+template BSSMAP_IE_SpeechCodec ts_BSSMAP_IE_SpeechCodec(template BSSMAP_FIELD_CodecElements elem) := {
+	elementIdentifier := '7E'O,
+	lengthIndicator := 0, /* overwritten */
+	codecElements := valueof(elem)
+}
+
+function ts_BSSMAP_IE_CallIdentifier(template (omit) OCT4 cid) return template (omit) BSSMAP_IE_CallIdentifier {
+	if (istemplatekind(cid, "omit")) {
+		return omit;
+	} else {
+		var template (present) BSSMAP_IE_CallIdentifier ie := {
+			elementIdentifier := '7F'O,
+			callIdentifierInfo := cid
+		}
+		return ie;
+	}
+}
+function tr_BSSMAP_IE_CallIdentifier(template OCT4 cid) return template BSSMAP_IE_CallIdentifier {
+	if (istemplatekind(cid, "*")) {
+		return *;
+	} else if (istemplatekind(cid, "omit")) {
+		return omit;
+	} else {
+		var template BSSMAP_IE_CallIdentifier ie := {
+			elementIdentifier := '7F'O,
+			callIdentifierInfo := cid
+		}
+		return ie;
+	}
+}
+
+
+template (present) BSSMAP_IE_Osmo_OsmuxCID tr_OsmuxCID(template (present) INT1 cid := ?) := {
+	elementIdentifier := 'F1'O,
+	osmuxCID := cid
+}
+template (value) BSSMAP_IE_Osmo_OsmuxCID ts_OsmuxCID(INT1 cid) := {
+	elementIdentifier := 'F1'O,
+	osmuxCID := cid
+}
+
+template PDU_BSSAP
+ts_BSSMAP_AssignmentReq(template BSSMAP_IE_CircuitIdentityCode cic := omit,
+			template BSSMAP_IE_AoIP_TransportLayerAddress aoip := omit,
+			template BSSMAP_IE_Osmo_OsmuxCID osmuxCID := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			assignmentRequest := {
+				messageType :='01'O,	/* overwritten */
+				channelType := ts_BSSMAP_IE_ChannelType,
+				layer3HeaderInfo := omit,
+				priority := omit,
+				circuitIdentityCode := cic,
+				downLinkDTX_Flag := omit,
+				interferenceBandToBeUsed := omit,
+				classmarkInformationType2 := omit,
+				groupCallReference := omit,
+				talkerFlag := omit,
+				configurationEvolutionIndication := omit,
+				lsaAccesControlSuppression := omit,
+				serviceHandover := omit,
+				encryptionInformation := omit,
+				talkerPriority := omit,
+				aoIPTransportLayer := aoip,
+				codecList := omit,
+				callIdentifier := omit,
+				kC128 := omit,
+				globalCallReference := omit,
+				lCLS_Configuration := omit,
+				lCLS_ConnectionStatusControl := omit,
+				lCLS_CorrelationNotNeeded := omit,
+				osmuxCID := osmuxCID
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_AssignmentReq(template BSSMAP_IE_CircuitIdentityCode cic := *,
+					   template BSSMAP_IE_AoIP_TransportLayerAddress aoip := *,
+					   template BSSMAP_IE_Osmo_OsmuxCID osmuxCID := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			assignmentRequest := {
+				messageType :='01'O,	/* overwritten */
+				channelType := ?,
+				layer3HeaderInfo := *,
+				priority := *,
+				circuitIdentityCode := cic,
+				downLinkDTX_Flag := *,
+				interferenceBandToBeUsed := *,
+				classmarkInformationType2 := *,
+				groupCallReference := *,
+				talkerFlag := *,
+				configurationEvolutionIndication := *,
+				lsaAccesControlSuppression := *,
+				serviceHandover := *,
+				encryptionInformation := *,
+				talkerPriority := *,
+				aoIPTransportLayer := aoip,
+				codecList := *,
+				callIdentifier := *,
+				kC128 := *,
+				globalCallReference := *,
+				lCLS_Configuration := *,
+				lCLS_ConnectionStatusControl := *,
+				lCLS_CorrelationNotNeeded := *,
+				osmuxCID := osmuxCID
+			}
+		}
+	}
+}
+
+template PDU_BSSAP
+ts_BSSMAP_AssignmentComplete(template BSSMAP_IE_CircuitIdentityCode cic := omit,
+			     template BSSMAP_IE_AoIP_TransportLayerAddress aoip := omit,
+			     template BSSMAP_IE_SpeechCodec speechCodec := omit,
+			     template BSSMAP_IE_Osmo_OsmuxCID osmuxCID := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			assignmentComplete := {
+				messageType :='02'O,	/* overwritten */
+				rR_Cause := omit,
+				circuitIdentityCode := cic,
+				cellIdentifier := omit,
+				chosenChannel := omit,
+				chosenEncryptionAlgorithm := omit,
+				circuitPool := omit,
+				speechVersion := omit,
+				lSAIdentifier := omit,
+				talkerPriority := omit,
+				aoIPTransportLayer := aoip,
+				speechCodec := speechCodec,
+				codecList := omit,
+				lCLS_BSS_Status := omit,
+				osmuxCID := osmuxCID
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_AssignmentComplete(template BSSMAP_IE_CircuitIdentityCode cic := *,
+						template BSSMAP_IE_AoIP_TransportLayerAddress aoip := *,
+						template BSSMAP_IE_Osmo_OsmuxCID osmuxCID := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			assignmentComplete := {
+				messageType := '02'O,	/* overwritten */
+				rR_Cause := *,
+				circuitIdentityCode := cic,
+				cellIdentifier := *,
+				chosenChannel := *,
+				chosenEncryptionAlgorithm := *,
+				circuitPool := *,
+				speechVersion := *,
+				lSAIdentifier := *,
+				talkerPriority := *,
+				aoIPTransportLayer := aoip,
+				speechCodec := *,
+				codecList := *,
+				lCLS_BSS_Status := *,
+				osmuxCID := osmuxCID
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_AssignmentFail modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			assignmentFailure := {
+				messageType := '03'O,	/* overwritten */
+				rR_Cause := *,
+				circuitPool := *,
+				circuitPoolList := *,
+				talkerPriority := *,
+				codecList := *
+			}
+		}
+	}
+}
+
+
+template (value) PDU_BSSAP ts_BSSMAP_ClearCommand(BssmapCause cause)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearCommand := {
+				messageType := '20'O,	/* overwritten */
+				layer3HeaderInfo := omit,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				cSFB_Indication := omit
+			}
+		}
+	}
+}
+template (value) PDU_BSSAP ts_BSSMAP_ClearCommandCSFB(BssmapCause cause)
+modifies ts_BSSMAP_ClearCommand := {
+	pdu := {
+		bssmap := {
+			clearCommand := {
+				cSFB_Indication := {
+					elementIdentifier := '8F'O
+				}
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClearCommand modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearCommand := {
+				messageType := '20'O,	/* overwritten */
+				layer3HeaderInfo := *,
+				cause := ?,
+				cSFB_Indication := *
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClearCommandCSFB modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearCommand := {
+				messageType := '20'O,	/* overwritten */
+				layer3HeaderInfo := *,
+				cause := ?,
+				cSFB_Indication := {
+					elementIdentifier := '8F'O
+				}
+			}
+		}
+	}
+}
+
+template (value) PDU_BSSAP ts_BSSMAP_ClearComplete
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearComplete := {
+				messageType := '21'O	/* overwritten */
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClearComplete modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearComplete := {
+				messageType := '21'O
+			}
+		}
+	}
+}
+
+template (value) PDU_BSSAP ts_BSSMAP_ClearRequest(BssmapCause cause)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearRequest := {
+				messageType := '22'O,	/* overwritten */
+				cause := ts_BSSMAP_IE_Cause(cause)
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClearRequest modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			clearRequest := {
+				messageType := '22'O,	/* overwritten */
+				cause := ?
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_HandoverRequired(BssmapCause cause,
+					      template BSSMAP_FIELD_CellIdentificationList cid_list,
+					      template (omit) BSSMAP_oldToNewBSSIEs oldToNewBSSIEs := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequired := {
+				messageType := '11'O,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				responseRequest := omit,
+				cellIdentifierList := ts_BSSMAP_IE_CidList(cid_list),
+				circuitPoolList := omit,
+				currentChannelType1 := omit,
+				speechVersion := omit,
+				queueingIndicator := omit,
+				oldToNewBSSInfo := f_ts_BSSMAP_IE_OldToNewBSSInfo(oldToNewBSSIEs),
+				sourceToTargetRNCTransparentInfo := omit,
+				sourceToTargetRNCTransparentInfoCDMA := omit,
+				gERANClassmark := omit,
+				talkerPriority := omit,
+				speechCodec := omit,
+				cSG_Identifier := omit
+			}
+		}
+	}
+}
+
+
+template PDU_BSSAP tr_BSSMAP_HandoverRequired(template BSSMAP_oldToNewBSSIEs oldToNewBSSIEs := *,
+					      template (present) BSSMAP_FIELD_CellIdentificationList cid_list := ?)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequired := {
+				messageType := '11'O,
+				cellIdentifierList := {
+					cellIdentificationList := cid_list
+				},
+                                oldToNewBSSInfo := f_tr_BSSMAP_IE_OldToNewBSSInfo(oldToNewBSSIEs)
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverRequiredReject modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequiredReject := {
+				messageType := '1A'O
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverCommand
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverCommand := {
+				messageType := '13'O
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverSucceeded
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverSucceeded := {
+				messageType := '15'O
+			}
+		}
+	}
+}
+
+template (value) PDU_BSSAP ts_BSSMAP_HandoverCommand(octetstring layer3info)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverCommand := {
+				messageType := '13'O,
+				layer3Information := {
+					elementIdentifier := '17'O,
+					lengthIndicator := 0,
+					layer3info := layer3info
+				},
+				cellIdentifier := omit,
+				newBSSToOldBSSInfo := omit,
+				talkerPriority := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverFailure modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverFailure := {
+				messageType := '16'O,
+				cause := ?,
+				rR_Cause := *,
+				circuitPool := *,
+				circuitPoolList := *,
+				gERANClassmark := *,
+				newBSSToOldBSSInfo := *,
+				interSystemInformation := *,
+				talkerPriority := *,
+				codecList := *
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverRequest(template BSSMAP_IE_EncryptionInformation encryptionInformation := *,
+					     template BSSMAP_IE_ChosenEncryptionAlgorithm chosenEncryptionAlgorithm := *,
+					     template BSSMAP_IE_KC128 kC128 := *,
+					     template BSSMAP_IE_SpeechCodecList codecList := *
+					    )
+  modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequest := {
+				messageType := '10'O,
+				encryptionInformation := encryptionInformation,
+				chosenEncryptionAlgorithm := chosenEncryptionAlgorithm,
+				codecList := codecList,
+				kC128 := kC128
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_HandoverRequest(
+		template BSSMAP_IE_CircuitIdentityCode cic := omit,
+		template BSSMAP_IE_AoIP_TransportLayerAddress aoip_tla := omit,
+		template BSSMAP_IE_CellIdentifier cell_id_target := ts_CellID_LAC_CI(1, 0),
+		template BSSMAP_IE_CellIdentifier cell_id_source := ts_CellID_LAC_CI(1, 1),
+		template (omit) BSSMAP_oldToNewBSSIEs oldToNewBSSIEs := omit,
+		template BSSMAP_IE_EncryptionInformation encryptionInformation := ts_BSSMAP_IE_EncrInfo('0000000000000000'O,'01'O),
+		template (omit) BSSMAP_IE_ChosenEncryptionAlgorithm chosenEncryptionAlgorithm := omit,
+		template (omit) BSSMAP_IE_KC128 kC128 := omit,
+		template (omit) BSSMAP_IE_SpeechCodecList codecList := omit
+		)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequest := {
+				messageType := '10'O,
+				channelType := ts_BSSMAP_IE_ChannelType,
+				encryptionInformation := encryptionInformation,
+				classmarkInformationType := {
+					classmarkInformationType1 := {
+						elementIdentifier := '1D'O,
+						rf_PowerCapability := '000'B,
+						a5_1 := '0'B,
+						esind := '0'B,
+						revisionLevel := '10'B,
+						spare1_1 := '0'B
+					}
+					},
+				cellIdentifierSource := cell_id_source,
+				priority := omit,
+				circuitIdentityCode := cic,
+				downLinkDTX_Flag := omit,
+				cellIdentifierTarget := cell_id_target,
+				interferenceBandToBeUsed := omit,
+				cause := omit,
+				classmarkInformationType3 := omit,
+				currentChannelType1 := omit,
+				speechVersion := omit,
+				groupCallReference := omit,
+				talkerFlag := omit,
+				configurationEvolutionIndication := omit,
+				chosenEncryptionAlgorithm := chosenEncryptionAlgorithm,
+				oldToNewBSSInfo := f_ts_BSSMAP_IE_OldToNewBSSInfo(oldToNewBSSIEs),
+				lSAInformation := omit,
+				lSAAccessControlSuppression := omit,
+				serviceHandover := omit,
+				iMSI_bssmap := omit,
+				sourceToTargetRNCTransparentInfo := omit,
+				sourceToTargetRNCTransparentInfoCDMA := omit,
+				sNAAccessInformation := omit,
+				talkerPriority := omit,
+				aoIPTransportLayer := aoip_tla,
+				codecList := codecList,
+				callIdentifier := omit,
+				kC128 := kC128,
+				globalCallReference := omit,
+				lCLS_Configuration := omit,
+				connectionStatusControl := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverRequestAcknowledge(template octetstring layer3info)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequestAck := {
+				messageType := '12'O,
+				layer3Information := {
+					elementIdentifier := '17'O,
+					lengthIndicator := ?,
+					layer3info := layer3info
+				}
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_HandoverRequestAcknowledge(
+			template octetstring layer3info,
+			template LIN1 layer3infoLength,
+			template BSSMAP_IE_AoIP_TransportLayerAddress aoIPTransportLayer := omit,
+			template BSSMAP_IE_SpeechCodec speechCodec := omit,
+			template BSSMAP_IE_ChosenChannel chosenChannel := omit,
+			template BSSMAP_IE_ChosenEncryptionAlgorithm chosenEncryptionAlgorithm := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverRequestAck := {
+				messageType := '12'O,
+				layer3Information := {
+					elementIdentifier := '17'O,
+					lengthIndicator := layer3infoLength,
+					layer3info := layer3info
+				},
+				chosenChannel := chosenChannel,
+				chosenEncryptionAlgorithm := chosenEncryptionAlgorithm,
+				circuitPool := omit,
+				speechVersion := omit,
+				circuitIdentityCode := omit,
+				lSAIdentifier := omit,
+				newBSSToOldBSSInfo := omit,
+				interSystemInformation := omit,
+				talkerPriority := omit,
+				aoIPTransportLayer := aoIPTransportLayer,
+				codecList := omit,
+				speechCodec := speechCodec,
+				lCLS_bSS_Status := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverDetect
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverDetect := {
+				messageType := '1B'O,
+				talkerPriority := *
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_HandoverDetect
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverDetect := {
+				messageType := '1B'O,
+				talkerPriority := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverComplete
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverComplete := {
+				messageType := '14'O,
+				rR_Cause := *,
+				talkerPriority := *,
+				speechCodec := *,
+				codecList := *,
+				chosenEncryptionAlgorithm := *,
+				chosenChannel := *,
+				lCLS_BSS_Status := *
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_HandoverComplete
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverComplete := {
+				messageType := '14'O,
+				rR_Cause := omit,
+				talkerPriority := omit,
+				speechCodec := omit,
+				codecList := omit,
+				chosenEncryptionAlgorithm := omit,
+				chosenChannel := omit,
+				lCLS_BSS_Status := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_HandoverPerformed
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			handoverPerformed := {
+				messageType := '17'O,
+				cause := ?,
+				cellIdentifier := ?,
+				chosenChannel := *,
+				chosenEncryptionAlgorithm := *,
+				speechVersion := *,
+				lSAIdentifier := *,
+				talkerPriority := *,
+				codecList := *,
+				speechCodec := *,
+				lCLS_BSS_Status := *
+			}
+		}
+	}
+}
+
+template BSSMAP_IE_IMSI ts_BSSMAP_Imsi(hexstring imsi_digits) := {
+	elementIdentifier := '08'O,
+	lengthIndicator := 0, /* overwritten */
+	typeOfIdentity := '001'B, /* IMSI */
+	oddEvenIndicator := f_hex_is_odd_length(imsi_digits),
+	digits := imsi_digits
+}
+
+template BSSMAP_IE_IMSI tr_BSSMAP_Imsi(template hexstring imsi_digits) := {
+	elementIdentifier := '08'O,
+	lengthIndicator := ?, /* overwritten */
+	typeOfIdentity := '001'B, /* IMSI */
+	oddEvenIndicator := ?,
+	digits := imsi_digits
+}
+
+template (value) BSSAMAP_IE_LastUsedEUTRANPLMNId ts_BSSMAP_LastUsedEUTRANPLMNId(OCT3 mcc_mnc) := {
+	elementIdentifier := '95'O,
+	mcc_mnc := mcc_mnc
+}
+template BSSAMAP_IE_LastUsedEUTRANPLMNId tr_BSSMAP_LastUsedEUTRANPLMNId(template OCT3 mcc_mnc) := {
+	elementIdentifier := '95'O,
+	mcc_mnc := mcc_mnc
+}
+function f_ts_BSSMAP_LastUsedEUTRANPLMNId(template (omit) OCT3 mcc_mnc)
+			return template (omit) BSSAMAP_IE_LastUsedEUTRANPLMNId {
+	if (not istemplatekind(mcc_mnc, "omit")) {
+		return ts_BSSMAP_LastUsedEUTRANPLMNId(valueof(mcc_mnc));
+	} else {
+		return omit;
+	}
+}
+function f_tr_BSSMAP_LastUsedEUTRANPLMNId(template OCT3 mcc_mnc)
+return template BSSAMAP_IE_LastUsedEUTRANPLMNId {
+	if (istemplatekind(mcc_mnc, "*")) {
+		return *;
+	} else if (istemplatekind(mcc_mnc, "?")) {
+		return ?;
+	} else if (istemplatekind(mcc_mnc, "omit")) {
+		return omit;
+	} else {
+		return ts_BSSMAP_LastUsedEUTRANPLMNId(valueof(mcc_mnc));
+	}
+}
+
+template BSSMAP_FIELD_CellIdentificationList ts_BSSMAP_CIL_noCell := {
+	cIl_noCell := ''O
+}
+template (value) BSSMAP_FIELD_CellIdentificationList ts_BSSMAP_CIL_BSS := {
+	cIl_allInBSS := ''O
+}
+template BSSMAP_FIELD_CellIdentificationList tr_BSSMAP_CIL_BSS := {
+	cIl_allInBSS := ''O
+}
+
+template (value) BSSMAP_FIELD_CellIdentificationList
+		ts_BSSMAP_CIL_CGI(template (value) BSSMAP_FIELD_CellIdentificationList_CGI cgil) := {
+	cIl_CGI := cgil
+}
+template BSSMAP_FIELD_CellIdentificationList
+		tr_BSSMAP_CIL_CGI(template BSSMAP_FIELD_CellIdentificationList_CGI cgil) := {
+	cIl_CGI := cgil
+}
+
+template (value) BSSMAP_FIELD_CellIdentificationList
+		ts_BSSMAP_CIL_LAC_CI(template (value) BSSMAP_FIELD_CellIdentificationList_LAC_CI lac_cil) := {
+	cIl_LAC_CI := lac_cil
+}
+template BSSMAP_FIELD_CellIdentificationList
+		tr_BSSMAP_CIL_LAC_CI(template BSSMAP_FIELD_CellIdentificationList_LAC_CI lac_cil) := {
+	cIl_LAC_CI := lac_cil
+}
+
+template (value) BSSMAP_FIELD_CellIdentificationList
+		ts_BSSMAP_CIL_CI(template (value) RecordOfOCT2 cil) := {
+	cIl_CI := cil
+}
+template BSSMAP_FIELD_CellIdentificationList tr_BSSMAP_CIL_CI(template RecordOfOCT2 cil) := {
+	cIl_CI := cil
+}
+
+template (value) BSSMAP_FIELD_CellIdentificationList
+		ts_BSSMAP_CIL_LAI(template (value) BSSMAP_FIELD_CellIdentificationList_LAI lail) := {
+	cIl_LAI := lail
+}
+template BSSMAP_FIELD_CellIdentificationList
+		tr_BSSMAP_CIL_LAI(template BSSMAP_FIELD_CellIdentificationList_LAI lail) := {
+	cIl_LAI := lail
+}
+
+template (value) BSSMAP_FIELD_CellIdentificationList
+		ts_BSSMAP_CIL_LAC(template (value) RecordOfOCT2 lacl) := {
+	cIl_LAC := lacl
+}
+template BSSMAP_FIELD_CellIdentificationList tr_BSSMAP_CIL_LAC(template RecordOfOCT2 lacl) := {
+	cIl_LAC := lacl
+}
+
+template (value) BSSMAP_FIELD_CellIdentification_CGI ts_BSSMAP_CI_CGI(GsmMcc mcc, GsmMnc mnc, GsmLac lac, GsmCellId ci) := {
+	mcc_mnc := f_enc_mcc_mnc(mcc, mnc),
+	lac := int2oct(lac, 2),
+	ci := int2oct(ci, 2)
+}
+
+template (present) BSSMAP_FIELD_CellIdentification_CGI tr_BSSMAP_CI_CGI(template (present) OCT3 mcc_mnc,
+									template (present) GsmLac lac,
+									template (present) GsmCellId ci) := {
+	mcc_mnc := mcc_mnc,
+	lac := f_tr_LAC(lac),
+	ci := f_tr_CI(ci)
+}
+
+template (value) BSSMAP_FIELD_CellIdentification_LAC_CI ts_BSSMAP_CI_LAC_CI(GsmLac lac, GsmCellId ci) := {
+	lac := int2oct(lac, 2),
+	ci := int2oct(ci, 2)
+}
+
+template (value) BSSMAP_FIELD_CellIdentification_LAI ts_BSSMAP_CI_LAI(GsmMcc mcc, GsmMnc mnc, GsmLac lac) := {
+	mcc_mnc := f_enc_mcc_mnc(mcc, mnc),
+	lac := int2oct(lac, 2)
+}
+
+template (value) OCT2 ts_BSSMAP_CI_LAC(GsmLac lac) := int2oct(lac, 2);
+template (value) OCT2 ts_BSSMAP_CI_CI(GsmCellId ci) := int2oct(ci, 2);
+
+template (value) BSSMAP_FIELD_CellIdentification_PLMN_LAC_RNC
+ts_BSSMAP_CI_PLMN_LAC_RNC(GsmMcc mcc, GsmMnc mnc, GsmLac lac, uint16_t rnc_id) := {
+	mcc_mnc := f_enc_mcc_mnc(mcc, mnc),
+	lac := int2oct(lac, 2),
+	rncId := int2oct(rnc_id, 2)
+}
+
+template (value) BSSMAP_FIELD_CellIdentification_LAC_RNC ts_BSSMAP_CI_LAC_RNC(GsmLac lac, uint16_t rnc_id) := {
+	lac := int2oct(lac, 2),
+	rncId := int2oct(rnc_id, 2)
+}
+
+template BSSMAP_IE_ChannelNeeded ts_BSSMAP_IE_ChanNeeded(BIT2 chneed) := {
+	elementIdentifier := '24'O,
+	channel := chneed,
+	spare := '000000'B
+}
+
+template BSSMAP_IE_TMSI ts_BSSMAP_IE_TMSI(OCT4 tmsi) := {
+	elementIdentifier := '09'O,
+	lengthIndicator := 4,
+	tmsiOctets := tmsi
+};
+
+template BSSMAP_IE_TMSI tr_BSSMAP_IE_TMSI(template OCT4 tmsi) := {
+	elementIdentifier := '09'O,
+	lengthIndicator := 4,
+	tmsiOctets := tmsi
+};
+
+private function f_tmsi_or_omit(template OCT4 tmsi) return template BSSMAP_IE_TMSI {
+	var template BSSMAP_IE_TMSI ret;
+	if (ispresent(tmsi)) {
+		ret := ts_BSSMAP_IE_TMSI(valueof(tmsi));
+	} else {
+		ret := omit;
+	}
+	return ret;
+}
+
+template PDU_BSSAP ts_BSSMAP_Paging(hexstring imsi_digits,
+					template BSSMAP_FIELD_CellIdentificationList cid_list,
+					template OCT4 tmsi := omit,
+					template BSSMAP_IE_ChannelNeeded chneed := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			paging := {
+				messageType := '52'O,
+				iMSI := ts_BSSMAP_Imsi(imsi_digits),
+				tMSI := f_tmsi_or_omit(tmsi),
+				cellIdentifierList := ts_BSSMAP_IE_CidList(cid_list),
+				channelNeeded := chneed,
+				eMLPP_Priority := omit,
+				pagingInformation := omit /* only VGCS/VBS flag */
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_Paging(template hexstring imsi_digits := ?,
+					template OCT4 tmsi := *,
+					template BSSMAP_IE_ChannelNeeded chneed := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			paging := {
+				messageType := '52'O,
+				iMSI := tr_BSSMAP_Imsi(imsi_digits),
+				tMSI := tr_BSSMAP_IE_TMSI(tmsi) ifpresent,
+				cellIdentifierList := ?,
+				channelNeeded := chneed,
+				eMLPP_Priority := omit,
+				pagingInformation := omit /* only VGCS/VBS flag */
+			}
+		}
+	}
+}
+
+
+template PDU_BSSAP ts_BSSMAP_CipherModeCmd(OCT1 alg, OCT8 key)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeCommand := {
+				messageType := '53'O,
+				layer3HeaderInfo := omit,
+				encryptionInformation := ts_BSSMAP_IE_EncrInfo(key, alg),
+				cipherResponseMode := omit,
+				kC128 := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_CipherModeCmdKc128(OCT1 alg, OCT8 key, OCT16 kc128)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeCommand := {
+				messageType := '53'O,
+				layer3HeaderInfo := omit,
+				encryptionInformation := ts_BSSMAP_IE_EncrInfo(key, alg),
+				cipherResponseMode := omit,
+				kC128 := { '83'O, kc128 }
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_CipherModeCmd2(template BSSMAP_IE_EncryptionInformation encryptionInformation := *,
+					    template BSSMAP_IE_KC128 kC128 := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeCommand := {
+				messageType := '53'O,
+				layer3HeaderInfo := *,
+				encryptionInformation := encryptionInformation,
+				cipherResponseMode := *,
+				kC128 := kC128
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_CipherModeCmd(template OCT1 alg, template OCT8 key, template BSSMAP_IE_KC128 kC128 := omit)
+ := tr_BSSMAP_CipherModeCmd2(tr_BSSMAP_IE_EncrInfo(key, alg), kC128);
+
+template PDU_BSSAP ts_BSSMAP_CipherModeCompl(OCT1 alg)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeComplete := {
+				messageType := '55'O,
+				layer3MessageContents := omit,
+				chosenEncryptionAlgorithm := {
+					elementIdentifier := '2C'O,
+					algorithmIdentifier := alg
+				}
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_CipherModeComplAlg(template BSSMAP_IE_ChosenEncryptionAlgorithm chosenEncryptionAlgorithm := ?)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeComplete := {
+				messageType := '55'O,
+				layer3MessageContents := omit,
+				chosenEncryptionAlgorithm := chosenEncryptionAlgorithm
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_CipherModeCompl(template OCT1 alg := ?) modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeComplete := {
+				messageType := '55'O,
+				layer3MessageContents := *,
+				chosenEncryptionAlgorithm := {
+					elementIdentifier := '2C'O,
+					algorithmIdentifier := alg
+				}
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_CipherModeRej modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			cipherModeReject := {
+				messageType := '59'O,
+				cause  := ?
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClassmarkReq modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			classmarkRequest := {
+				messageType := '58'O,
+				talkerPriority := *
+			}
+		}
+	}
+}
+
+template BSSMAP_IE_ClassmarkInformationType2 ts_CM2_default := {
+	elementIdentifier := '12'O,
+	lengthIndicator := 0,	/* overwritten */
+	/* CM1 */
+	rf_PowerCapability := '010'B,	/* class3 */
+	a5_1 := '0'B,			/* supported */
+	esind := '1'B,			/* early classmark supported */
+	revisionLevel := '10'B,		/* R99 */
+	spare1_1 := '0'B,
+	/* CM2 */
+	fc := '1'B,			/* E-GSM support */
+	vgcs := '0'B,
+	vbs := '0'B,
+	sm_Capability := '1'B,
+	ss_ScreenIndicator := '00'B,
+	ps_Capability := '1'B,
+	spare2_1 := '0'B,
+	classmarkInformationType2_oct5 := {
+		a5_2 := '0'B,		/* not available */
+		a5_3 := '1'B,		/* available */
+		cmsp := '0'B,		/* not supported */
+		solsa := '0'B,		/* not suported */
+		ucs2 := '0'B,		/* GSM alphabet preferred */
+		lcsvacap := '0'B,	/* not supported */
+		spare := '0'B,
+		cm3 := '0'B		/* no CM3 */
+	}
+}
+
+
+template BSSMAP_IE_ClassmarkInformationType3 ts_CM3_default := {
+	elementIdentifier := '13'O,
+	lengthIndicator := 0,	/* overwritten */
+	classmark3ValuePart := '01'O /* A5/4 supported */
+}
+
+template PDU_BSSAP ts_BSSMAP_ClassmarkUpd(template BSSMAP_IE_ClassmarkInformationType2 cm2 := ts_CM2_default,
+					  template BSSMAP_IE_ClassmarkInformationType3 cm3 := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			classmarkUpdate := {
+				messageType := '54'O,
+				classmarkInformationType2 := cm2,
+				classmarkInformationType3 := cm3,
+				talkerPriority := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClassmarkUpd(template BSSMAP_IE_ClassmarkInformationType2 cm2 := *,
+					  template BSSMAP_IE_ClassmarkInformationType3 cm3 := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			classmarkUpdate := {
+				messageType := '54'O,
+				classmarkInformationType2 := cm2,
+				classmarkInformationType3 := cm3,
+				talkerPriority := *
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_ClassmarkRequest
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			classmarkRequest := {
+				messageType := '58'O,
+				talkerPriority := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_ClassmarkRequest
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			classmarkRequest := {
+				messageType := '58'O,
+				talkerPriority := *
+			}
+		}
+	}
+}
+
+/* return Layer3 octetstring inside BSSAP PDU */
+function f_bssap_extract_l3(PDU_BSSAP bssap) return template octetstring {
+	if (ischosen(bssap.pdu.bssmap)) {
+		var PDU_BSSMAP bssmap := bssap.pdu.bssmap;
+		if (ischosen(bssmap.completeLayer3Information)) {
+			return bssmap.completeLayer3Information.layer3Information.layer3info;
+		} else if (ischosen(bssmap.handoverRequestAck)) {
+			return bssmap.handoverRequestAck.layer3Information.layer3info;
+		} else if (ischosen(bssmap.handoverCommand)) {
+			return bssmap.handoverCommand.layer3Information.layer3info;
+		} else if (ischosen(bssmap.uplinkRequest)) {
+			return bssmap.uplinkRequest.layer3Information.layer3info;
+		} else if (ischosen(bssmap.uplinkRequestConfirmation)) {
+			return bssmap.uplinkRequestConfirmation.layer3Information.layer3info;
+		} else if (ischosen(bssmap.uplinkApplicationData)) {
+			return bssmap.uplinkApplicationData.layer3Information.layer3info;
+		} else if (ischosen(bssmap.rerouteCommand)) {
+			return bssmap.rerouteCommand.initialLayer3Information.layer3info;
+		} else {
+			return omit;
+		}
+	} else {
+		return bssap.pdu.dtap;
+	}
+}
+
+/* TS 29.205 B.2.1.9 */
+template (value) GlobalCallReferenceValue ts_GCR(octetstring net_id, OCT2 node_id, OCT5 cref_id) := {
+	networkIDLengthIndicator := 0, /* overwritten */
+	networkID := net_id,
+	nodeIDLengthIndicator := 0, /* overwritten */
+	nodeID := node_id,
+	callReferenceIDLengthIndicator := 0, /* overwritten */
+	callReferenceID := cref_id
+}
+template GlobalCallReferenceValue tr_GCR(template octetstring net_id,
+				    template OCT2 node_id,
+				    template OCT5 cref_id) := {
+	networkIDLengthIndicator := ?,
+	networkID := net_id,
+	nodeIDLengthIndicator := ?,
+	nodeID := node_id,
+	callReferenceIDLengthIndicator := ?,
+	callReferenceID := cref_id
+}
+
+/* TS 47.008 3.2.2.115 */
+template (value) BSSMAP_IE_GlobalCallReference ts_BSSMAP_IE_GCR(template (value) GlobalCallReferenceValue gcr) := {
+	elementIdentifier := '89'O,
+	lengthIndicator := 0, /* overwritten */
+	globalCallReferenceValue := gcr
+}
+template BSSMAP_IE_GlobalCallReference tr_BSSMAP_IE_GCR(template GlobalCallReferenceValue gcr) := {
+	elementIdentifier := '89'O,
+	lengthIndicator := ?,
+	globalCallReferenceValue := gcr
+}
+
+/* TS 48.008 3.2.2.116 */
+const BIT4 LCLS_CFG_both_way := '0000'B;
+const BIT4 LCLS_CFG_both_way_and_bicast_UL := '0001'B;
+const BIT4 LCLS_CFG_both_way_and_send_DL := '0010'B;
+const BIT4 LCLS_CFG_both_way_and_send_DL_block_local_DL := '0011'B;
+const BIT4 LCLS_CFG_both_way_and_bicast_UL_send_DL := '0100'B;
+const BIT4 LCLS_CFG_both_way_and_bicast_UL_send_DL_block_local_DL := '0101'B;
+
+template (value) BSSMAP_IE_LCLS_Configuration ts_BSSMAP_IE_LclsCfg(BIT4 cfg_val) := {
+	elementIdentifier := '8A'O,
+	lCLS_ConfigurationValue := cfg_val,
+	spare := '0000'B
+}
+template BSSMAP_IE_LCLS_Configuration tr_BSSMAP_IE_LclsCfg(template BIT4 cfg_val) := {
+	elementIdentifier := '8A'O,
+	lCLS_ConfigurationValue := cfg_val,
+	spare := '0000'B
+}
+
+/* TS 48.008 3.2.2.117 */
+const BIT4 LCLS_CSC_connect := '0000'B;
+const BIT4 LCLS_CSC_do_not_connect := '0001'B;
+const BIT4 LCLS_CSC_release_lcls := '0010'B;
+const BIT4 LCLS_CSC_bicast_UL_at_handover := '0011'B;
+const BIT4 LCLS_CSC_bicast_UL_and_recv_DL_at_handover := '0100'B;
+
+template (value) BSSMAP_IE_LCLS_ConnectionStatusControl ts_BSSMAP_IE_LclsCsc(BIT4 csc) := {
+	elementIdentifier := '8B'O,
+	lCLS_ConnectionStatusControlValue := csc,
+	spare := '0000'B
+}
+template BSSMAP_IE_LCLS_ConnectionStatusControl tr_BSSMAP_IE_LclsCsc(template BIT4 csc) := {
+	elementIdentifier := '8B'O,
+	lCLS_ConnectionStatusControlValue := csc,
+	spare := '0000'B
+}
+
+/* TS 48.008 3.2.2.119 */
+const BIT4 LCLS_STS_not_yet_ls := '0000'B;
+const BIT4 LCLS_STS_not_possible_ls := '0001'B;
+const BIT4 LCLS_STS_no_longer_ls := '0010'B;
+const BIT4 LCLS_STS_req_lcls_not_supp := '0011'B;
+const BIT4 LCLS_STS_locally_switched := '0100'B;
+
+template (value) BSSMAP_IE_LCLS_BSS_Status ts_BSSMAP_IE_LclsSts(BIT4 sts) := {
+	elementIdentifier := '8D'O,
+	lCLS_BSS_StatusValue := sts,
+	spare := '0000'B
+}
+template BSSMAP_IE_LCLS_BSS_Status tr_BSSMAP_IE_LclsSts(template BIT4 sts) := {
+	elementIdentifier := '8D'O,
+	lCLS_BSS_StatusValue := sts,
+	spare := '0000'B
+}
+
+/* TS 48.008 3.2.1.91 */
+template (value) PDU_BSSAP ts_BSSMAP_LclsConnCtrl(template (omit) BSSMAP_IE_LCLS_Configuration cfg,
+						  template (omit) BSSMAP_IE_LCLS_ConnectionStatusControl csc) modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_ConnectControl := {
+				messageType := '74'O,
+				lCLS_Configuration := cfg,
+				lCLS_ConnectionStatusControl := csc
+			}
+		}
+	}
+}
+template PDU_BSSAP tr_BSSMAP_LclsConnCtrl(template BSSMAP_IE_LCLS_Configuration cfg,
+					  template BSSMAP_IE_LCLS_ConnectionStatusControl csc)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_ConnectControl := {
+				messageType := '74'O,
+				lCLS_Configuration := cfg,
+				lCLS_ConnectionStatusControl := csc
+			}
+		}
+	}
+}
+
+/* TS 48.008 3.2.1.92 */
+template (value) PDU_BSSAP ts_BSSMAP_LclsConnCtrlAck(template (value) BSSMAP_IE_LCLS_BSS_Status sts)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_connectControlAck := {
+				messageType := '75'O,
+				lCLS_BSS_Status := sts
+			}
+		}
+	}
+}
+template PDU_BSSAP tr_BSSMAP_LclsConnCtrlAck(template BSSMAP_IE_LCLS_BSS_Status sts)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_connectControlAck := {
+				messageType := '75'O,
+				lCLS_BSS_Status := sts
+			}
+		}
+	}
+}
+
+/* TS 48.008 3.2.1.93 */
+template (value) PDU_BSSAP ts_BSSMAP_LclsNotification(template (omit) BSSMAP_IE_LCLS_BSS_Status sts,
+						      template (omit) BSSMAP_IE_LCLS_BreakRequest brq)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_Notification := {
+				messageType := '76'O,
+				lCLS_BSS_Status := sts,
+				lCLS_BreakRequest := brq
+			}
+		}
+	}
+}
+template PDU_BSSAP tr_BSSMAP_LclsNotification(template BSSMAP_IE_LCLS_BSS_Status sts,
+					      template BSSMAP_IE_LCLS_BreakRequest brq)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_Notification := {
+				messageType := '76'O,
+				lCLS_BSS_Status := sts,
+				lCLS_BreakRequest := brq
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_LclsNotificationSts(BIT4 sts)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			lCLS_Notification := {
+				messageType := '76'O,
+				lCLS_BSS_Status := tr_BSSMAP_IE_LclsSts(sts),
+				lCLS_BreakRequest := omit
+			}
+		}
+	}
+}
+
+template PDU_BSSAP ts_BSSMAP_CommonId(hexstring imsi_digits,
+				      template (omit) OCT3 last_eutran_plmn := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			commonID := {
+				messageType := '2F'O,
+				iMSI := ts_BSSMAP_Imsi(imsi_digits),
+				sNAAccessInformation := omit,
+				selectedPLMNId := omit,
+				lastUsedEUTRANPLMNId := f_ts_BSSMAP_LastUsedEUTRANPLMNId(last_eutran_plmn)
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_CommonId(template hexstring imsi_digits,
+				      template BSSAMAP_IE_LastUsedEUTRANPLMNId lastUsedEUTRANPLMNId := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			commonID := {
+				messageType := '2F'O,
+				iMSI := tr_BSSMAP_Imsi(imsi_digits),
+				sNAAccessInformation := *,
+				selectedPLMNId := *,
+				lastUsedEUTRANPLMNId := lastUsedEUTRANPLMNId
+			}
+		}
+	}
+}
+
+template PDU_BSSAP tr_BSSMAP_SAPInReject(template (present) GsmSapi sapi := ?,
+					 template BSSMAP_IE_Cause cause := ?)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			sAPInReject := {
+				messageType := '25'O,
+				dLCI := {
+					elementIdentifier := '18'O,
+					sapiValue := f_tr_SAPI(sapi),
+					spare := ?,
+					c1 := ?, c2 := ?
+				},
+				cause := cause
+			}
+		}
+	}
+}
+
+private function f_tr_SAPI(template (present) GsmSapi sapi)
+return template (present) BIT3 {
+	if (istemplatekind(sapi, "?")) {
+		return ?;
+	} else {
+		return int2bit(valueof(sapi), 3);
+	}
+}
+
+template (value) BSSMAP_IE_LocationType ts_BSSMAP_IE_LocationType
+:= {
+	elementIdentifier := '44'O,
+	lengthIndicator := 1,
+	locationInformation := '00'O,
+	positioningMethod := omit
+}
+
+template (value) BSSMAP_IE_LCSClientType
+ts_BSSMAP_IE_LCSClientType(template (value) BIT4 category := '0010'B,
+			   template (value) BIT4 subtype := '0000'B) := {
+	elementIdentifier := '48'O,
+	lengthIndicator := 0, /* overwritten */
+	subtype := subtype,
+	category := category
+}
+
+template (value) BSSMAP_IE_LCSPriority
+ts_BSSMAP_IE_LCSPriority(template (value) OCT1 priority := '00'O) := {
+	elementIdentifier := '43'O,
+	lengthIndicator := 0, /* overwritten */
+	priority := priority
+}
+
+template (value) BSSMAP_IE_LCSQOS
+ts_BSSMAP_IE_LCSQOS(template (value) BIT1 vCI := '0'B,
+		    template (value) BIT1 vEL := '0'B,
+		    template (value) BIT1 hAI := '1'B,
+		    template (value) BIT7 hAV := '0010010'B,
+		    template (value) BIT1 vAI := '0'B,
+		    template (value) BIT7 vAV := '0000000'B) := {
+	elementIdentifier := '3E'O,
+	lengthIndicator := 0, /* overwritten */
+	vCI := vCI, /* Vertical Coordinate Indicator: VC requested ('1'B) or not ('0'B) */
+	vEL := vEL, /* report velocity if available (1) or not(0) */
+	spare_1_6 := '000000'B,
+	horizontalAccuracy := hAV, /* Accuracy Horizontal (HA) */
+	hAI := hAI, /* Horizontal Accuracy Indicator HA is specified (1) or not (0) */
+	verticalAccuracy := vAV, /* Accuracy Vertical (VA) */
+	vAI := vAI, /* Vertical Accuracy Indicator VA is specified (1) or not (0) */
+	spare_2_6 := '000000'B,
+	rTC := '00'B /* Response Time is not specified */
+}
+
+
+/* 3.2.2.55 */
+template (value) BSSMAP_IE_GroupCallReference
+ts_BSSMAP_IE_GroupCallRef(template (value) GroupCallRef group_call_ref) :={
+	elementIdentifier := '37'O,
+	lengthIndicator := 0, // overwritten
+	descrGroupbroadcastCallRef := group_call_ref
+}
+template (present) BSSMAP_IE_GroupCallReference
+tr_BSSMAP_IE_GroupCallRef(template (present) GroupCallRef group_call_ref) :={
+	elementIdentifier := '37'O,
+	lengthIndicator := ?,
+	descrGroupbroadcastCallRef := group_call_ref
+}
+
+/* 3.2.2.88 */
+template (value) BSSMAP_IE_VGCS_FeatureFlags
+ts_BSSMAP_IE_VGCS_FeatureFlags(BIT1 tp_ind, BIT2 as_ind, BIT1 bss_res, BIT1 tcp) := {
+	elementIdentifier := '69'O,
+	lengthIndicator := 0, // overwritten
+	TP_Ind := tp_ind,
+	AS_Ind := as_ind,
+	BSS_Res := bss_res,
+	tCP := tcp,
+	spare := '000'B
+};
+template (present) BSSMAP_IE_VGCS_FeatureFlags
+tr_BSSMAP_IE_VGCS_FeatureFlags(BIT1 tp_ind, BIT2 as_ind, BIT1 bss_res, BIT1 tcp) := {
+	elementIdentifier := '69'O,
+	lengthIndicator := ?,
+	TP_Ind := tp_ind,
+	AS_Ind := as_ind,
+	BSS_Res := bss_res,
+	tCP := tcp,
+	spare := ?
+};
+
+/* 3.2.2.98 */
+template (value) BSSMAP_IE_ApplicationData
+ts_BSSMAP_IE_ApplicationData(template (value) OCT9 adi) := {
+	elementIdentifier := '78'O,
+	lengthIndicator := 0, // overwritten
+	applicationDataInfo := adi
+};
+template (present) BSSMAP_IE_ApplicationData
+tr_BSSMAP_IE_ApplicationData(template (present) OCT9 adi) := {
+	elementIdentifier := '78'O,
+	lengthIndicator := ?,
+	applicationDataInfo := adi
+};
+
+/* 3.2.2.99 */
+template (value) BSSMAP_IE_DataIdentity
+ts_BSSMAP_IE_DataIdentity(template (value) DataIdentity data_id) := {
+	elementIdentifier := '79'O,
+	lengthIndicator := 0, // overwritten
+	dataIdentityInfo := data_id
+};
+template (present) BSSMAP_IE_DataIdentity
+tr_BSSMAP_IE_DataIdentity(template (present) DataIdentity data_id) := {
+	elementIdentifier := '79'O,
+	lengthIndicator := ?,
+	dataIdentityInfo := data_id
+};
+
+/* 3.2.2.52 */
+template (value) BSSMAP_IE_AssignmentRequirement
+ts_BSSMAP_IE_AssRequirement(template (value) OCT1 ass_rqm) := {
+	elementIdentifier := '33'O,
+	assignmentRequirement := ass_rqm
+}
+template (present) BSSMAP_IE_AssignmentRequirement
+tr_BSSMAP_IE_AssRequirement(template (present) OCT1 ass_rqm) := {
+	elementIdentifier := '33'O,
+	assignmentRequirement := ass_rqm
+}
+
+/* 3.2.2.89 */
+function ts_BSSMAP_IE_TalkerPriority(template (omit) BIT2 prio)
+return template (omit) BSSMAP_IE_TalkerPriority {
+	if (istemplatekind(prio, "omit")) {
+		return omit;
+	} else {
+		var template (present) BSSMAP_IE_TalkerPriority tp := {
+			elementIdentifier := '6A'O,
+			priority := prio,
+			spare := '000000'B
+		};
+		return tp;
+	}
+}
+function tr_BSSMAP_IE_TalkerPriority(template BIT2 prio)
+return template BSSMAP_IE_TalkerPriority {
+	if (istemplatekind(prio, "omit")) {
+		return omit;
+	} else if (istemplatekind(prio, "*")) {
+		return *;
+	} else {
+		var template BSSMAP_IE_TalkerPriority tp := {
+			elementIdentifier := '6A'O,
+			priority := prio,
+			spare := ?
+		}
+		return tp;
+	}
+}
+
+/* 3.2.2.90 */
+template (value) BSSMAP_IE_EmergencySetIndication
+ts_BSSMAP_IE_EmergencySetIndication := {
+	elementIdentifier := '6B'O
+}
+template (present) BSSMAP_IE_EmergencySetIndication
+tr_BSSMAP_IE_EmergencySetIndication := {
+	elementIdentifier := '6B'O
+}
+
+
+
+
+/* Section 3.2.1.50 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_Setup(template (value) GroupCallRef group_call_ref,
+			 template (omit) BSSMAP_IE_VGCS_FeatureFlags feature_flags := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetup := {
+				messageType := '04'O,
+				groupCallReference := ts_BSSMAP_IE_GroupCallRef(group_call_ref),
+				priority := omit,
+				vGCS_FeatureFlags := feature_flags
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_Setup(template (present) GroupCallRef group_call_ref,
+			 template BSSMAP_IE_VGCS_FeatureFlags feature_flags := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetup := {
+				messageType := '04'O,
+				groupCallReference := tr_BSSMAP_IE_GroupCallRef(group_call_ref),
+				priority := *,
+				vGCS_FeatureFlags := feature_flags
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.51 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_SetupAck(template (omit) BSSMAP_IE_VGCS_FeatureFlags feature_flags := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetupAck := {
+				messageType := '05'O,
+				vGCS_FeatureFlags := feature_flags
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_SetupAck(template BSSMAP_IE_VGCS_FeatureFlags feature_flags := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetupAck := {
+				messageType := '05'O,
+				vGCS_FeatureFlags := feature_flags
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.52 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_SetupRefuse(BssmapCause cause)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetupRefuse := {
+				messageType := '06'O,
+				cause := ts_BSSMAP_IE_Cause(cause)
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_SetupRefuse(template (present) myBSSMAP_Cause cause := ?)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSSetupRefuse := {
+				messageType := '06'O,
+				cause := tr_BSSMAP_IE_Cause(cause)
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.53 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_AssignmentReq(template (value) BSSMAP_IE_ChannelType ch_type,
+				 template (value) OCT1 ass_requirement,
+				 template (value) BSSMAP_IE_CellIdentifier cell_id,
+				 template (value) GroupCallRef group_call_ref,
+				 template (omit) BSSMAP_IE_CircuitIdentityCode cic := omit,
+				 template (omit) BSSMAP_IE_AoIP_TransportLayerAddress aoip := omit,
+				 template (omit) OCT4 call_id := omit,
+				 template (omit) BSSMAP_IE_SpeechCodecList codecList := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentRequest := {
+				messageType := '07'O,	/* overwritten */
+				channelType := ch_type,
+				assignmentRequirement := ts_BSSMAP_IE_AssRequirement(ass_requirement),
+				cellIdentifier := cell_id,
+				groupCallReference := ts_BSSMAP_IE_GroupCallRef(group_call_ref),
+				priority := omit,
+				circuitIdentityCode := cic,
+				downLinkDTX_Flag := omit,
+				encryptionInformation := omit,
+				vSTK_RAND := omit,
+				vSTK := omit,
+				cellIdentifierListSegment := omit,
+				aoIPTransportLayer := aoip,
+				callIdentifier := ts_BSSMAP_IE_CallIdentifier(call_id),
+				codecList := codecList
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_AssignmentReq(template (present) BSSMAP_IE_ChannelType ch_type,
+				 template (present) OCT1 ass_requirement,
+				 template (present) BSSMAP_IE_CellIdentifier cell_id,
+				 template (present) GroupCallRef group_call_ref,
+				 template BSSMAP_IE_CircuitIdentityCode cic := *,
+				 template BSSMAP_IE_AoIP_TransportLayerAddress aoip := *,
+				 template OCT4 call_id := *,
+				 template BSSMAP_IE_SpeechCodecList codecList := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentRequest := {
+				messageType := '07'O,	/* overwritten */
+				channelType := ch_type,
+				assignmentRequirement := tr_BSSMAP_IE_AssRequirement(ass_requirement),
+				cellIdentifier := cell_id,
+				groupCallReference := tr_BSSMAP_IE_GroupCallRef(group_call_ref),
+				priority := omit,
+				circuitIdentityCode := cic,
+				downLinkDTX_Flag := omit,
+				encryptionInformation := omit,
+				vSTK_RAND := omit,
+				vSTK := omit,
+				cellIdentifierListSegment := omit,
+				aoIPTransportLayer := aoip,
+				callIdentifier := tr_BSSMAP_IE_CallIdentifier(call_id),
+				codecList := codecList
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.54 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_AssignmentRes(template (value) BSSMAP_IE_ChannelType ch_type,
+				 template (value) BSSMAP_IE_CellIdentifier cell_id,
+				 template (omit) BSSMAP_IE_ChosenChannel chosen_ch := omit,
+				 template (omit) BSSMAP_IE_CircuitIdentityCode cic := omit,
+				 template (omit) BSSMAP_IE_AoIP_TransportLayerAddress aoip := omit,
+				 template (omit) BSSMAP_IE_SpeechCodec speech_codec := omit,
+				 template (omit) OCT4 call_id := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentResult := {
+				messageType := '1C'O,	/* overwritten */
+				channelType := ch_type,
+				cellIdentifier := cell_id,
+				chosenChannel := chosen_ch,
+				circuitIdentityCode := cic,
+				circuitPool := omit,
+				aoIPTransportLayer := aoip,
+				speechCodec := speech_codec,
+				callIdentifier := ts_BSSMAP_IE_CallIdentifier(call_id)
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_AssignmentRes(template (present) BSSMAP_IE_ChannelType ch_type,
+				 template (present) BSSMAP_IE_CellIdentifier cell_id,
+				 template BSSMAP_IE_ChosenChannel chosen_ch := *,
+				 template BSSMAP_IE_CircuitIdentityCode cic := omit,
+				 template BSSMAP_IE_AoIP_TransportLayerAddress aoip := *,
+				 template BSSMAP_IE_SpeechCodec speech_codec := *,
+				 template OCT4 call_id := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentResult := {
+				messageType := '1C'O,	/* overwritten */
+				channelType := ch_type,
+				cellIdentifier := cell_id,
+				chosenChannel := chosen_ch,
+				circuitIdentityCode := cic,
+				circuitPool := *,
+				aoIPTransportLayer := aoip,
+				speechCodec := speech_codec,
+				callIdentifier := tr_BSSMAP_IE_CallIdentifier(call_id)
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.55 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_AssignmentFail(BssmapCause cause)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentFailure := {
+				messageType := '1D'O,	/* overwritten */
+				cause := ts_BSSMAP_IE_Cause(cause),
+				/* we only implement AoIP for now... */
+				circuitPool := omit,
+				circuitPoolList := omit,
+				codecList := omit
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_AssignmentFail(template (present) myBSSMAP_Cause cause := ?)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSAssignmentFailure := {
+				messageType := '1D'O,	/* overwritten */
+				cause := tr_BSSMAP_IE_Cause(cause),
+				/* we only implement AoIP for now... */
+				circuitPool := omit,
+				circuitPoolList := omit,
+				codecList := omit
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.56 */
+template (value) PDU_BSSAP
+ts_BSSMAP_VGCS_VBS_QueuingInd
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSQueuingIndication := {
+				messageType := '1E'O
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_VGCS_VBS_QueuingInd
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			vGCS_VBSQueuingIndication := {
+				messageType := '1E'O
+			}
+		}
+	}
+}
+
+/* Section 3.2.1.57 */
+template (value) PDU_BSSAP ts_BSSMAP_UplinkReq
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := omit,
+				cellIdentifier := omit,
+				layer3Information := omit,
+				mobileIdentity := omit
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP tr_BSSMAP_UplinkReq
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := *,
+				cellIdentifier := *,
+				layer3Information := *,
+				mobileIdentity := *
+			}
+		}
+	}
+}
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkReq_L3(template (value) BIT2 priority,
+		       template (omit) BSSMAP_IE_CellIdentifier cell_id,
+		       template (value) octetstring l3_info)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := ts_BSSMAP_IE_TalkerPriority(priority),
+				cellIdentifier := cell_id,
+				layer3Information := ts_BSSMAP_IE_L3Info(l3_info),
+				mobileIdentity := omit
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkReq_L3(template (present) BIT2 priority,
+		       template BSSMAP_IE_CellIdentifier cell_id,
+		       template (present) octetstring l3_info)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := tr_BSSMAP_IE_TalkerPriority(priority),
+				cellIdentifier := cell_id,
+				layer3Information := tr_BSSMAP_IE_L3Info(l3_info),
+				mobileIdentity := omit
+			}
+		}
+	}
+}
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkReq_MI(template (omit) BIT2 priority,
+		       template (omit) BSSMAP_IE_CellIdentifier cell_id,
+		       template (value) BSSMAP_IE_MobileIdentity mobile_id)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := ts_BSSMAP_IE_TalkerPriority(priority),
+				cellIdentifier := cell_id,
+				layer3Information := omit,
+				mobileIdentity := mobile_id
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkReq_MI(template BIT2 priority,
+		       template (omit) BSSMAP_IE_CellIdentifier cell_id,
+		       template (present) BSSMAP_IE_MobileIdentity mobile_id)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequest := {
+				messageType := '1F'O,
+				talkerPriority := tr_BSSMAP_IE_TalkerPriority(priority),
+				cellIdentifier := cell_id,
+				layer3Information := omit,
+				mobileIdentity := mobile_id
+			}
+		}
+	}
+}
+
+/* 3.2.1.58 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkReqAck(template (omit) BIT2 priority,
+			template (omit) BSSMAP_IE_EmergencySetIndication ems := omit,
+			template (omit) BSSMAP_IE_TalkerIdentity talker_id := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequestAck := {
+				messageType := '27'O,
+				talkerPriority := ts_BSSMAP_IE_TalkerPriority(priority),
+				emergencySetIndication := ems,
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkReqAck(template BIT2 priority,
+			template BSSMAP_IE_EmergencySetIndication ems := *,
+			template BSSMAP_IE_TalkerIdentity talker_id := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequestAck := {
+				messageType := '27'O,
+				talkerPriority := tr_BSSMAP_IE_TalkerPriority(priority),
+				emergencySetIndication := ems,
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+
+/* 3.2.1.59 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkReqConf(template (value) BSSMAP_IE_CellIdentifier cell_id,
+			template (omit) BSSMAP_IE_TalkerIdentity talker_id := omit,
+			template (value) octetstring l3_info)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequestConfirmation := {
+				messageType := '49'O,
+				cellIdentifier := cell_id,
+				talkerIdentity := talker_id,
+				layer3Information := ts_BSSMAP_IE_L3Info(l3_info)
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkReqConf(template (present) BSSMAP_IE_CellIdentifier cell_id,
+			template BSSMAP_IE_TalkerIdentity talker_id := *,
+			template (present) octetstring l3_info)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRequestConfirmation := {
+				messageType := '49'O,
+				cellIdentifier := cell_id,
+				talkerIdentity := talker_id,
+				layer3Information := tr_BSSMAP_IE_L3Info(l3_info)
+			}
+		}
+	}
+}
+
+
+/* 3.2.1.60 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkRelInd(BssmapCause cause, template (omit) BIT2 prio)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkReleaseIndication := {
+				messageType := '4A'O,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				talkerPriority := ts_BSSMAP_IE_TalkerPriority(prio)
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkRelInd(template (present) myBSSMAP_Cause cause, template BIT2 prio)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkReleaseIndication := {
+				messageType := '4A'O,
+				cause := tr_BSSMAP_IE_Cause(cause),
+				talkerPriority := tr_BSSMAP_IE_TalkerPriority(prio)
+			}
+		}
+	}
+}
+
+
+/* 3.2.1.61 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkRejCmd(BssmapCause cause,
+			template (omit) BIT2 cur_talker_prio := omit,
+			template (omit) BIT2 rej_talker_prio := omit,
+			template (omit) BSSMAP_IE_TalkerIdentity talker_id := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRejectCommand := {
+				messageType := '4B'O,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				currentTalkerPriority := ts_BSSMAP_IE_TalkerPriority(cur_talker_prio),
+				rejectedTalkerPriority := ts_BSSMAP_IE_TalkerPriority(rej_talker_prio),
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkRejCmd(template (present) myBSSMAP_Cause cause,
+			template BIT2 cur_talker_prio := *,
+			template BIT2 rej_talker_prio := *,
+			template BSSMAP_IE_TalkerIdentity talker_id := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkRejectCommand := {
+				messageType := '4B'O,
+				cause := tr_BSSMAP_IE_Cause(cause),
+				currentTalkerPriority := tr_BSSMAP_IE_TalkerPriority(cur_talker_prio),
+				rejectedTalkerPriority := tr_BSSMAP_IE_TalkerPriority(rej_talker_prio),
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+
+
+/* 3.2.1.62 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkRelCmd(BssmapCause cause)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkReleaseCommand := {
+				messageType := '4C'O,
+				cause := ts_BSSMAP_IE_Cause(cause)
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkRelCmd(template (present) myBSSMAP_Cause cause)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkReleaseCommand := {
+				messageType := '4C'O,
+				cause := tr_BSSMAP_IE_Cause(cause)
+			}
+		}
+	}
+}
+
+
+/* 3.2.1.63 */
+template (value) PDU_BSSAP
+ts_BSSMAP_UplinkSeizedCmd(BssmapCause cause,
+			  template (omit) BIT2 talker_prio := omit,
+			  template (omit) BSSMAP_IE_EmergencySetIndication emerg := omit,
+			  template (omit) BSSMAP_IE_TalkerIdentity talker_id := omit)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkSeizedCommand := {
+				messageType := '4D'O,
+				cause := ts_BSSMAP_IE_Cause(cause),
+				talkerPriority := ts_BSSMAP_IE_TalkerPriority(talker_prio),
+				emergencySetIndication := emerg,
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_UplinkSeizedCmd(template (present) myBSSMAP_Cause cause,
+			  template BIT2 talker_prio := *,
+			  template BSSMAP_IE_EmergencySetIndication emerg := *,
+			  template BSSMAP_IE_TalkerIdentity talker_id := *)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			uplinkSeizedCommand := {
+				messageType := '4D'O,
+				cause := tr_BSSMAP_IE_Cause(cause),
+				talkerPriority := tr_BSSMAP_IE_TalkerPriority(talker_prio),
+				emergencySetIndication := emerg,
+				talkerIdentity := talker_id
+			}
+		}
+	}
+}
+
+
+
+/* Section 3.2.1.82 */
+template (value) PDU_BSSAP
+ts_BSSMAP_NotificationData(template (value) OCT9 app_data, template (value) DataIdentity data_identity)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			notificationData := {
+				messageType := '62'O,
+				applicationData := ts_BSSMAP_IE_ApplicationData(app_data),
+				dataIdentity := ts_BSSMAP_IE_DataIdentity(data_identity),
+				mSISDN := omit
+			}
+		}
+	}
+}
+template (present) PDU_BSSAP
+tr_BSSMAP_NotificationData(template (present) OCT9 app_data, template (present) DataIdentity data_identity)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			notificationData := {
+				messageType := '62'O,
+				applicationData := tr_BSSMAP_IE_ApplicationData(app_data),
+				dataIdentity := tr_BSSMAP_IE_DataIdentity(data_identity),
+				mSISDN := ?
+			}
+		}
+	}
+}
+
+
+
+template (value) PDU_BSSAP
+ts_BSSMAP_Perform_Location_Request(template (omit) BSSMAP_IE_IMSI imsi,
+				   template (omit) BSSMAP_IE_CellIdentifier cellIdentifier := omit,
+				   template (omit) BSSMAP_IE_LCSClientType clientType := ts_BSSMAP_IE_LCSClientType,
+				   template (omit) BSSMAP_IE_LCSPriority priority := ts_BSSMAP_IE_LCSPriority,
+				   template (omit) BSSMAP_IE_LCSQOS qos := ts_BSSMAP_IE_LCSQOS)
+modifies ts_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			performLocationRequest := {
+				messageType := '2B'O,
+				locationType := ts_BSSMAP_IE_LocationType,
+				cellIdentifier := cellIdentifier,
+				classmarkInformationType3 := omit,
+				lCS_ClientType := clientType,
+				chosenChannel := omit,
+				lCS_Priority := priority,
+				lCS_QOS := qos,
+				gPS_AssistanceData := omit,
+				aPDU := omit,
+				iMSI := imsi,
+				iMEI := omit,
+				gANSS_LocationType := omit,
+				gANSS_AssistanceData := omit
+			}
+		}
+	}
+}
+
+template (present) BSSMAP_IE_LocationEstimate tr_BSSMAP_IE_LocationEstimate(template (present) octetstring geo_loc := ?)
+:= {
+	elementIdentifier := '45'O,
+	lengthIndicator := ?,
+	geographicLocation := geo_loc
+}
+
+function tr_BSSMAP_LcsCause(template (present) BSSMAP_LcsCause cause)
+return template (omit) BSSMAP_IE_LCSCause {
+	if (istemplatekind(cause, "omit")) {
+		return omit;
+	}
+	var template BSSMAP_IE_LCSCause ie := {
+		elementIdentifier := '47'O,
+		lengthIndicator := 1,
+		causeValue := int2bit(enum2int(valueof(cause)), 8),
+		diagnosticValue := omit
+	}
+	return ie;
+}
+
+template (present) PDU_BSSAP tr_BSSMAP_Perform_Location_Response(
+	template BSSMAP_IE_LocationEstimate locationEstimate := *,
+	template BSSMAP_IE_PositioningData positioningData := *,
+	template BSSMAP_IE_LCSCause lCS_Cause := *
+	)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			performLocationResponse := {
+				messageType := '2D'O,
+				locationEstimate := locationEstimate,
+				positioningData := positioningData,
+				decipheringKeys := *,
+				lCS_Cause := lCS_Cause,
+				velocityEstimate := *,
+				gANSS_PositioningData := *
+			}
+		}
+	}
+}
+
+template (present) PDU_BSSAP tr_BSSMAP_Perform_Location_Abort(template (present) BSSMAP_IE_LCSCause lCS_Cause := ?)
+modifies tr_BSSAP_BSSMAP := {
+	pdu := {
+		bssmap := {
+			performLocationAbort := {
+				messageType := '2E'O,
+				lCS_Cause := lCS_Cause
+			}
+		}
+	}
+}
+
+} with { encode "RAW" };

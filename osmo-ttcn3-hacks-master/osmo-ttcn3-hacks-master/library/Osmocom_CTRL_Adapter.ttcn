@@ -1,0 +1,140 @@
+module Osmocom_CTRL_Adapter {
+
+/* Module that test suites can 'inherit' in order to have a CTRL connection to the IUT which they're testing
+ * (C) 2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from IPL4asp_Types all;
+
+import from IPA_Emulation all;
+import from IPA_Types all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+
+
+type component CTRL_Adapter_CT {
+	var IPA_Emulation_CT vc_CTRL_IPA;
+	var boolean ipa_is_up := false;
+	/* test port for the CTRL interface of the BSC */
+	port IPA_CTRL_PT IPA_CTRL;
+}
+
+/* wait for IPA CTRL link to connect and send UP */
+function f_ipa_ctrl_wait_link_up()
+runs on CTRL_Adapter_CT {
+	if (ipa_is_up == true) {
+		return;
+	}
+	timer T := 10.0;
+	T.start;
+	alt {
+	[] IPA_CTRL.receive(tr_ASP_IPA_EV(ASP_IPA_EVENT_UP)) { ipa_is_up := true; }
+	[] T.timeout {
+		setverdict(fail, "Timeout CTRL waiting for ASP_IPA_EVENT_UP");
+		mtc.stop;
+		}
+	}
+}
+
+/* wait for IPA CTRL link to connect and send DOWN */
+function f_ipa_ctrl_wait_link_down()
+runs on CTRL_Adapter_CT {
+	if (ipa_is_up == false) {
+		return;
+	}
+	timer T := 10.0;
+	T.start;
+	alt {
+	[] IPA_CTRL.receive(tr_ASP_IPA_EV(ASP_IPA_EVENT_DOWN)) { ipa_is_up := false; }
+	[] T.timeout {
+		setverdict(fail, "Timeout CTRL waiting for ASP_IPA_EVENT_DOWN");
+		mtc.stop;
+		}
+	}
+}
+
+/*! Start the CTRL client connection to the specified CTRL IP+Port server*/
+function f_ipa_ctrl_start_client(charstring bsc_host, PortNumber bsc_port)
+runs on CTRL_Adapter_CT {
+	var charstring id := "IPA-CTRL-CLI"
+
+	vc_CTRL_IPA := IPA_Emulation_CT.create(id & "-IPA");
+
+	map(vc_CTRL_IPA:IPA_PORT, system:IPA_CODEC_PT);
+	connect(vc_CTRL_IPA:IPA_CTRL_PORT, self:IPA_CTRL);
+
+	vc_CTRL_IPA.start(IPA_Emulation.main_client(bsc_host, bsc_port, "", 0,
+						    c_IPA_default_ccm_pars, false));
+
+	f_ipa_ctrl_wait_link_up();
+}
+
+/*! Start the CTRL server on the specified CTRL IP+Port */
+function f_ipa_ctrl_start_server(charstring listen_host, PortNumber listen_port)
+runs on CTRL_Adapter_CT {
+	var charstring id := "IPA-CTRL-SRV"
+	timer T := 10.0;
+
+	vc_CTRL_IPA := IPA_Emulation_CT.create(id & "-IPA");
+
+	map(vc_CTRL_IPA:IPA_PORT, system:IPA_CODEC_PT);
+	connect(vc_CTRL_IPA:IPA_CTRL_PORT, self:IPA_CTRL);
+
+	vc_CTRL_IPA.start(IPA_Emulation.main_server(listen_host, listen_port, false,
+			  server_stop_on_ipa_ev_down := false));
+}
+
+function f_ipa_ctrl_stop() runs on CTRL_Adapter_CT {
+	vc_CTRL_IPA.stop;
+}
+
+
+/* BSC specific CTRL helper functions */
+function f_ctrl_get_bts(IPA_CTRL_PT pt, integer bts_nr, charstring suffix) return CtrlValue {
+	return f_ctrl_get(pt, "bts." & int2str(bts_nr) & "." & suffix);
+}
+function f_ctrl_set_bts(IPA_CTRL_PT pt, integer bts_nr, charstring suffix, CtrlValue val) {
+	f_ctrl_set(pt, "bts." & int2str(bts_nr) & "." & suffix, val);
+}
+
+template charstring ts_bts(integer bts_nr) := "bts." & int2str(bts_nr) & ".";
+template charstring ts_bts_trx(integer bts_nr, integer trx_nr ) :=
+	valueof(ts_bts(bts_nr)) & "trx." & int2str(trx_nr) & ".";
+
+function f_ctrl_get_exp_bts(IPA_CTRL_PT pt, integer bts_nr, CtrlVariable suffix, template CtrlValue exp) {
+	f_ctrl_get_exp(pt, valueof(ts_bts(bts_nr)) & suffix, exp);
+}
+
+function f_ctrl_get_exp_trx(IPA_CTRL_PT pt, integer bts_nr, integer trx_nr, CtrlVariable suffix,
+			    template CtrlValue exp)
+{
+	f_ctrl_get_exp(pt, valueof(ts_bts_trx(bts_nr, trx_nr)) & suffix, exp);
+}
+
+template (value) charstring ts_fsm_inst_id(charstring class_name, charstring inst_id) :=
+	"fsm." & class_name & ".id." & inst_id & ".";
+
+/* obtain the state of a specified FSM instance */
+function f_ctrl_get_fsm_inst_state(IPA_CTRL_PT pt, charstring fsm_class_name, charstring fsm_inst_id)
+return charstring {
+	return f_ctrl_get(pt, valueof(ts_fsm_inst_id(fsm_class_name, fsm_inst_id)) & "state");
+}
+
+/* expect the state of a specified FSM instance to match template */
+function f_ctrl_get_exp_inst_state(IPA_CTRL_PT pt, charstring fsm_class_name,
+				   template (value) charstring fsm_inst_id,
+				   template (present) CtrlValue exp)
+{
+	f_ctrl_get_exp(pt, valueof(ts_fsm_inst_id(fsm_class_name, valueof(fsm_inst_id))) & "state", exp);
+}
+
+
+}

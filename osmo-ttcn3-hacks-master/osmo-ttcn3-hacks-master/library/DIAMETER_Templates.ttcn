@@ -1,0 +1,1573 @@
+module DIAMETER_Templates {
+
+/* (C) 2019 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from General_Types all;
+import from DIAMETER_Types all;
+import from Osmocom_Types all;
+import from Misc_Helpers all;
+
+/* https://www.iana.org/assignments/aaa-parameters/aaa-parameters.xhtml#aaa-parameters-4 */
+type enumerated DIAMETER_Resultcode {
+	/* Informational */
+	DIAMETER_MULTI_ROUND_AUTH 			(1001),
+
+	/* Success */
+	DIAMETER_SUCCESS				(2001),
+	DIAMETER_LIMITED_SUCCESS			(2002),
+	DIAMETER_FIRST_REGISTRATION			(2003),
+	DIAMETER_SUBSEQUENT_REGISTRATION		(2004),
+	DIAMETER_UNREGISTERED_SERVICE 			(2005),
+	DIAMETER_SUCCESS_SERVER_NAME_NOT_STORED		(2006),
+	DIAMETER_SERVER_SELECTION			(2007),
+	DIAMETER_SUCCESS_AUTH_SENT_SERVER_NOT_STORED 	(2008),
+	DIAMETER_SUCCESS_RELOCATE_HA			(2009),
+
+	/* Protocol Errors */
+	DIAMETER_COMMAND_UNSUPPORTED			(3001),
+	DIAMETER_UNABLE_TO_DELIVER			(3002),
+	DIAMETER_REALM_NOT_SERVED			(3003),
+	DIAMETER_TOO_BUSY				(3004),
+	DIAMETER_LOOP_DETECTED				(3005),
+	DIAMETER_REDIRECT_INDICATION			(3006),
+	DIAMETER_APPLICATION_UNSUPPORTED		(3007),
+	DIAMETER_INVALID_HDR_BITS			(3008),
+	DIAMETER_INVALID_AVP_BITS			(3009),
+	DIAMETER_UNKNOWN_PEER				(3010),
+	DIAMETER_REALM_REDIRECT_INDICATION		(3011),
+
+	/* Transient Failures */
+	DIAMETER_AUTHENTICATION_REJECTED		(4001),
+	DIAMETER_OUT_OF_SPACE				(4002),
+	ELECTION_LOST					(4003),
+	DIAMETER_ERROR_MIP_REPLY_FAILURE		(4005),
+	DIAMETER_ERROR_HA_NOT_AVAILABLE			(4006),
+	DIAMETER_ERROR_BAD_KEY				(4007),
+	DIAMETER_ERROR_MIP_FILTER_NOT_SUPPORTED		(4008),
+	DIAMETER_END_USER_SERVICE_DENIED		(4010),
+	DIAMETER_CREDIT_CONTROL_NOT_APPLICABLE		(4011),
+	DIAMETER_CREDIT_LIMIT_REACHED			(4012),
+	DIAMETER_USER_NAME_REQUIRED			(4013),
+	RESOURCE_FAILURE				(4014),
+
+	DIAMETER_AUTHENTICATION_DATA_UNAVAILABLE	(4181),
+	DIAMETER_ERROR_CAMEL_SUBSCRIPTION_PRESENT	(4882),
+
+	/* Permanent Failure */
+	DIAMETER_AVP_UNSUPPORTED			(5001),
+	DIAMETER_UNKNOWN_SESSION_ID			(5002),
+	DIAMETER_AUTHORIZATION_REJECTED			(5003),
+	DIAMETER_INVALID_AVP_VALUE			(5004),
+	DIAMETER_MISSING_AVP				(5005),
+	DIAMETER_RESOURCES_EXCEEDED			(5006),
+	DIAMETER_CONTRADICTING_AVPS			(5007),
+	DIAMETER_AVP_NOT_ALLOWED			(5008),
+	DIAMETER_AVP_OCCURS_TOO_MANY_TIMES		(5009),
+	DIAMETER_NO_COMMON_APPLICATION			(5010),
+	DIAMETER_UNSUPPORTED_VERSION			(5011),
+	DIAMETER_UNABLE_TO_COMPLY			(5012),
+	DIAMETER_INVALID_BIT_IN_HEADER			(5013),
+	DIAMETER_INVALID_AVP_LENGTH			(5014),
+	DIAMETER_INVALID_MESSAGE_LENGTH			(5015),
+	DIAMETER_INVALID_AVP_BIT_COMBO			(5016),
+	DIAMETER_NO_COMMON_SECURITY			(5017),
+	DIAMETER_RADIUS_AVP_UNTRANSLATABLE		(5018),
+	DIAMETER_ERROR_NO_FOREIGN_HA_SERVICE		(5024),
+	DIAMETER_ERROR_END_TO_END_MIP_KEY_ENCRYPTION	(5025),
+	DIAMETER_USER_UNKNOWN				(5030),
+	DIAMETER_RATING_FAILED				(5031),
+	DIAMETER_ERROR_USER_UNKNOWN			(5032),
+	DIAMETER_ERROR_IDENTITIES_DONT_MATCH		(5033),
+	DIAMETER_ERROR_IDENTITY_NOT_REGISTERED		(5034),
+	DIAMETER_ERROR_ROAMING_NOT_ALLOWED		(5035),
+	DIAMETER_ERROR_IDENTITY_ALREADY_REGISTERED	(5036),
+	DIAMETER_ERROR_AUTH_SCHEME_NOT_SUPPORTED	(5037),
+	DIAMETER_ERROR_IN_ASSIGNMENT_TYPE		(5038),
+	DIAMETER_ERROR_TOO_MUCH_DATA			(5039),
+	DIAMETER_ERROR_NOT_SUPPORTED_USER_DATA 		(5040),
+	DIAMETER_ERROR_MIP6_AUTH_MODE			(5041),
+	UNKNOWN_BINDING_TEMPLATE_NAME			(5042),
+	BINDING_FAILURE					(5043),
+	MAX_BINDINGS_SET_FAILURE			(5044),
+	MAXIMUM_BINDINGS_REACHED_FOR_ENDPOINT		(5045),
+	SESSION_EXISTS					(5046),
+	INSUFFICIENT_CLASSIFIERS			(5047),
+	DIAMETER_ERROR_EAP_CODE_UNKNOWN			(5048)
+};
+
+/* RFC4006 3.1 */
+const uint32_t c_DIAMETER_CREDIT_CONTROL_AID := 4;
+
+const uint32_t c_DIAMETER_3GPP_S7_AID := 16777308;
+
+const octetstring c_def_sess_id := char2oct("ttcn3.session");
+
+template (value) PDU_DIAMETER
+ts_DIAMETER(template (value) DIAMETER_Types.BIT8 flags,
+	    template (value) Command_Code cmd_code,
+	    template (value) OCTET4 app_id := '00000000'O,
+	    template (value) UINT32 hbh_id := '00000000'O,
+	    template (value) UINT32 ete_id := '00000000'O,
+	    template (value) AVP_list avps := {}
+) := {
+	version := 1,
+	message_length := 0, /* overwritten */
+	RPETxxxx := flags,
+	command_code := cmd_code,
+	application_id := app_id,
+	hop_by_hop_id := hbh_id,
+	end_to_end_id := ete_id,
+	avps := avps
+}
+template (present) PDU_DIAMETER
+tr_DIAMETER(template (present) DIAMETER_Types.BIT8 flags := ?,
+	    template (present) Command_Code cmd_code := ?,
+	    template (present) OCTET4 app_id := ?,
+	    template (present) UINT32 hbh_id := ?,
+	    template (present) UINT32 ete_id := ?,
+	    template (present) AVP_list avps := ?) := {
+	version := 1,
+	message_length := ?,
+	RPETxxxx := flags,
+	command_code := cmd_code,
+	application_id := app_id,
+	hop_by_hop_id := hbh_id,
+	end_to_end_id := ete_id,
+	avps := avps
+}
+template (present) PDU_DIAMETER
+tr_DIAMETER_A(
+	    template (present) Command_Code cmd_code := ?,
+	    template (present) OCTET4 app_id := ?,
+	    template (present) UINT32 hbh_id := ?,
+	    template (present) UINT32 ete_id := ?,
+	    template (present) AVP_list avps := ?) :=
+	tr_DIAMETER('0???????'B, cmd_code, app_id, hbh_id, ete_id, avps);
+template (present) PDU_DIAMETER
+tr_DIAMETER_R(
+	    template (present) Command_Code cmd_code := ?,
+	    template (present) OCTET4 app_id := ?,
+	    template (present) UINT32 hbh_id := ?,
+	    template (present) UINT32 ete_id := ?,
+	    template (present) AVP_list avps := ?) :=
+	tr_DIAMETER('1???????'B, cmd_code, app_id, hbh_id, ete_id, avps);
+
+
+template (value) AVP_Header
+ts_DIA_Hdr(template (value) AVP_Code avp_code,
+		template (value) DIAMETER_Types.BIT8 flags := '01000000'B) := {
+	avp_code := avp_code,
+	VMPxxxxx := flags,
+	avp_length := 0, /* overwritten */
+	vendor_id := omit
+}
+template (present) AVP_Header
+tr_DIA_Hdr(template (present) AVP_Code avp_code,
+		template (present) DIAMETER_Types.BIT8 flags := '0???????'B) := {
+	avp_code := avp_code,
+	VMPxxxxx := flags,
+	avp_length := ?, /* overwritten */
+	vendor_id := omit
+}
+
+template (value) AVP_Header
+ts_DIA_Hdr_3GPP(template (value) AVP_Code avp_code,
+		template (value) DIAMETER_Types.BIT8 flags := '11000000'B) := {
+	avp_code := avp_code,
+	VMPxxxxx := flags,
+	avp_length := 0, /* overwritten */
+	vendor_id := vendor_id_3GPP
+}
+template (present) AVP_Header
+tr_DIA_Hdr_3GPP(template (present) AVP_Code avp_code,
+		template (present) DIAMETER_Types.BIT8 flags := '1???????'B) := {
+	avp_code := avp_code,
+	VMPxxxxx := flags,
+	avp_length := ?, /* overwritten */
+	vendor_id := vendor_id_3GPP
+}
+
+template (present) AVP_Address tr_AVP_Address(template (present) AddressType addr_type := ?,
+					      template (present) octetstring addr_data := ?) := {
+	address_type := addr_type,
+	address_data := addr_data
+}
+
+/* RFC 4006 8.46 Subscription-Id */
+template (present) GenericAVP tr_AVP_SubcrId(template (present) DCC_NONE_Subscription_Id t) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id := t
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_SubcrId(template (value) DCC_NONE_Subscription_Id t) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id := t
+		}
+	}
+}
+
+/* RFC 4006 8.47 Subscription-Id-Type */
+template (present) GenericAVP tr_AVP_SubcrIdType(template (present) DCC_NONE_Subscription_Id_Type t) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id_Type),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id_Type := t
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_SubcrIdType(template (value) DCC_NONE_Subscription_Id_Type t) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id_Type),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id_Type := t
+		}
+	}
+}
+
+/* RFC 4006 8.48 Subscription-Id-Data */
+template (present) GenericAVP tr_AVP_SubcrIdData(template (present) DCC_NONE_Subscription_Id_Data t) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id_Data),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id_Data := t
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_SubcrIdData(template (value) DCC_NONE_Subscription_Id_Data t) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Subscription_Id_Data),
+		avp_data := {
+			avp_DCC_NONE_Subscription_Id_Data := t
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_RequestedAction(template (present) DCC_NONE_Requested_Action t := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Requested_Action),
+		avp_data := {
+			avp_DCC_NONE_Requested_Action := t
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_MultipleServicesIndicator(template (present) DCC_NONE_Multiple_Services_Indicator t := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Multiple_Services_Indicator),
+		avp_data := {
+			avp_DCC_NONE_Multiple_Services_Indicator := t
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_ServiceContextId(template (present) DCC_NONE_Service_Context_Id id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Service_Context_Id),
+		avp_data := {
+			avp_DCC_NONE_Service_Context_Id := id
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_OriginHost(template (value) charstring host) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_Host),
+		avp_data := {
+			avp_BASE_NONE_Origin_Host := host
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_OriginHost(template (present) charstring host := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_Host),
+		avp_data := {
+			avp_BASE_NONE_Origin_Host := host
+		}
+	}
+}
+
+
+template (value) GenericAVP ts_AVP_OriginRealm(template (value) charstring realm) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_Realm),
+		avp_data := {
+			avp_BASE_NONE_Origin_Realm := realm
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_OriginRealm(template (present) charstring realm := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_Realm),
+		avp_data := {
+			avp_BASE_NONE_Origin_Realm := realm
+		}
+	}
+}
+
+
+template (value) GenericAVP ts_AVP_OriginStateId(template (value) OCTET4 state_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_State_Id),
+		avp_data := {
+			avp_BASE_NONE_Origin_State_Id := state_id
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_OriginStateId(template (present) OCTET4 state_id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Origin_State_Id),
+		avp_data := {
+			avp_BASE_NONE_Origin_State_Id := state_id
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_TerminationCause(template (value) BASE_NONE_Termination_Cause tc) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Termination_Cause),
+		avp_data := {
+			avp_BASE_NONE_Termination_Cause := tc
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_TerminationCause(template (present) BASE_NONE_Termination_Cause tc) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Termination_Cause),
+		avp_data := {
+			avp_BASE_NONE_Termination_Cause := tc
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_HostIpAddr(template (value) OCTET4 ipv4_addr) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Host_IP_Address),
+		avp_data := {
+			avp_BASE_NONE_Host_IP_Address := {
+				address_type := IP,
+				address_data := ipv4_addr
+			}
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_VendorId(template (value) Vendor_Id vendor_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Id, '00000000'B),
+		avp_data := {
+			avp_BASE_NONE_Vendor_Id := int2oct(enum2int(valueof(vendor_id)), 4)
+		}
+	}
+}
+private function f_tr_AVP_VendorId(template (present) Vendor_Id vendor_id)
+return template (present) BASE_NONE_Vendor_Id {
+	if (istemplatekind(vendor_id, "?")) {
+		return ?;
+	} else {
+		var template (present) BASE_NONE_Vendor_Id c;
+		c := int2oct(enum2int(valueof(vendor_id)), 4);
+		return c;
+	}
+}
+template (present) GenericAVP tr_AVP_VendorId(template (present) Vendor_Id vendor_id) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Id),
+		avp_data := {
+			avp_BASE_NONE_Vendor_Id := f_tr_AVP_VendorId(vendor_id)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_ProductName(charstring name) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Product_Name, '00000000'B),
+		avp_data := {
+			avp_BASE_NONE_Product_Name := char2oct(name)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_FwRevision(octetstring fw_version) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Firmware_Revision, '00000000'B),
+		avp_data := {
+			avp_BASE_NONE_Firmware_Revision := fw_version
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_InbSecId(template (value) OCTET4 inb_sec_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Inband_Security_Id),
+		avp_data := {
+			avp_BASE_NONE_Inband_Security_Id := inb_sec_id
+		}
+	}
+}
+
+private function enum2int_Vendor_Id_tmpl(template Vendor_Id inp) return template integer
+{
+	if (istemplatekind(inp, "omit")) {
+		return omit;
+	} else if (istemplatekind(inp, "*")) {
+		return *;
+	} else if (istemplatekind(inp, "?")) {
+		return ?;
+	} else {
+		return enum2int(valueof(inp));
+	}
+}
+
+template (present) GenericAVP tr_AVP_VendorSpecAppId(template (present) Vendor_Id vendor_id := ?,
+						     template (present) uint32_t auth_app_id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Specific_Application_Id),
+		avp_data := {
+			avp_BASE_NONE_Vendor_Specific_Application_Id := {
+				{
+					avp := {
+						avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Id),
+						avp_data := {
+							avp_BASE_NONE_Vendor_Id := int2oct_tmpl(enum2int_Vendor_Id_tmpl(vendor_id), 4)
+						}
+					}
+				}, {
+					avp := {
+						avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Application_Id),
+						avp_data := {
+							avp_BASE_NONE_Auth_Application_Id := int2oct_tmpl(auth_app_id, 4)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_VendorSpecAppId(Vendor_Id vendor_id, uint32_t auth_app_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Specific_Application_Id),
+		avp_data := {
+			avp_BASE_NONE_Vendor_Specific_Application_Id := {
+				{
+					avp := {
+						avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Vendor_Id),
+						avp_data := {
+							avp_BASE_NONE_Vendor_Id := int2oct(enum2int(vendor_id), 4)
+						}
+					}
+				}, {
+					avp := {
+						avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Application_Id),
+						avp_data := {
+							avp_BASE_NONE_Auth_Application_Id := int2oct(auth_app_id, 4)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_AuthAppId(template (value) OCTET4 auth_app_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Application_Id),
+		avp_data := {
+			avp_BASE_NONE_Auth_Application_Id := auth_app_id
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_AuthAppId(template (present) OCTET4 auth_app_id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Application_Id),
+		avp_data := {
+			avp_BASE_NONE_Auth_Application_Id := auth_app_id
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_CcReqType(template (value) DCC_NONE_CC_Request_Type r) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Request_Type),
+		avp_data := {
+			avp_DCC_NONE_CC_Request_Type := r
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_CcReqType(template (present) DCC_NONE_CC_Request_Type r := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Request_Type),
+		avp_data := {
+			avp_DCC_NONE_CC_Request_Type := r
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_CcReqNum(template (value) AVP_Unsigned32 n) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Request_Number),
+		avp_data := {
+			avp_DCC_NONE_CC_Request_Number := n
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_CcReqNum(template (present) AVP_Unsigned32 n := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Request_Number),
+		avp_data := {
+			avp_DCC_NONE_CC_Request_Number := n
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_EventTimestamp(template (present) AVP_Unsigned32 n := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Event_Timestamp),
+		avp_data := {
+			avp_BASE_NONE_Event_Timestamp := n
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_ExperimentalResultCode(template (present) AVP_Unsigned32 n := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Experimental_Result_Code),
+		avp_data := {
+			avp_BASE_NONE_Experimental_Result_Code := n
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_ExperimentalResultCode(template (value) AVP_Unsigned32 n) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Experimental_Result_Code),
+		avp_data := {
+			avp_BASE_NONE_Experimental_Result_Code := n
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_ExperimentalResult(template (present) Vendor_Id vendor_id := ?,
+							template (present) AVP_Unsigned32 err_code := ?
+							) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Experimental_Result),
+		avp_data := {
+			avp_BASE_NONE_Experimental_Result := {
+				tr_AVP_VendorId(vendor_id),
+				tr_AVP_ExperimentalResultCode(err_code)
+			}
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_ExperimentalResult(template (value) Vendor_Id vendor_id := vendor_id_3GPP,
+						      template (value) AVP_Unsigned32 err_code
+							) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Experimental_Result),
+		avp_data := {
+			avp_BASE_NONE_Experimental_Result := {
+				ts_AVP_VendorId(vendor_id),
+				ts_AVP_ExperimentalResultCode(err_code)
+			}
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_SuppVendorIdRaw(uint32_t vendor_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Supported_Vendor_Id),
+		avp_data := {
+			avp_BASE_NONE_Supported_Vendor_Id := int2oct(vendor_id, 4)
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_SuppVendorId(Vendor_Id vendor_id) :=
+	ts_AVP_SuppVendorIdRaw(enum2int(vendor_id));
+
+template (value) GenericAVP ts_AVP_ResultCode(template (value) DIAMETER_Resultcode res_code) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Result_Code),
+		avp_data := {
+			avp_BASE_NONE_Result_Code := int2oct(enum2int(valueof(res_code)), 4)
+		}
+	}
+}
+private function f_tr_DIAMETER_Resultcode(template (present) DIAMETER_Resultcode res_code)
+return template (present) BASE_NONE_Result_Code {
+	if (istemplatekind(res_code, "?")) {
+		return ?;
+	} else {
+		var template (present) BASE_NONE_Result_Code c;
+		c := int2oct(enum2int(valueof(res_code)), 4);
+		return c;
+	}
+}
+template (present) GenericAVP tr_AVP_ResultCode(template (present) DIAMETER_Resultcode res_code) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Result_Code),
+		avp_data := {
+			avp_BASE_NONE_Result_Code := f_tr_DIAMETER_Resultcode(res_code)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_AuthSessionState(template (value) BASE_NONE_Auth_Session_State ass := NO_STATE_MAINTAINED) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Session_State),
+		avp_data := {
+			avp_BASE_NONE_Auth_Session_State := ass
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_AuthSessionState(template (present) BASE_NONE_Auth_Session_State ass := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Session_State),
+		avp_data := {
+			avp_BASE_NONE_Auth_Session_State := ass
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_SessionId(template (value) octetstring session_id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Session_Id),
+		avp_data := {
+			avp_BASE_NONE_Session_Id := session_id
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_SessionId(template (present) octetstring session_id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Session_Id),
+		avp_data := {
+			avp_BASE_NONE_Session_Id := session_id
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_DestinationHost(template (value) charstring dest_host) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Destination_Host),
+		avp_data := {
+			avp_BASE_NONE_Destination_Host := dest_host
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_DestinationHost(template (present) charstring host := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Destination_Host),
+		avp_data := {
+			avp_BASE_NONE_Destination_Host := host
+		}
+	}
+}
+
+/* 3.3 Destination Realm */
+template (value) GenericAVP ts_AVP_DestinationRealm(template (value) charstring dest_realm) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Destination_Realm),
+		avp_data := {
+			avp_BASE_NONE_Destination_Realm := dest_realm
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_DestinationRealm(template (present) charstring dest_realm := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Destination_Realm),
+		avp_data := {
+			avp_BASE_NONE_Destination_Realm := dest_realm
+		}
+	}
+}
+
+/* 8.14 User-Name */
+template (value) GenericAVP ts_AVP_UserName(template (value) octetstring uid) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_User_Name),
+		avp_data := {
+			avp_BASE_NONE_User_Name := uid
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_UserName(template (present) octetstring uid := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_User_Name),
+		avp_data := {
+			avp_BASE_NONE_User_Name := uid
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_UserNameImsi(template (value) hexstring imsi) := ts_AVP_UserName(char2oct(hex2str(valueof(imsi))));
+template (present) GenericAVP tr_AVP_UserNameImsi(template (present) hexstring imsi := ?) := tr_AVP_UserName(char2oct_tmpl(hex2str_tmpl(imsi)));
+
+
+template (value) GenericAVP ts_AVP_NumOfReqVectors(template (value) UINT32 num_req := '00000004'O) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Number_Of_Requested_Vectors),
+		avp_data := {
+			avp_AAA_3GPP_Number_Of_Requested_Vectors := num_req
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_ImmReqPref(template (value) UINT32 par := '00000000'O) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Immediate_Response_Preferred),
+		avp_data := {
+			avp_AAA_3GPP_Immediate_Response_Preferred := par
+		}
+	}
+}
+
+
+/* 7.3.11 Requested-EUTRAN-Authentication-Info */
+template (value) GenericAVP ts_AVP_RequestedEutranAuthInfo(template (value) UINT32 num_vec := '00000004'O) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Requested_EUTRAN_Authentication_Info),
+		avp_data := {
+			avp_AAA_3GPP_Requested_EUTRAN_Authentication_Info := {
+				ts_AVP_NumOfReqVectors(num_vec),
+				ts_AVP_ImmReqPref('00000000'O)
+			}
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_SubscrRauTauTmr(template (present) uint32_t tmr := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Subscribed_Periodic_RAU_TAU_Timer),
+		avp_data := {
+			avp_AAA_3GPP_Subscribed_Periodic_RAU_TAU_Timer := int2oct_tmpl(tmr, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_3GPP_SubscrRauTauTmr(uint32_t tmr) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_Subscribed_Periodic_RAU_TAU_Timer),
+		avp_data := {
+			avp_AAA_3GPP_Subscribed_Periodic_RAU_TAU_Timer := int2oct(tmr, 4)
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_PCC_3GPP_QoS_Information(template (present) AVP_list list := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_QoS_Information),
+		avp_data := {
+			avp_PCC_3GPP_QoS_Information := list
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_PCC_3GPP_QoS_Information(template (value) AVP_list list) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_QoS_Information),
+		avp_data := {
+			avp_PCC_3GPP_QoS_Information := list
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_PCC_3GPP_APN_Aggregate_Max_Bitrate_DL(uint32_t val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_APN_Aggregate_Max_Bitrate_DL),
+		avp_data := {
+			avp_PCC_3GPP_APN_Aggregate_Max_Bitrate_DL := int2oct(val, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_PCC_3GPP_APN_Aggregate_Max_Bitrate_UL(uint32_t val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_APN_Aggregate_Max_Bitrate_UL),
+		avp_data := {
+			avp_PCC_3GPP_APN_Aggregate_Max_Bitrate_UL := int2oct(val, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_PCC_3GPP_Default_EPS_Bearer_QoS(template (value) AVP_list list) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_Default_EPS_Bearer_QoS),
+		avp_data := {
+			avp_PCC_3GPP_Default_EPS_Bearer_QoS := list
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_PCC_3GPP_QoS_Class_Identifier(template (present) uint32_t val := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_QoS_Class_Identifier),
+		avp_data := {
+			avp_PCC_3GPP_QoS_Class_Identifier := int2oct_tmpl(val, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_PCC_3GPP_QoS_Class_Identifier(uint32_t val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_QoS_Class_Identifier),
+		avp_data := {
+			avp_PCC_3GPP_QoS_Class_Identifier := int2oct(val, 4)
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_PriorityLevel(template (present) uint32_t prio := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_Priority_Level),
+		avp_data := {
+			avp_PCC_3GPP_Priority_Level := int2oct_tmpl(prio, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_3GPP_PriorityLevel(uint32_t prio) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_Priority_Level),
+		avp_data := {
+			avp_PCC_3GPP_Priority_Level := int2oct(prio, 4)
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_PCC_3GPP_AllocRetenPrio(template (present) uint32_t prio := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_Allocation_Retention_Priority),
+		avp_data := {
+			avp_PCC_3GPP_Allocation_Retention_Priority := superset(
+				tr_AVP_3GPP_PriorityLevel(prio)
+				/* pre-emption capability */
+				/* pre-emption vulnerability */
+			)
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_PCC_3GPP_AllocRetenPrio(uint32_t prio) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_PCC_3GPP_Allocation_Retention_Priority),
+		avp_data := {
+			avp_PCC_3GPP_Allocation_Retention_Priority := {
+				ts_AVP_3GPP_PriorityLevel(prio)
+				/* pre-emption capability */
+				/* pre-emption vulnerability */
+			}
+		}
+	}
+}
+
+/* 7.3.37 EPS-Subscribed-QoS-Profile */
+template (present) GenericAVP tr_AVP_3GPP_EpsSubscrQosProfile(template (present) uint32_t qos_class := ?,
+							      template (present) uint32_t prio := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_EPS_Subscribed_QoS_Profile),
+		avp_data := {
+			avp_AAA_3GPP_EPS_Subscribed_QoS_Profile := superset(
+				tr_AVP_PCC_3GPP_QoS_Class_Identifier(qos_class),
+				tr_AVP_PCC_3GPP_AllocRetenPrio(prio)
+			)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_3GPP_EpsSubscrQosProfile(uint32_t qos_class, uint32_t prio) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_AAA_3GPP_EPS_Subscribed_QoS_Profile),
+		avp_data := {
+			avp_AAA_3GPP_EPS_Subscribed_QoS_Profile := {
+				ts_AVP_PCC_3GPP_QoS_Class_Identifier(qos_class),
+				ts_AVP_PCC_3GPP_AllocRetenPrio(prio)
+			}
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_Reporting_Reason(template (present) DCA_3GPP_Reporting_Reason r := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_Reporting_Reason),
+		avp_data := {
+			avp_DCA_3GPP_Reporting_Reason := r
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_AoCRequestType(template (present) DCA_3GPP_AoC_Request_Type t := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_AoC_Request_Type),
+		avp_data := {
+			avp_DCA_3GPP_AoC_Request_Type := t
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_ServiceInformation(template (present) AVP_list content := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_Service_Information),
+		avp_data := {
+			avp_DCA_3GPP_Service_Information := content
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_PSInformation(template (present) AVP_list content := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_PS_Information),
+		avp_data := {
+			avp_DCA_3GPP_PS_Information := content
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_ChargingId(template (present) AVP_OctetString id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_Charging_Id),
+		avp_data := {
+			avp_GI_3GPP_3GPP_Charging_Id := id
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_PDPType(template (present) GI_3GPP_3GPP_PDP_Type t := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_PDP_Type),
+		avp_data := {
+			avp_GI_3GPP_3GPP_PDP_Type := t
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_PDPAddress(template (present) DCA_3GPP_PDP_Address addr := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_PDP_Address),
+		avp_data := {
+			avp_DCA_3GPP_PDP_Address := addr
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_SGSNAddress(template (present) DCA_3GPP_SGSN_Address addr := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_SGSN_Address),
+		avp_data := {
+			avp_DCA_3GPP_SGSN_Address := addr
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_GGSNAddress(template (present) DCA_3GPP_GGSN_Address addr := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_GGSN_Address),
+		avp_data := {
+			avp_DCA_3GPP_GGSN_Address := addr
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_SelectionMode(template (present) GI_3GPP_3GPP_Selection_Mode sm := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_Selection_Mode),
+		avp_data := {
+			avp_GI_3GPP_3GPP_Selection_Mode := sm
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_ChargingCharacteristics(template (present) GI_3GPP_3GPP_Charging_Characteristics cc := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_Charging_Characteristics),
+		avp_data := {
+			avp_GI_3GPP_3GPP_Charging_Characteristics := cc
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_SGSNMCCMNC(template (present) GI_3GPP_3GPP_SGSN_MCC_MNC smn := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_SGSN_MCC_MNC),
+		avp_data := {
+			avp_GI_3GPP_3GPP_SGSN_MCC_MNC := smn
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_NSAPI(template (present) GI_3GPP_3GPP_NSAPI nsapi := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_NSAPI),
+		avp_data := {
+			avp_GI_3GPP_3GPP_NSAPI := nsapi
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_MS_TimeZone(template (present) GI_3GPP_3GPP_MS_TimeZone ms_tz := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_MS_TimeZone),
+		avp_data := {
+			avp_GI_3GPP_3GPP_MS_TimeZone := ms_tz
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_ULI(template (present) GI_3GPP_3GPP_User_Location_Info uli := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_GI_3GPP_3GPP_User_Location_Info),
+		avp_data := {
+			avp_GI_3GPP_3GPP_User_Location_Info := uli
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_UserEquipmentInfo(template (present) DCC_NONE_User_Equipment_Info uei := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_User_Equipment_Info),
+		avp_data := {
+			avp_DCC_NONE_User_Equipment_Info := uei
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_UserEquipmentInfoType(template (present) DCC_NONE_User_Equipment_Info_Type ueit := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_User_Equipment_Info_Type),
+		avp_data := {
+			avp_DCC_NONE_User_Equipment_Info_Type := ueit
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_UserEquipmentInfoValue(template (present) DCC_NONE_User_Equipment_Info_Value ueiv := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_User_Equipment_Info_Value),
+		avp_data := {
+			avp_DCC_NONE_User_Equipment_Info_Value := ueiv
+		}
+	}
+}
+
+/* RFC4006 8.16 Multiple-Services-Credit-Control AVP */
+template (value) GenericAVP ts_AVP_Multiple_Services_Credit_Control(template (value) AVP_list content) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Multiple_Services_Credit_Control),
+		avp_data := {
+			avp_DCC_NONE_Multiple_Services_Credit_Control := content
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_Multiple_Services_Credit_Control(template (present) AVP_list content := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Multiple_Services_Credit_Control),
+		avp_data := {
+			avp_DCC_NONE_Multiple_Services_Credit_Control := content
+		}
+	}
+}
+
+/* Requested-Service-Unit AVP */
+template (present) GenericAVP tr_AVP_Requested_Service_Unit(template (present) AVP_list content := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Requested_Service_Unit),
+		avp_data := {
+			avp_DCC_NONE_Requested_Service_Unit := content
+		}
+	}
+}
+
+/* Used-Service-Unit AVP */
+template (present) GenericAVP tr_AVP_Used_Service_Unit(template (present) AVP_list content := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DCC_NONE_Used_Service_Unit),
+		avp_data := {
+			avp_DCC_NONE_Used_Service_Unit := content
+		}
+	}
+}
+
+/* RFC4006 8.17 Granted-Service-Unit AVP */
+template (value) GenericAVP ts_AVP_Granted_Service_Unit(template (value) AVP_list content) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Granted_Service_Unit),
+		avp_data := {
+			avp_DCC_NONE_Granted_Service_Unit := content
+		}
+	}
+}
+
+/* RFC4006 8.21 CC-Time AVP */
+template (value) GenericAVP ts_AVP_CC_Time(uint32_t cc_time_val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Time),
+		avp_data := {
+			avp_DCC_NONE_CC_Time := int2oct(cc_time_val, 4)
+		}
+	}
+}
+
+/* RFC4006 8.23 CC-Total-Octets AVP */
+template (value) GenericAVP ts_AVP_CC_Total_Octets(uint64_t cc_total_octets_val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_CC_Total_Octets),
+		avp_data := {
+			avp_DCC_NONE_CC_Total_Octets := int2oct(cc_total_octets_val, 8)
+		}
+	}
+}
+
+/* RFC4006 8.33 Validity-Time AVP */
+template (value) GenericAVP ts_AVP_Validity_Time(uint32_t validity_time_val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DCC_NONE_Validity_Time),
+		avp_data := {
+			avp_DCC_NONE_Validity_Time := int2oct(validity_time_val, 4)
+		}
+	}
+}
+
+template (value) GenericAVP ts_AVP_3GPP_VolumeQuotaThreshold(uint32_t volume_quota_thresh_val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_DCA_3GPP_Volume_Quota_Threshold),
+		avp_data := {
+			avp_DCA_3GPP_Volume_Quota_Threshold := int2oct(volume_quota_thresh_val, 4)
+		}
+	}
+}
+
+template (present) GenericAVP tr_AVP_3GPP_CalledStationId(template (present) DNAS_NONE_Called_Station_Id id := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_DNAS_NONE_Called_Station_Id),
+		avp_data := {
+			avp_DNAS_NONE_Called_Station_Id := id
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_CalledStationId(template (value) DNAS_NONE_Called_Station_Id id) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_DNAS_NONE_Called_Station_Id),
+		avp_data := {
+			avp_DNAS_NONE_Called_Station_Id := id
+		}
+	}
+}
+
+/* RFC6733 8.7.  Auth-Request-Type AVP */
+template (value) GenericAVP ts_AVP_AuthRequestType(BASE_NONE_Auth_Request_Type auth_req_type) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Request_Type, '00000000'B),
+		avp_data := {
+			avp_BASE_NONE_Auth_Request_Type := auth_req_type
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_AuthRequestType(template (present) BASE_NONE_Auth_Request_Type auth_req_type) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Auth_Request_Type),
+		avp_data := {
+			avp_BASE_NONE_Auth_Request_Type := auth_req_type
+		}
+	}
+}
+
+/* RFC6733 8.12. Re-Auth-Request-Type AVP */
+template (value) GenericAVP ts_AVP_ReAuthRequestType(BASE_NONE_Re_Auth_Request_Type reauth_req_type) := {
+	avp := {
+		avp_header := ts_DIA_Hdr(c_AVP_Code_BASE_NONE_Re_Auth_Request_Type, '00000000'B),
+		avp_data := {
+			avp_BASE_NONE_Re_Auth_Request_Type := reauth_req_type
+		}
+	}
+}
+template (present) GenericAVP tr_AVP_ReAuthRequestType(template (present) BASE_NONE_Re_Auth_Request_Type reauth_req_type) := {
+	avp := {
+		avp_header := tr_DIA_Hdr(c_AVP_Code_BASE_NONE_Re_Auth_Request_Type),
+		avp_data := {
+			avp_BASE_NONE_Re_Auth_Request_Type := reauth_req_type
+		}
+	}
+}
+
+/* 5.3.1 Capabilities Exchange Request */
+template (value) PDU_DIAMETER
+ts_DIA_CER(octetstring host_ip, uint32_t vendor_app_id,
+	   template (value) charstring orig_host := "ttcn3.localdomain",
+	   template (value) charstring orig_realm := "localdomain",
+	   template (value) UINT32 hbh_id := '00000000'O,
+	   template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '10000000'B,
+		    cmd_code := Capabilities_Exchange,
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_HostIpAddr(host_ip),
+			ts_AVP_VendorId(vendor_id_3GPP),
+			ts_AVP_ProductName("TTCN-3 Testsuite"),
+			ts_AVP_FwRevision('00000000'O),
+			ts_AVP_InbSecId('00000000'O),
+			ts_AVP_AuthAppId('FFFFFFFF'O),
+			ts_AVP_VendorSpecAppId(vendor_id_3GPP, vendor_app_id)
+	});
+
+
+/* 5.3.2 Capabilities Exchange Answer */
+template (value) PDU_DIAMETER
+ts_DIA_CEA_AUTH_APP_ID(template (value) UINT32 hbh_id, template (value) UINT32 ete_id,
+		       template (value) charstring origin_host,
+		       template (value) charstring origin_realm,
+		       template (value) octetstring host_ip, uint32_t auth_app_id)
+:= ts_DIAMETER(flags:='00000000'B, cmd_code:=Capabilities_Exchange, hbh_id:=hbh_id, ete_id:=ete_id,
+	avps := {
+		ts_AVP_ResultCode(DIAMETER_SUCCESS),
+		ts_AVP_OriginHost(origin_host),
+		ts_AVP_OriginRealm(origin_realm),
+		ts_AVP_HostIpAddr(host_ip),
+		ts_AVP_VendorId(vendor_id_3GPP),
+		ts_AVP_ProductName("TTCN-3 Testsuite"),
+		ts_AVP_OriginStateId('00000001'O),
+		ts_AVP_SuppVendorIdRaw(5535), /* 3GPP2 */
+		ts_AVP_SuppVendorId(vendor_id_3GPP),
+		ts_AVP_SuppVendorIdRaw(13019), /* ETSI */
+		ts_AVP_AuthAppId(int2oct(auth_app_id, 4)),
+		ts_AVP_InbSecId('00000000'O)
+	});
+template (value) PDU_DIAMETER
+ts_DIA_CEA_VENDOR_APP_ID(template (value) UINT32 hbh_id, template (value) UINT32 ete_id,
+			 template (value) charstring origin_host,
+			 template (value) charstring origin_realm,
+			 template (value) octetstring host_ip, uint32_t vendor_app_id)
+:= ts_DIAMETER(flags:='00000000'B, cmd_code:=Capabilities_Exchange, hbh_id:=hbh_id, ete_id:=ete_id,
+	avps := {
+		ts_AVP_ResultCode(DIAMETER_SUCCESS),
+		ts_AVP_OriginHost(origin_host),
+		ts_AVP_OriginRealm(origin_realm),
+		ts_AVP_HostIpAddr(host_ip),
+		ts_AVP_VendorId(vendor_id_3GPP),
+		ts_AVP_ProductName("TTCN-3 Testsuite"),
+		ts_AVP_OriginStateId('00000001'O),
+		ts_AVP_SuppVendorIdRaw(5535), /* 3GPP2 */
+		ts_AVP_SuppVendorId(vendor_id_3GPP),
+		ts_AVP_SuppVendorIdRaw(13019), /* ETSI */
+		ts_AVP_InbSecId('00000000'O),
+		ts_AVP_VendorSpecAppId(vendor_id_3GPP, vendor_app_id)
+	});
+function f_ts_DIA_CEA(template (value) UINT32 hbh_id, template (value) UINT32 ete_id,
+		      template (value) charstring origin_host,
+		      template (value) charstring origin_realm,
+		      template (value) octetstring host_ip, template (omit) uint32_t auth_app_id,
+		      template (omit) uint32_t vendor_app_id)
+	   return template (value) PDU_DIAMETER
+{
+	var template (value) PDU_DIAMETER diam_pdu;
+	if (istemplatekind(vendor_app_id, "omit")) {
+		diam_pdu := ts_DIA_CEA_AUTH_APP_ID(hbh_id, ete_id, origin_host, origin_realm, host_ip, valueof(auth_app_id));
+	} else {
+		diam_pdu := ts_DIA_CEA_VENDOR_APP_ID(hbh_id, ete_id, origin_host, origin_realm, host_ip, valueof(vendor_app_id));
+	}
+	return diam_pdu;
+}
+
+/* RFC 6733, section 5.5.1 "Device-Watchdog-Request" */
+template (value) PDU_DIAMETER
+ts_DIA_DWR(template (value) OCTET4 state_id := '00000000'O,
+	   template (value) charstring orig_host := "ttcn3.localdomain",
+	   template (value) charstring orig_realm := "localdomain",
+	   template (value) UINT32 hbh_id := '00000000'O,
+	   template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '10000000'B,
+		    cmd_code := Device_Watchdog,
+		    app_id := '00000000'O,
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_OriginStateId(state_id)
+	});
+template (present) PDU_DIAMETER
+tr_DIA_DWR(template (present) OCTET4 state_id := ?,
+	   template (present) charstring orig_host := ?,
+	   template (present) charstring orig_realm := ?,
+	   template (present) UINT32 hbh_id := ?,
+	   template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '1???????'B,
+		    cmd_code := Device_Watchdog,
+		    app_id := '00000000'O,
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+			/* tr_AVP_OriginStateId(state_id) is optional */
+	));
+
+/* RFC 6733, section 5.5.2 "Device-Watchdog-Answer" */
+template (value) PDU_DIAMETER
+ts_DIA_DWA(template (value) OCTET4 state_id := '00000000'O,
+	   template (value) charstring orig_host := "ttcn3.localdomain",
+	   template (value) charstring orig_realm := "localdomain",
+	   template (value) UINT32 hbh_id := '00000000'O,
+	   template (value) UINT32 ete_id := '00000000'O) :=
+	ts_DIAMETER(flags := '00000000'B,
+		    cmd_code := Device_Watchdog,
+		    app_id := '00000000'O,
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := {
+			ts_AVP_ResultCode(DIAMETER_SUCCESS),
+			ts_AVP_OriginHost(orig_host),
+			ts_AVP_OriginRealm(orig_realm),
+			ts_AVP_OriginStateId(state_id)
+	});
+template (present) PDU_DIAMETER
+tr_DIA_DWA(template (present) OCTET4 state_id := ?,
+	   template (present) charstring orig_host := ?,
+	   template (present) charstring orig_realm := ?,
+	   template (present) UINT32 hbh_id := ?,
+	   template (present) UINT32 ete_id := ?) :=
+	tr_DIAMETER(flags := '0???????'B,
+		    cmd_code := Device_Watchdog,
+		    app_id := '00000000'O,
+		    hbh_id := hbh_id,
+		    ete_id := ete_id,
+		    avps := superset(
+			tr_AVP_ResultCode(DIAMETER_SUCCESS),
+			tr_AVP_OriginHost(orig_host),
+			tr_AVP_OriginRealm(orig_realm)
+			/* tr_AVP_OriginStateId(state_id) is optional */
+	));
+
+function f_DIAMETER_get_avp(PDU_DIAMETER pdu, template (present) AVP_Code avp_code)
+return template (omit) AVP
+{
+	var integer i;
+
+	for (i := 0; i < lengthof(pdu.avps); i := i+1) {
+		if (not ispresent(pdu.avps[i].avp)) {
+			continue;
+		}
+		var AVP_Header hdr := pdu.avps[i].avp.avp_header;
+		if (match(hdr.avp_code, avp_code)) {
+			return pdu.avps[i].avp;
+		}
+	}
+	return omit;
+}
+function f_DIAMETER_get_avp_or_fail(PDU_DIAMETER pdu, template (present) AVP_Code avp_code)
+return AVP
+{
+	var template (omit) AVP avp;
+	avp := f_DIAMETER_get_avp(pdu, avp_code);
+	if (istemplatekind(avp, "omit")) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("AVP ", avp_code, " not found in ", pdu));
+	}
+	return valueof(avp);
+}
+
+function f_AVP_Grouped_get_avp(AVP_Grouped avp_grp, template (present) AVP_Code avp_code)
+return template (omit) AVP
+{
+	var integer i;
+
+	for (i := 0; i < lengthof(avp_grp); i := i+1) {
+		if (not ispresent(avp_grp[i].avp)) {
+			continue;
+		}
+		var AVP_Header hdr := avp_grp[i].avp.avp_header;
+		if (match(hdr.avp_code, avp_code)) {
+			return avp_grp[i].avp;
+		}
+	}
+	return omit;
+}
+function f_AVP_Grouped_get_avp_or_fail(AVP_Grouped avp_grp, template (present) AVP_Code avp_code)
+return AVP
+{
+	var template (omit) AVP avp;
+	avp := f_AVP_Grouped_get_avp(avp_grp, avp_code);
+	if (istemplatekind(avp, "omit")) {
+		Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+			log2str("AVP ", avp_code, " not found in ", avp_grp));
+	}
+	return valueof(avp);
+}
+
+
+/*****************************
+ * Cx, Dx, 3GPP TS 29.229
+ *****************************/
+/* SIP-Auth-Data-Item, 3GPP TS 29.229 6.3.8 */
+template (present) GenericAVP tr_AVP_3GPP_SIPNumAuthDataItems(template (present) uint32_t num := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Number_Auth_Items),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Number_Auth_Items := int2oct_tmpl(num, 4) /* CxDx_3GPP_SIP_Number_Auth_Items */
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPNumAuthDataItems(uint32_t num) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Number_Auth_Items),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Number_Auth_Items := int2oct(num, 4) /* CxDx_3GPP_SIP_Number_Auth_Items */
+		}
+	}
+}
+
+/* SIP-Authentication-Scheme, 3GPP TS 29.229 6.3.9 */
+template (present) GenericAVP tr_AVP_3GPP_SIPAuthScheme(template (present) CxDx_3GPP_SIP_Authentication_Scheme scheme := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authentication_Scheme),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authentication_Scheme := scheme
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPAuthScheme(template (value) CxDx_3GPP_SIP_Authentication_Scheme scheme) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authentication_Scheme),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authentication_Scheme := scheme
+		}
+	}
+}
+
+/* SIP-Authenticate, 3GPP TS 29.229 6.3.10 */
+template (present) GenericAVP tr_AVP_3GPP_SIPAuthenticate(template (present) CxDx_3GPP_SIP_Authenticate rand_autn_concatenated := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authenticate),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authenticate := rand_autn_concatenated
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPAuthenticate(template (value) CxDx_3GPP_SIP_Authenticate rand_autn_concatenated) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authenticate),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authenticate := rand_autn_concatenated
+		}
+	}
+}
+
+/* SIP-Authorization, 3GPP TS 29.229 6.3.11 */
+template (present) GenericAVP tr_AVP_3GPP_SIPAuthorization(template (present) CxDx_3GPP_SIP_Authorization rand_autn_concatenated := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authorization),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authorization := rand_autn_concatenated
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPAuthorization(template (value) CxDx_3GPP_SIP_Authorization rand_autn_concatenated) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authorization),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authorization := rand_autn_concatenated
+		}
+	}
+}
+
+/* SIP-Authentication-Context, 3GPP TS 29.229 6.3.12 */
+template (present) GenericAVP tr_AVP_3GPP_SIPAuthContext(template (present) CxDx_3GPP_SIP_Authentication_Context val := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authentication_Context),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authentication_Context := val
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPAuthContext(template (value) CxDx_3GPP_SIP_Authentication_Context val) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Authentication_Context),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Authentication_Context := val
+		}
+	}
+}
+
+/* SIP-Item-Number, 3GPP TS 29.229 6.3.14 */
+template (present) GenericAVP tr_AVP_3GPP_SIPItemNumber(template (present) uint32_t num := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Item_Number),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Item_Number := int2oct_tmpl(num, 4) /* CxDx_3GPP_SIP_Item_Number */
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_SIPItemNumber(uint32_t num) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_SIP_Item_Number),
+		avp_data := {
+			avp_CxDx_3GPP_SIP_Item_Number := int2oct(num, 4) /* CxDx_3GPP_SIP_Item_Number */
+		}
+	}
+}
+
+/* Confidentiality-Key, 3GPP TS 29.229 6.3.27 */
+template (present) GenericAVP tr_AVP_3GPP_ConfidentialityKey(template (present) CxDx_3GPP_Confidentiality_Key ckey := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Confidentiality_Key),
+		avp_data := {
+			avp_CxDx_3GPP_Confidentiality_Key := ckey
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_ConfidentialityKey(template (value) CxDx_3GPP_Confidentiality_Key ckey) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Confidentiality_Key),
+		avp_data := {
+			avp_CxDx_3GPP_Confidentiality_Key := ckey
+		}
+	}
+}
+
+/* Inegrity-Key, 3GPP TS 29.229 6.3.28 */
+template (present) GenericAVP tr_AVP_3GPP_IntegrityKey(template (present) CxDx_3GPP_Integrity_Key ckey := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Integrity_Key),
+		avp_data := {
+			avp_CxDx_3GPP_Integrity_Key := ckey
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_IntegrityKey(template (value) CxDx_3GPP_Integrity_Key ckey) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Integrity_Key),
+		avp_data := {
+			avp_CxDx_3GPP_Integrity_Key := ckey
+		}
+	}
+}
+
+/* Server-Assignment-Type, 3GPP TS 29.273 8.2.3.12, 3GPP TS 29.229 6.3.15 */
+template (present) GenericAVP tr_AVP_3GPP_ServerAssignmentType(template (present) CxDx_3GPP_Server_Assignment_Type t := ?) := {
+	avp := {
+		avp_header := tr_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Server_Assignment_Type),
+		avp_data := {
+			avp_CxDx_3GPP_Server_Assignment_Type := t
+		}
+	}
+}
+template (value) GenericAVP ts_AVP_3GPP_ServerAssignmentType(template (value) CxDx_3GPP_Server_Assignment_Type t) := {
+	avp := {
+		avp_header := ts_DIA_Hdr_3GPP(c_AVP_Code_CxDx_3GPP_Server_Assignment_Type),
+		avp_data := {
+			avp_CxDx_3GPP_Server_Assignment_Type := t
+		}
+	}
+}
+
+}

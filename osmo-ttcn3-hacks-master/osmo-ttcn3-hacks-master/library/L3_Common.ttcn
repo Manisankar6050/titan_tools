@@ -1,0 +1,78 @@
+/* Common L3 helper functions in TTCN-3
+ * (C) 2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module L3_Common {
+
+import from Osmocom_Types all;
+import from General_Types all;
+import from MobileL3_GMM_SM_Types all;
+
+type record AuthVector {
+	OCT16 rand,
+	OCT4 sres,
+	OCT8 kc,
+	OCT16 ik,
+	OCT16 ck,
+	OCT16 autn,
+	OCT8 res,
+	/* auts is usally calculated from autn + rand on the MS.
+	 * To simplify the test case, auts is generated instead calculated here.
+	 */
+	OCT14 auts
+}
+
+function f_gen_auth_vec_2g() return AuthVector {
+	var AuthVector vec;
+	vec.rand := f_rnd_octstring(16);
+	vec.sres := f_rnd_octstring(4);
+	vec.kc := f_rnd_octstring(8);
+	return vec;
+}
+
+function f_gen_auth_vec_3g() return AuthVector {
+	var AuthVector vec := f_gen_auth_vec_2g();
+	vec.ik := f_rnd_octstring(16);
+	vec.ck := f_rnd_octstring(16);
+	vec.autn := f_rnd_octstring(16);
+	vec.res := f_rnd_octstring(8);
+	vec.auts := f_rnd_octstring(14);
+	return vec;
+}
+
+function f_RAI(HEX0_3n mcc, HEX0_3n mnc, OCT2 lac, OCT1 rac) return RoutingAreaIdentificationV {
+	if (lengthof(mnc) == 2) {
+		mnc := mnc & 'F'H;
+	}
+	var RoutingAreaIdentificationV ret := {
+		mccDigit1 := mcc[0],
+		mccDigit2 := mcc[1],
+		mccDigit3 := mcc[2],
+		mncDigit3 := mnc[2],
+		mncDigit1 := mnc[0],
+		mncDigit2 := mnc[1],
+		lac := lac,
+		rac := rac
+	}
+	return ret;
+}
+
+function f_RAI_to_plmn_hexstr(RoutingAreaIdentificationV rai) return hexstring {
+	var hexstring plmn :=
+		  rai.mccDigit1
+		& rai.mccDigit2
+		& rai.mccDigit3
+		& rai.mncDigit3
+		& rai.mncDigit1
+		& rai.mncDigit2;
+	return plmn;
+}
+
+}

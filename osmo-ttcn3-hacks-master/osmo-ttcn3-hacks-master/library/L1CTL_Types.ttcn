@@ -1,0 +1,1112 @@
+/* Data Types / Encoding / Decoding for OsmocomBB L1CTL interface */
+/* (C) 2017 by Harald Welte <laforge@gnumonks.org>, derived from l1ctl_proto.h
+ * which is (C) 2010 by Harald Welte + Holger Hans Peter Freyther
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module L1CTL_Types {
+
+	import from General_Types all;
+	import from GSM_Types all;
+	import from GSM_RR_Types all;
+	import from Osmocom_Types all;
+
+	type enumerated L1ctlMsgType {
+		L1CTL_NONE,
+		L1CTL_FBSB_REQ,
+		L1CTL_FBSB_CONF,
+		L1CTL_DATA_IND,
+		L1CTL_RACH_REQ,
+		L1CTL_DM_EST_REQ,
+		L1CTL_DATA_REQ,
+		L1CTL_RESET_IND,
+		L1CTL_PM_REQ,		/* power measurement */
+		L1CTL_PM_CONF,		/* power measurement */
+		L1CTL_ECHO_REQ,
+		L1CTL_ECHO_CONF,
+		L1CTL_RACH_CONF,
+		L1CTL_RESET_REQ,
+		L1CTL_RESET_CONF,
+		L1CTL_DATA_CONF,
+		L1CTL_CCCH_MODE_REQ,
+		L1CTL_CCCH_MODE_CONF,
+		L1CTL_DM_REL_REQ,
+		L1CTL_PARAM_REQ,
+		L1CTL_DM_FREQ_REQ,
+		L1CTL_CRYPTO_REQ,
+		L1CTL_SIM_REQ,
+		L1CTL_SIM_CONF,
+		L1CTL_TCH_MODE_REQ,
+		L1CTL_TCH_MODE_CONF,
+		L1CTL_NEIGH_PM_REQ,
+		L1CTL_NEIGH_PM_IND,
+		L1CTL_TRAFFIC_REQ,
+		L1CTL_TRAFFIC_CONF,
+		L1CTL_TRAFFIC_IND,
+		L1CTL_BURST_IND,
+		L1CTL_GPRS_UL_TBF_CFG_REQ,
+		L1CTL_GPRS_DL_TBF_CFG_REQ,
+		L1CTL_GPRS_UL_BLOCK_REQ,
+		L1CTL_GPRS_DL_BLOCK_IND,
+		L1CTL_EXT_RACH_REQ,
+		L1CTL_GPRS_RTS_IND,
+		L1CTL_GPRS_UL_BLOCK_CNF
+	} with { variant "FIELDLENGTH(8)" };
+
+	type enumerated L1ctlCcchMode {
+		CCCH_MODE_NONE (0),
+		CCCH_MODE_NON_COMBINED,
+		CCCH_MODE_COMBINED,
+		CCCH_MODE_COMBINED_CBCH
+	} with { variant "FIELDLENGTH(8)" };
+
+	type enumerated L1ctlNeighMode {
+		NEIGH_MODE_NONE (0),
+		NEIGH_MODE_PM,
+		NEIGH_MODE_SB
+	} with { variant "FIELDLENGTH(8)" };
+
+	type enumerated L1ctlResetType {
+		L1CTL_RES_T_BOOT (0),
+		L1CTL_RES_T_FULL,
+		L1CTL_RES_T_SCHED
+	} with { variant "FIELDLENGTH(8)" };
+
+	type record L1ctlHdrFlags {
+		BIT7	padding,
+		boolean f_done
+	} with { variant "" };
+
+	type record L1ctlHeader {
+		L1ctlMsgType	msg_type,
+		L1ctlHdrFlags	flags,
+		OCT2		padding
+	} with { variant "" };
+
+	template L1ctlHeader
+	tr_L1ctlHeader(template (present) L1ctlMsgType msg_type) := {
+		msg_type := msg_type,
+		flags := ?,
+		padding := ?
+	};
+
+	template (value) L1ctlHeader
+	ts_L1ctlHeader(template (value) L1ctlMsgType msg_type) := {
+		msg_type := msg_type,
+		flags := { padding := '0000000'B, f_done := false },
+		padding := '0000'O
+	};
+
+	type record L1ctlDlInfo {
+		RslChannelNr	chan_nr,
+		RslLinkId	link_id,
+		GsmBandArfcn	arfcn,
+		uint32_t	frame_nr,
+		GsmRxLev	rx_level,
+		uint8_t		snr,
+		uint8_t		num_biterr,
+		uint8_t		fire_crc
+	} with { variant "" };
+
+	type record L1ctlFbsbConf {
+		int16_t		initial_freq_err,
+		uint8_t		result,
+		uint8_t		bsic
+	} with { variant "" };
+
+	type record L1ctlCcchModeConf {
+		L1ctlCcchMode	ccch_mode,
+		OCT3		padding
+	} with { variant "" };
+
+	/* gsm48_chan_mode */
+	type enumerated L1ctlTchMode {
+		L1CTL_CHAN_MODE_SIGN		('00000000'B),	/* Signalling */
+		L1CTL_CHAN_MODE_SPEECH_V1	('00000001'B),	/* FR or HR codec */
+		L1CTL_CHAN_MODE_SPEECH_V2	('00100001'B),	/* EFR codec */
+		L1CTL_CHAN_MODE_SPEECH_V3	('01000001'B),	/* AMR codec */
+		L1CTL_CHAN_MODE_DATA_14k5	('00001111'B),	/* CSD: TCH/F14.4 */
+		L1CTL_CHAN_MODE_DATA_12k0	('00000011'B),	/* CSD: TCH/F9.6 */
+		L1CTL_CHAN_MODE_DATA_6k0	('00001011'B),	/* CSD: TCH/{FH}4.8 */
+		L1CTL_CHAN_MODE_DATA_3k6	('00010011'B)	/* CSD: TCH/{FH}2.4 */
+	} with { variant "FIELDLENGTH(8)" };
+
+	type enumerated L1ctlLoopMode {
+		L1CTL_LOOP_MODE_OPEN		('00000000'B),
+		L1CTL_LOOP_MODE_A		('00000001'B),
+		L1CTL_LOOP_MODE_B		('00000010'B),
+		L1CTL_LOOP_MODE_C		('00000011'B),
+		L1CTL_LOOP_MODE_D		('00000100'B),
+		L1CTL_LOOP_MODE_E		('00000101'B),
+		L1CTL_LOOP_MODE_F		('00000110'B),
+		L1CTL_LOOP_MODE_I		('00000111'B)
+	} with { variant "FIELDLENGTH(8)" };
+
+	type record L1ctlAudioMode {
+		BIT4		padding,
+		boolean		tx_microphone,
+		boolean		tx_traffic_req,
+		boolean		rx_speaker,
+		boolean		rx_traffic_ind
+	} with { variant "" };
+
+	template (value) L1ctlAudioMode t_L1CTL_AudioModeNone := { '0000'B, false, false, false, false };
+
+	/* Traffic forwarding mode (see TRAFFIC.{req,cnf,ind} messages) */
+	template (value) L1ctlAudioMode t_L1CTL_AudioModeFwd
+	modifies t_L1CTL_AudioModeNone := {
+		tx_traffic_req := true,
+		rx_traffic_ind := true
+	};
+
+	type record L1ctlTchModeConf {
+		L1ctlTchMode	tch_mode,
+		L1ctlAudioMode	audio_mode,
+		record {
+			uint8_t	start_codec,
+			BIT8	codecs_bitmask
+		} amr
+	} with { variant "" };
+
+	type record L1ctlDataInd {
+		octetstring	payload
+	} with {
+		variant (payload) "BYTEORDER(first)"
+	};
+
+
+	type record L1ctlUlInfo {
+		RslChannelNr	chan_nr,
+		RslLinkId	link_id,
+		OCT2		padding
+	} with { variant "" };
+
+	type record L1ctlFbsbFlags {
+		BIT5		padding,
+		boolean		sb,
+		boolean		fb1,
+		boolean		fb0
+	} with { variant "FIELDORDER(msb)" };
+
+	template (value) L1ctlFbsbFlags t_L1CTL_FBSB_F_ALL := {
+		padding := '00000'B,
+		sb := true,
+		fb1 := true,
+		fb0 := true
+	};
+
+	type record L1ctlFbsbReq {
+		GsmBandArfcn	arfcn,
+		uint16_t	timeout_tdma_frames,
+		uint16_t	freq_err_thresh1,
+		uint16_t	freq_err_thresh2,
+		uint8_t		num_freqerr_avg,
+		L1ctlFbsbFlags	flags,
+		uint8_t		sync_info_idx,
+		L1ctlCcchMode	ccch_mode,
+		GsmRxLev	rxlev_exp
+	} with { variant "" };
+
+	type record L1ctlCcchModeReq {
+		L1ctlCcchMode	ccch_mode,
+		OCT3		padding
+	} with { variant "" };
+
+	type record L1ctlTchModeReq {
+		L1ctlTchMode	tch_mode,
+		L1ctlAudioMode	audio_mode,
+		L1ctlLoopMode	loop_mode,
+		record {
+			uint8_t	start_codec,
+			BIT8	codecs_bitmask
+		} amr
+	} with { variant "" };
+
+	type record L1ctlRachReq {
+		uint8_t		ra,
+		uint8_t		combined,
+		uint16_t	offset
+	} with { variant "" };
+
+	type enumerated L1ctlRachSynchSeq {
+		RACH_SYNCH_SEQ_TS0 (0),
+		RACH_SYNCH_SEQ_TS1,
+		RACH_SYNCH_SEQ_TS2
+	} with { variant "FIELDLENGTH(8)" };
+
+	type record L1ctlExtRachReq {
+		uint16_t		ra11,
+		L1ctlRachSynchSeq	synch_seq,
+		uint8_t			combined,
+		uint16_t		offset
+	} with { variant "" };
+
+	type record L1ctlParReq {
+		int8_t		ta,
+		uint8_t		tx_power,
+		OCT2		padding
+	} with { variant "" };
+
+	type record L1ctlDataReq {
+		SacchL1Header	l1header optional,
+		octetstring	l2_payload
+	} with { variant "" };
+
+	type record L1ctlH0 {
+		uint8_t		h,
+		GsmBandArfcn	arfcn,
+		octetstring	padding length(130)
+	} with { variant "" };
+
+	type record length(0..64) of GsmBandArfcn L1ctlMA;
+	type record L1ctlH1 {
+		uint8_t		h,
+		uint8_t		hsn,
+		uint8_t		maio,
+		uint8_t		n,
+		OCT1		spare,
+		L1ctlMA		ma,
+		octetstring	padding
+	} with {
+		variant (n) "LENGTHTO(ma)"
+		variant (n) "UNIT(elements)"
+		/* See https://bugs.eclipse.org/bugs/show_bug.cgi?id=562849.
+		 * TL;DR The reference point of the PADDING attribute is the beginning
+		 * of the message, not the beginning of the type/field it's applied on.
+		 * Therefore we cannot use it here, and have to add padding manually.
+		 * variant (ma) "PADDING(128)" */
+	};
+
+	type union L1ctlH0H1 {
+		L1ctlH0		h0,
+		L1ctlH1		h1
+	} with { variant "TAG(h0, h = 0; h1, h = 1)" };
+
+	type record L1ctlDmEstReq {
+		GsmTsc		tsc,
+		L1ctlH0H1	h0h1,
+		L1ctlTchMode	tch_mode,
+		L1ctlAudioMode	audio_mode
+	} with { variant "" };
+
+	type record L1ctlReset {
+		L1ctlResetType	reset_type,
+		OCT3		padding
+	} with { variant "" };
+
+	type record L1CtlCryptoReq {
+		uint8_t		algo,
+		uint8_t		key_len,
+		octetstring	key
+	} with { variant (key_len) "LENGTHTO(key)" };
+
+
+	type record L1ctlTrafficReq {
+		octetstring	data
+	} with {
+		variant (data) "BYTEORDER(first)"
+	}
+
+
+	/* payload of L1CTL_GPRS_UL_TBF_CFG_REQ */
+	type record L1ctlGprsUlTbfCfgReq {
+		uint8_t			tbf_ref,
+		BIT8			slotmask,
+		OCT2			pad ('0000'O),
+		uint32_t		start_fn /* TBF Starting Time (absolute Fn) */
+	} with { variant (slotmask) "BITORDER(msb)" };
+
+	/* payload of L1CTL_GPRS_DL_TBF_CFG_REQ */
+	type record L1ctlGprsDlTbfCfgReq {
+		uint8_t			tbf_ref,
+		BIT8			slotmask,
+		uint8_t			dl_tfi,
+		OCT1			pad ('00'O),
+		uint32_t		start_fn /* TBF Starting Time (absolute Fn) */
+	} with { variant (slotmask) "BITORDER(msb)" };
+
+	/* part of L1CTL_GPRS_{UL,DL}_BLOCK_{REQ,IND} */
+	type record L1ctlGprsBlockHdr {
+		uint32_t		fn,
+		uint8_t			tn,
+		OCT3			pad ('000000'O)
+	} with { variant "" };
+
+	/* payload of L1CTL_GPRS_UL_BLOCK_REQ */
+	type record L1ctlGprsUlBlockReq {
+		L1ctlGprsBlockHdr	hdr,
+		octetstring		data
+	} with { variant (data) "BYTEORDER(first)" };
+
+	/* payload of L1CTL_GPRS_UL_BLOCK_CNF */
+	type record L1ctlGprsUlBlockCnf {
+		uint32_t		fn,
+		uint8_t			tn,
+		octetstring		data
+	} with { variant "" };
+
+	/* payload of L1CTL_GPRS_DL_BLOCK_IND */
+	type record L1ctlGprsDlBlockInd {
+		L1ctlGprsBlockHdr	hdr,
+		record {
+			uint16_t	ber10k,		/* Bit Error Rate */
+			int16_t		ci_cb,		/* C/I in centiBels */
+			uint8_t		rx_level	/* RxLev 0..63 */
+		} meas,
+		uint8_t			usf,
+		octetstring		data
+	} with { variant (data) "BYTEORDER(first)" };
+
+	/* payload of L1CTL_GPRS_RTS_IND */
+	type record L1ctlGprsRtsInd {
+		uint32_t		fn,
+		uint8_t			tn,
+		uint8_t			usf
+	} with { variant "" };
+
+
+	type union L1ctlMsgPayload {
+		L1ctlFbsbReq		fbsb_req,
+		L1ctlFbsbConf		fbsb_conf,
+		L1ctlDataInd		data_ind,
+		L1ctlRachReq		rach_req,
+		L1ctlDmEstReq		dm_est_req,
+		L1ctlDataReq		data_req,
+		/* TODO: L1CTL_RESET_IND */
+		/* TODO: L1CTL_PM_REQ */
+		/* TODO: L1CTL_PM_CONF */
+		L1ctlReset		reset_req,
+		L1ctlCcchModeReq	ccch_mode_req,
+		L1ctlCcchModeConf	ccch_mode_conf,
+		L1ctlParReq		par_req,
+		/* TODO: L1CTL_DM_FREQ_REQ */
+		L1CtlCryptoReq		crypto_req,
+		/* TODO: L1CTL_SIM_REQ */
+		/* TODO: L1CTL_SIM_CONF */
+		L1ctlTchModeReq		tch_mode_req,
+		L1ctlTchModeConf	tch_mode_conf,
+		/* TODO: L1CTL_NEIGH_PM_REQ */
+		/* TODO: L1CTL_NEIGH_PM_IND */
+		L1ctlTrafficReq		traffic_req,
+		L1ctlTrafficReq		traffic_ind,
+		/* TODO: L1CTL_BURST_IND */
+		L1ctlGprsUlTbfCfgReq	ul_tbf_cfg_req,
+		L1ctlGprsDlTbfCfgReq	dl_tbf_cfg_req,
+		L1ctlGprsUlBlockReq	ul_block_req,
+		L1ctlGprsUlBlockCnf	ul_block_cnf,
+		L1ctlGprsDlBlockInd	dl_block_ind,
+		L1ctlExtRachReq		ext_rach_req,
+		L1ctlGprsRtsInd		rts_ind,
+		octetstring		other
+	} with {
+		variant (other) "BYTEORDER(first)"
+	};
+
+	type record L1ctlMessage {
+		L1ctlHeader	header,
+		L1ctlUlInfo	ul_info optional,
+		L1ctlDlInfo	dl_info optional,
+		L1ctlMsgPayload	payload optional
+	} with { variant (ul_info) "PRESENCE(header.msg_type = L1CTL_RACH_REQ,
+					     header.msg_type = L1CTL_EXT_RACH_REQ,
+					     header.msg_type = L1CTL_PARAM_REQ,
+					     header.msg_type = L1CTL_CRYPTO_REQ,
+					     header.msg_type = L1CTL_DATA_REQ,
+					     header.msg_type = L1CTL_DM_EST_REQ,
+					     header.msg_type = L1CTL_DM_FREQ_REQ,
+					     header.msg_type = L1CTL_DM_REL_REQ,
+					     header.msg_type = L1CTL_TRAFFIC_REQ)"
+		 variant (dl_info) "PRESENCE(header.msg_type = L1CTL_FBSB_CONF,
+					     header.msg_type = L1CTL_RACH_CONF,
+					     header.msg_type = L1CTL_DATA_IND,
+					     header.msg_type = L1CTL_DATA_CONF,
+					     header.msg_type = L1CTL_TRAFFIC_IND,
+					     header.msg_type = L1CTL_TRAFFIC_CONF)"
+		 variant (payload) "CROSSTAG(fbsb_req, header.msg_type = L1CTL_FBSB_REQ;
+					     fbsb_conf, header.msg_type = L1CTL_FBSB_CONF;
+					     data_ind, header.msg_type = L1CTL_DATA_IND;
+					     rach_req, header.msg_type = L1CTL_RACH_REQ;
+					     dm_est_req, header.msg_type = L1CTL_DM_EST_REQ;
+					     data_req, header.msg_type = L1CTL_DATA_REQ;
+					     /* TODO: reset_ind, header.msg_type = L1CTL_RESET_IND */
+					     /* TODO: pm_req, header.msg_type = L1CTL_PM_REQ */
+					     /* TODO: pm_conf, header.msg_type = L1CTL_PM_CONF */
+					     reset_req, header.msg_type = L1CTL_RESET_REQ;
+					     ccch_mode_req, header.msg_type = L1CTL_CCCH_MODE_REQ;
+					     ccch_mode_conf, header.msg_type = L1CTL_CCCH_MODE_CONF;
+					     par_req, header.msg_type = L1CTL_PARAM_REQ;
+					     /* TODO: freq_req, header.msg_type = L1CTL_DM_FREQ_REQ */
+					     crypto_req, header.msg_type = L1CTL_CRYPTO_REQ;
+					     /* TODO: sim_req, header.msg_type = L1CTL_SIM_REQ */
+					     /* TODO: sim_conf, header.msg_type = L1CTL_SIM_CONF */
+					     tch_mode_req, header.msg_type = L1CTL_TCH_MODE_REQ;
+					     tch_mode_conf, header.msg_type = L1CTL_TCH_MODE_CONF;
+					     /* TODO: neigh_pm_req, header.msg_type = L1CTL_NEIGH_PM_REQ */
+					     /* TODO: neigh_pm_ind, header.msg_type = L1CTL_NEIGH_PM_IND */
+					     traffic_req, header.msg_type = L1CTL_TRAFFIC_REQ;
+					     traffic_ind, header.msg_type = L1CTL_TRAFFIC_IND;
+					     /* TODO: burst_ind, header.msg_type = L1CTL_BURST_IND */
+					     ul_tbf_cfg_req, header.msg_type = L1CTL_GPRS_UL_TBF_CFG_REQ;
+					     dl_tbf_cfg_req, header.msg_type = L1CTL_GPRS_DL_TBF_CFG_REQ;
+					     ul_block_req, header.msg_type = L1CTL_GPRS_UL_BLOCK_REQ;
+					     ul_block_cnf, header.msg_type = L1CTL_GPRS_UL_BLOCK_CNF;
+					     dl_block_ind, header.msg_type = L1CTL_GPRS_DL_BLOCK_IND;
+					     ext_rach_req, header.msg_type = L1CTL_EXT_RACH_REQ;
+					     rts_ind, header.msg_type = L1CTL_GPRS_RTS_IND;
+					     other, OTHERWISE;
+				)" };
+
+	external function enc_L1ctlMessage(in L1ctlMessage msg) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_L1ctlMessage(in octetstring stream) return L1ctlMessage
+		with { extension "prototype(convert) decode(RAW)" };
+
+	type record L1ctlMessageLV {
+		uint16_t	len,
+		L1ctlMessage	msg
+	} with { variant (len) "LENGTHTO(msg)" };
+
+	external function enc_L1ctlMessageLV(in L1ctlMessageLV msg) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_L1ctlMessageLV(in octetstring stream) return L1ctlMessageLV
+		with { extension "prototype(convert) decode(RAW)" };
+
+
+
+	/* for generating RESET_REQ */
+	template (value) L1ctlMessage
+	t_L1ctlResetReq(template (value) L1ctlResetType rst_type) := {
+		header := ts_L1ctlHeader(L1CTL_RESET_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			reset_req := {
+				reset_type := rst_type,
+				padding := '000000'O
+			}
+		}
+	};
+
+	/* for generating FBSB_REQ */
+	template (value) L1ctlMessage
+	ts_L1CTL_FBSB_REQ(template (value) GsmBandArfcn arfcn,
+			  template (value) L1ctlFbsbFlags flags,
+			  template (value) uint8_t sync_info_idx,
+			  template (value) L1ctlCcchMode ccch_mode,
+			  template (value) GsmRxLev rxlev_exp) := {
+		header := ts_L1ctlHeader(L1CTL_FBSB_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			fbsb_req := {
+				arfcn := arfcn,
+				timeout_tdma_frames := 250, /* about 1s */
+				freq_err_thresh1 := 10000,
+				freq_err_thresh2 := 800,
+				num_freqerr_avg := 3,
+				flags := flags,
+				sync_info_idx := sync_info_idx,
+				ccch_mode := ccch_mode,
+				rxlev_exp := rxlev_exp
+			}
+		}
+	};
+
+	/* for matching against incoming FBSB_CONF */
+	template L1ctlMessage
+	tr_L1CTL_FBSB_CONF(template (present) uint8_t result) := {
+		header := tr_L1ctlHeader(L1CTL_FBSB_CONF),
+		ul_info := omit,
+		dl_info := ?,
+		payload := {
+			fbsb_conf := {
+				initial_freq_err := ?,
+				result := result,
+				bsic := ?
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_CCCH_MODE_REQ(template (value) L1ctlCcchMode ccch_mode) := {
+		header := ts_L1ctlHeader(L1CTL_CCCH_MODE_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			ccch_mode_req := {
+				ccch_mode := ccch_mode,
+				padding := '000000'O
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_TCH_MODE_REQ(template (value) L1ctlTchMode tch_mode := L1CTL_CHAN_MODE_SIGN,
+			      template (value) L1ctlAudioMode audio_mode := t_L1CTL_AudioModeFwd,
+			      template (value) L1ctlLoopMode loop_mode := L1CTL_LOOP_MODE_OPEN,
+			      template (value) uint8_t amr_start_codec := 0,
+			      template (value) BIT8 amr_codecs_bitmask := '00000000'B) := {
+		header := ts_L1ctlHeader(L1CTL_TCH_MODE_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			tch_mode_req := {
+				tch_mode := tch_mode,
+				audio_mode := audio_mode,
+				loop_mode := loop_mode,
+				amr := {
+					start_codec := amr_start_codec,
+					codecs_bitmask := amr_codecs_bitmask
+				}
+			}
+		}
+	};
+
+
+	template L1ctlMessage
+	tr_L1CTL_MsgType(template (present) L1ctlMsgType msg_type) := {
+		header := tr_L1ctlHeader(msg_type),
+		ul_info := *,
+		dl_info := *,
+		payload := *
+	}
+
+	template L1ctlMessage tr_L1CTL_CCCH_MODE_CONF := tr_L1CTL_MsgType(L1CTL_CCCH_MODE_CONF);
+
+	template (value) L1ctlMessage
+	ts_L1CTL_RACH_REQ(template (value) uint8_t ra,
+			  template (value) uint8_t combined,
+			  template (value) uint16_t offset,
+			  template (value) RslChannelNr chan_nr := ts_RslChanNr_RACH(0),
+			  template (value) RslLinkId link_id := ts_RslLinkID_DCCH(0)) := {
+		header := ts_L1ctlHeader(L1CTL_RACH_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			rach_req := {
+				ra := ra,
+				combined := combined,
+				offset := offset
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_EXT_RACH_REQ(template (value) uint16_t ra11,
+			      template (value) L1ctlRachSynchSeq seq,
+			      template (value) uint8_t combined,
+			      template (value) uint16_t offset) := {
+		header := ts_L1ctlHeader(L1CTL_EXT_RACH_REQ),
+		ul_info := {
+			/* FIXME: both RSL chan_nr and link_id should be configurable */
+			chan_nr := ts_RslChanNr_RACH(0),
+			link_id := ts_RslLinkID_DCCH(0),
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			ext_rach_req := {
+				ra11 := ra11,
+				synch_seq := seq,
+				combined := combined,
+				offset := offset
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_PAR_REQ(template (value) uint8_t ta,
+			 template (value) uint8_t tx_power) := {
+		header := ts_L1ctlHeader(L1CTL_PARAM_REQ),
+		ul_info := {
+			chan_nr := ts_RslChanNr_RACH(0),
+			link_id := ts_RslLinkID_DCCH(0),
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			par_req := {
+				ta := ta,
+				tx_power := tx_power,
+				padding := '0000'O
+			}
+		}
+	}
+
+	/* Base template to be inherited by ts_L1CTL_DM_EST_REQ_H0 and ts_L1CTL_DM_EST_REQ_H1 */
+	private template (value) L1ctlMessage
+	ts_L1CTL_DM_EST_REQ(template (value) RslChannelNr chan_nr,
+			    template (value) GsmTsc tsc) := {
+		header := ts_L1ctlHeader(L1CTL_DM_EST_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := ts_RslLinkID_DCCH(0),
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			dm_est_req := {
+				tsc := tsc,
+				h0h1 := -,
+				tch_mode := L1CTL_CHAN_MODE_SIGN,
+				audio_mode := t_L1CTL_AudioModeFwd
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_DM_EST_REQ_H0(template (value) RslChannelNr chan_nr,
+			       template (value) GsmTsc tsc,
+			       template (value) GsmArfcn arfcn)
+	modifies ts_L1CTL_DM_EST_REQ := {
+		payload := {
+			dm_est_req := {
+				h0h1 := {
+					h0 := {
+						h := 0,
+						arfcn := ts_GsmBandArfcn(arfcn),
+						padding := f_pad_oct(''O, 130, '00'O)
+					}
+				}
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_DM_EST_REQ_H1(template (value) RslChannelNr chan_nr,
+			       template (value) GsmTsc tsc,
+			       template (value) uint6_t hsn,
+			       template (value) uint6_t maio,
+			       template (value) L1ctlMA ma)
+	modifies ts_L1CTL_DM_EST_REQ := {
+		payload := {
+			dm_est_req := {
+				h0h1 := {
+					h1 := {
+						h := 1,
+						hsn := hsn,
+						maio := maio,
+						n := sizeof(ma),
+						spare := '00'O,
+						ma := ma,
+						/* See https://bugs.eclipse.org/bugs/show_bug.cgi?id=562849 */
+						padding := f_pad_oct(''O, (64 - sizeof(ma)) * 2, '00'O)
+					}
+				}
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_DM_REL_REQ(template (value) RslChannelNr chan_nr) := {
+		header := ts_L1ctlHeader(L1CTL_DM_REL_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := ts_RslLinkID_DCCH(0),
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := omit
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_DATA_REQ(template (value) RslChannelNr chan_nr,
+			  template (value) RslLinkId link_id,
+			  octetstring l2_data) := {
+		header := ts_L1ctlHeader(L1CTL_DATA_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			data_req := {
+				l1header := omit,
+				l2_payload := l2_data
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_DATA_REQ_SACCH(template (value) RslChannelNr chan_nr,
+				template (value) RslLinkId link_id,
+				template (value) SacchL1Header l1h,
+				octetstring l2_data) := {
+		header := ts_L1ctlHeader(L1CTL_DATA_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			data_req := {
+				l1header := l1h,
+				l2_payload := l2_data
+			}
+		}
+	}
+
+	template (value) L1ctlMessage
+	ts_L1CTL_TRAFFIC_REQ(template (value) RslChannelNr chan_nr,
+			     template (value) RslLinkId link_id,
+			     octetstring frame) := {
+		header := ts_L1ctlHeader(L1CTL_TRAFFIC_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			traffic_req := {
+				data := frame
+			}
+		}
+	};
+
+	/* for matching against incoming RACH_CONF */
+	template L1ctlMessage tr_L1CTL_RACH_CONF := {
+		header := tr_L1ctlHeader(L1CTL_RACH_CONF),
+		ul_info := omit,
+		dl_info := ?,
+		payload := *
+	};
+
+	/* for sending and matching L1CTL_DATA_IND */
+	template (value) L1ctlMessage
+	ts_L1CTL_DATA_IND(template (value) RslChannelNr chan_nr,
+			  template (value) RslLinkId link_id,
+			  template (value) octetstring l2_data,
+			  template (value) GsmBandArfcn arfcn,
+			  template (value) uint32_t fn := 1337,
+			  template (value) GsmRxLev rx_level := 63,
+			  template (value) uint8_t num_biterr := 0,
+			  template (value) uint8_t fire_crc := 0) := {
+		header := ts_L1ctlHeader(L1CTL_DATA_IND),
+		ul_info := omit,
+		dl_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			arfcn := arfcn,
+			frame_nr := fn,
+			rx_level := rx_level,
+			snr := 0,
+			num_biterr := num_biterr,
+			fire_crc := fire_crc
+		},
+		payload := {
+			data_ind := {
+				payload := l2_data
+			}
+		}
+	};
+	template L1ctlMessage
+	tr_L1CTL_DATA_IND(template (present) RslChannelNr chan_nr,
+			  template (present) RslLinkId link_id := ?,
+			  template (present) octetstring l2_data := ?,
+			  template (present) uint8_t num_biterr := 0,
+			  template (present) uint8_t fire_crc := 0) := {
+		header := tr_L1ctlHeader(L1CTL_DATA_IND),
+		ul_info := omit,
+		dl_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			arfcn := ?,
+			frame_nr := ?,
+			rx_level := ?,
+			snr := ?,
+			num_biterr := num_biterr,
+			fire_crc := fire_crc
+		},
+		payload := {
+			data_ind := {
+				payload := l2_data
+			}
+		}
+	};
+
+	/* for sending and matching L1CTL_DATA_CONF */
+	template (value) L1ctlMessage
+	ts_L1CTL_DATA_CONF(template (value) RslChannelNr chan_nr,
+			   template (value) RslLinkId link_id,
+			   template (value) GsmBandArfcn arfcn,
+			   template (value) GsmFrameNumber fn) := {
+		header := ts_L1ctlHeader(L1CTL_DATA_CONF),
+		ul_info := omit,
+		dl_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			arfcn := arfcn,
+			frame_nr := fn,
+			rx_level := 0,
+			snr := 0,
+			num_biterr := 0,
+			fire_crc := 0
+		},
+		payload := omit
+	};
+	template L1ctlMessage
+	tr_L1CTL_DATA_CONF(template (present) RslChannelNr chan_nr,
+			   template (present) RslLinkId link_id := ?,
+			   template (present) GsmBandArfcn arfcn := ?,
+			   template (present) GsmFrameNumber fn := ?) := {
+		header := tr_L1ctlHeader(L1CTL_DATA_CONF),
+		ul_info := omit,
+		dl_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			arfcn := arfcn,
+			frame_nr := fn,
+			rx_level := ?,
+			snr := ?,
+			num_biterr := ?,
+			fire_crc := ?
+		},
+		payload := omit
+	};
+
+	/* for sending and matching L1CTL_TRAFFIC_CONF */
+	template (value) L1ctlMessage
+	ts_L1CTL_TRAFFIC_CONF(template (value) RslChannelNr chan_nr,
+			      template (value) RslLinkId link_id,
+			      template (value) GsmBandArfcn arfcn,
+			      template (value) GsmFrameNumber fn)
+	modifies ts_L1CTL_DATA_CONF := {
+		header := ts_L1ctlHeader(L1CTL_TRAFFIC_CONF)
+	};
+	template L1ctlMessage
+	tr_L1CTL_TRAFFIC_CONF(template (present) RslChannelNr chan_nr,
+			      template (present) RslLinkId link_id := ?,
+			      template (present) GsmBandArfcn arfcn := ?,
+			      template (present) GsmFrameNumber fn := ?)
+	modifies tr_L1CTL_DATA_CONF := {
+		header := tr_L1ctlHeader(L1CTL_TRAFFIC_CONF)
+	};
+
+	/* for matching against incoming TRAFFIC_IND */
+	template L1ctlMessage
+	tr_L1CTL_TRAFFIC_IND(template (present) RslChannelNr chan_nr,
+			     template (present) RslLinkId link_id := ?,
+			     template (present) octetstring frame := ?,
+			     template (present) uint8_t num_biterr := ?,
+			     template (present) uint8_t fire_crc := ?) := {
+		header := tr_L1ctlHeader(L1CTL_TRAFFIC_IND),
+		ul_info := omit,
+		dl_info := {
+			chan_nr := chan_nr,
+			link_id := link_id,
+			arfcn := ?,
+			frame_nr := ?,
+			rx_level := ?,
+			snr := ?,
+			num_biterr := num_biterr,
+			fire_crc := fire_crc
+		},
+		payload := {
+			traffic_ind := {
+				data := frame
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_CRYPTO_REQ(template (value) RslChannelNr chan_nr,
+			    template (value) uint8_t algo,
+			    template (value) octetstring key) := {
+		header := ts_L1ctlHeader(L1CTL_CRYPTO_REQ),
+		ul_info := {
+			chan_nr := chan_nr,
+			link_id := ts_RslLinkID_DCCH(0),
+			padding := '0000'O
+		},
+		dl_info := omit,
+		payload := {
+			crypto_req := {
+				algo := algo,
+				key_len := 0, /* overwritten */
+				key := key
+			}
+		}
+	};
+
+
+	template (value) L1ctlMessage
+	ts_L1CTL_GPRS_UL_TBF_CFG_REQ(template (value) uint8_t tbf_ref,
+				     template (value) BIT8 slotmask := '00000000'B,
+				     template (value) uint32_t start_fn := c_UINT32_MAX) := {
+		header := ts_L1ctlHeader(L1CTL_GPRS_UL_TBF_CFG_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			ul_tbf_cfg_req := {
+				tbf_ref := tbf_ref,
+				slotmask := slotmask,
+				pad := '0000'O,
+				start_fn := start_fn
+			}
+		}
+	};
+	template L1ctlMessage
+	tr_L1CTL_GPRS_UL_TBF_CFG_REQ(template (present) uint8_t tbf_ref := ?,
+				     template (present) BIT8 slotmask := ?,
+				     template (present) uint32_t start_fn := ?) := {
+		header := tr_L1ctlHeader(L1CTL_GPRS_UL_TBF_CFG_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			ul_tbf_cfg_req := {
+				tbf_ref := tbf_ref,
+				slotmask := slotmask,
+				pad := ?,
+				start_fn := start_fn
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_GPRS_DL_TBF_CFG_REQ(template (value) uint8_t tbf_ref,
+				     template (value) BIT8 slotmask := '00000000'B,
+				     template (value) uint32_t start_fn := c_UINT32_MAX,
+				     template (value) uint5_t dl_tfi := 0) := {
+		header := ts_L1ctlHeader(L1CTL_GPRS_DL_TBF_CFG_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			dl_tbf_cfg_req := {
+				tbf_ref := tbf_ref,
+				slotmask := slotmask,
+				dl_tfi := dl_tfi,
+				pad := '00'O,
+				start_fn := start_fn
+			}
+		}
+	};
+	template L1ctlMessage
+	tr_L1CTL_GPRS_DL_TBF_CFG_REQ(template (present) uint8_t tbf_ref := ?,
+				     template (present) BIT8 slotmask := ?,
+				     template (present) uint32_t start_fn := ?,
+				     template (present) uint5_t dl_tfi := ?) := {
+		header := tr_L1ctlHeader(L1CTL_GPRS_DL_TBF_CFG_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			dl_tbf_cfg_req := {
+				tbf_ref := tbf_ref,
+				slotmask := slotmask,
+				dl_tfi := dl_tfi,
+				pad := ?,
+				start_fn := start_fn
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_GPRS_UL_BLOCK_REQ(template (value) GsmFrameNumber fn,
+				   template (value) uint3_t tn,
+				   template (value) octetstring data) := {
+		header := ts_L1ctlHeader(L1CTL_GPRS_UL_BLOCK_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			ul_block_req := {
+				hdr := {
+					fn := fn,
+					tn := tn,
+					pad := '000000'O
+				},
+				data := data
+			}
+		}
+	};
+	template L1ctlMessage
+	tr_L1CTL_GPRS_UL_BLOCK_REQ(template (present) GsmFrameNumber fn := ?,
+				   template (present) uint3_t tn := ?,
+				   template (present) octetstring data := ?) := {
+		header := tr_L1ctlHeader(L1CTL_GPRS_UL_BLOCK_REQ),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			ul_block_req := {
+				hdr := {
+					fn := fn,
+					tn := tn,
+					pad := ?
+				},
+				data := data
+			}
+		}
+	};
+
+	template (value) L1ctlMessage
+	ts_L1CTL_GPRS_DL_BLOCK_IND(template (value) GsmFrameNumber fn,
+				   template (value) uint3_t tn,
+				   template (value) uint3_t usf,
+				   template (value) octetstring data,
+				   template (value) uint16_t ber10k := 0,
+				   template (value) int16_t ci_cb := 180 /* 18 dB */,
+				   template (value) GsmRxLev rx_level := 63) := {
+		header := ts_L1ctlHeader(L1CTL_GPRS_DL_BLOCK_IND),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			dl_block_ind := {
+				hdr := {
+					fn := fn,
+					tn := tn,
+					pad := '000000'O
+				},
+				meas := {
+					ber10k := ber10k,
+					ci_cb := ci_cb,
+					rx_level := rx_level
+				},
+				usf := usf,
+				data := data
+			}
+		}
+	};
+	template L1ctlMessage
+	tr_L1CTL_GPRS_DL_BLOCK_IND(template (present) GsmFrameNumber fn := ?,
+				   template (present) uint3_t tn := ?,
+				   template (present) uint3_t usf := ?,
+				   template (present) octetstring data := ?,
+				   template (present) uint16_t ber10k := ?,
+				   template (present) int16_t ci_cb := ?,
+				   template (present) GsmRxLev rx_level := ?) := {
+		header := tr_L1ctlHeader(L1CTL_GPRS_DL_BLOCK_IND),
+		ul_info := omit,
+		dl_info := omit,
+		payload := {
+			dl_block_ind := {
+				hdr := {
+					fn := fn,
+					tn := tn,
+					pad := ?
+				},
+				meas := {
+					ber10k := ber10k,
+					ci_cb := ci_cb,
+					rx_level := rx_level
+				},
+				usf := usf,
+				data := data
+			}
+		}
+	};
+
+	const octetstring c_DummyUI := '0303012B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B'O;
+
+/* We use "BYTEORDER(last)" so we get little-endian integers.  Unfortuantely, this also
+   switches the byte ordering in octet strings, so we need to explicitly annotate them :/ */
+} with { encode "RAW" };

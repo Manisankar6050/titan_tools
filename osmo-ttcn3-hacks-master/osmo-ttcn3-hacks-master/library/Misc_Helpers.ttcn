@@ -1,0 +1,137 @@
+module Misc_Helpers {
+
+import from Native_Functions all;
+import from TCCConversion_Functions all;
+
+modulepar {
+	charstring mp_osmo_repo := "nightly";
+}
+
+/* Test the Osmocom repository (nightly, latest, 2021q4, ...), from which the
+ * SUT is running (OS#4878). Usage examples:
+ * 	if (Misc_Helpers.f_osmo_repo_is("nightly")) {
+ * 		...
+ * 	}
+ * 	if (Misc_Helpers.f_osmo_repo_is(("nightly", "2021q4"))) {
+ * 		...
+ * 	}
+ */
+function f_osmo_repo_is(template charstring ver) return boolean {
+	return match(mp_osmo_repo, ver);
+}
+
+/* Try to properly shutdown a testcase.
+ * The reliable method to stop a testcase without running into dynamic
+ * testcase errors due to unconnected ports receiving messages is to call
+ * all component.stop before terminating. However, this can only be called
+ * from the mtc! So in case we want to terminate from a component that is not
+ * the mtc we try to do the next best thing which is calling mtc.stop and
+ * hoping for the best.
+ */
+function f_shutdown(charstring file, integer line, verdicttype verdict := none,
+			charstring text := "") {
+	if (verdict != none) {
+		text := file & ":" & int2str(line) & " : " & text
+		setverdict(verdict, text);
+	}
+
+	log("Stopping testcase execution from ", file, ":", line)
+	if (self == mtc) {
+		/* Properly stop all ports before disconnecting them. This avoids
+		 * running into the dynamic testcase error due to messages arriving on
+		 * unconnected ports. */
+		all component.stop;
+	}
+	mtc.stop
+}
+
+function f_addr_is_ipv6(charstring addr) return boolean {
+	for (var integer i := 0; i < lengthof(addr); i := i + 1) {
+		if (addr[i] == ":") {
+			return true;
+		}
+	}
+	return false;
+}
+
+function f_addrstr2addr(charstring addr) return octetstring {
+	if (f_addr_is_ipv6(addr)) {
+		return f_inet6_addr(addr);
+	} else {
+		return f_inet_addr(addr);
+	}
+}
+
+/* Return a count of how many times sub_str occurs in str. */
+function f_strstr_count(in charstring str, in charstring sub_str) return integer
+{
+	var integer count := 0;
+	var integer pos := 0;
+
+	while (true) {
+		var integer at := f_strstr(str, sub_str, pos);
+		if (at < 0) {
+			break;
+		}
+		count := count + 1;
+		pos := at + 1;
+	}
+	return count;
+}
+
+/* Return true if str starts exactly with token: */
+function f_str_startswith(charstring str, charstring token) return boolean
+{
+	if (lengthof(str) < lengthof(token)) {
+		return false;
+	}
+	var charstring str_start := substr(str, 0, lengthof(token));
+	return str_start == token;
+}
+
+/* Return true if str ends exactly with token: */
+function f_str_endswith(charstring str, charstring token) return boolean
+{
+	if (lengthof(str) < lengthof(token)) {
+		return false;
+	}
+	var charstring str_end := substr(str, lengthof(str) - lengthof(token), lengthof(token));
+	return str_end == token;
+}
+
+/* Replace all matches of token "find" with "repl" in "str" */
+function f_str_replace(charstring str, charstring find, charstring repl) return charstring
+{
+	var integer pos := f_strstr(str, find, 0);
+	if (pos < 0) {
+		return str;
+	}
+	var charstring prefix := substr(str, 0, pos);
+	var integer suffix_pos := pos + lengthof(find);
+	var charstring suffix := substr(str, suffix_pos, lengthof(str) - suffix_pos);
+
+	var charstring new_str := prefix & repl & f_str_replace(suffix, find, repl);
+	return new_str;
+}
+
+type record of charstring ro_charstring;
+function f_str_split(charstring str, charstring delim := "\n") return ro_charstring
+{
+	var integer pos := 0;
+	var ro_charstring parts := {};
+	var integer delim_pos;
+	var integer end := lengthof(str);
+	while (pos < end) {
+		delim_pos := f_strstr(str, delim, pos);
+		if (delim_pos < 0) {
+			delim_pos := end;
+		}
+		if (delim_pos > pos) {
+			parts := parts & { substr(str, pos, delim_pos - pos) };
+		}
+		pos := delim_pos + lengthof(delim);
+	}
+	return parts;
+}
+
+}

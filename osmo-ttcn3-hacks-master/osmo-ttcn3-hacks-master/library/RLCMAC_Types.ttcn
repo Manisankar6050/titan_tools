@@ -1,0 +1,392 @@
+/* TITAN REW encode/decode definitions for 3GPP TS 44.060 RLC/MAC Blocks */
+
+/* (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module RLCMAC_Types {
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from GSM_Types all;
+	import from RLCMAC_CSN1_Types all;
+
+	/* TS 44.060 10.4.7 */
+	type enumerated MacPayloadType {
+		MAC_PT_RLC_DATA			('00'B),
+		MAC_PT_RLCMAC_NO_OPT		('01'B),
+		MAC_PT_RLCMAC_OPT		('10'B),
+		MAC_PT_RESERVED			('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+
+	/* TS 44.060 10.4.5 */
+	type enumerated MacRrbp {
+		RRBP_Nplus13_mod_2715648	('00'B),
+		RRBP_Nplus17_or_18_mod_2715648	('01'B),
+		RRBP_Nplus21_or_22_mod_2715648	('10'B),
+		RRBP_Nplus26_mod_2715648	('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+
+	type enumerated EgprsHeaderType {
+		RLCMAC_HDR_TYPE_1,
+		RLCMAC_HDR_TYPE_2,
+		RLCMAC_HDR_TYPE_3
+	};
+
+	type enumerated CodingScheme {
+		CS_1,
+		CS_2,
+		CS_3,
+		CS_4,
+		MCS_0,
+		MCS_1,
+		MCS_2,
+		MCS_3,
+		MCS_4,
+		MCS_5,
+		MCS_6,
+		MCS_7,
+		MCS_8,
+		MCS_9
+		//MCS5_7, ?
+		// MCS6_9 ?
+	};
+	type record of CodingScheme CodingSchemeArray;
+
+	/* Partof DL RLC data block and DL RLC/MAC ctrl block */
+	type record DlMacHeader {
+		MacPayloadType	payload_type,
+		MacRrbp		rrbp,
+		boolean		rrbp_valid,
+		uint3_t		usf
+	} with {
+		variant (rrbp_valid) "FIELDLENGTH(1)"
+	};
+
+	/* TS 44.060 10.4.10a */
+	type enumerated PowerReduction {
+		PWR_RED_0_to_3dB		('00'B),
+		PWR_RED_3_to_7dB		('01'B),
+		PWR_RED_7_to_10dB		('10'B),
+		PWR_RED_RESERVED		('11'B)
+	} with { variant "FIELDLENGTH(2)" };
+
+	/* TS 44.060 10.4.9d */
+	type enumerated DirectionBit {
+		DIR_UPLINK_TBF		('0'B),
+		DIR_DOWNLINK_TBF	('1'B)
+	} with { variant "FIELDLENGTH(1)" };
+
+	type record TfiOctet {
+		/* PR, TFI, D */
+		PowerReduction	pr,
+		uint5_t		tfi,
+		DirectionBit	d
+	} with { variant "" };
+
+	type record RbsnExtOctet {
+		uint3_t		rbsn_e,
+		BIT1		fs_e,
+		BIT4		spare
+	} with { variant "" };
+
+	type record DlCtrlOptOctets {
+		/* RBSN, RTI, FS, AC (optional, depending on mac_hdr.payload_type) */
+		BIT1		rbsn,
+		uint5_t		rti,
+		boolean		fs,
+		boolean		tfi_octet_present,
+		TfiOctet	tfi optional,
+		RbsnExtOctet	rbsn_ext optional
+	} with {
+		variant (fs) "FIELDLENGTH(1)"
+		variant (tfi_octet_present) "FIELDLENGTH(1)"
+		variant (tfi) "PRESENCE(tfi_octet_present = true)"
+		variant (rbsn_ext) "PRESENCE(rbsn='1'B, fs=false)"
+	};
+
+	/* TS 44.060 10.3.1 Downlink RLC/MAC control block */
+	type record RlcmacDlCtrlBlock {
+		DlMacHeader		mac_hdr,
+		DlCtrlOptOctets		opt optional,
+		RlcmacDlCtrlMsg		payload
+	} with {
+		/* Automatic padding by RAW encoder seems to causing problems
+		 * due to padding sequence 2b inserted shifted from octet
+		 * boundary on some messags. See UL CTRL blocks in TC_t3193.
+		 * See 3GPP TS 44.060 Figure 11.1 (below)
+		 * variant "PADDING(184), PADDING_PATTERN('00101011'B)" */
+		variant (opt) "PRESENCE(mac_hdr.payload_type = MAC_PT_RLCMAC_OPT)"
+	};
+
+	external function enc_RlcmacDlCtrlBlock(in RlcmacDlCtrlBlock si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_RlcmacDlCtrlBlock(in octetstring stream) return RlcmacDlCtrlBlock
+		with { extension "prototype(convert) decode(RAW)" };
+
+	type record UlMacCtrlHeader {
+		MacPayloadType		payload_type,
+		BIT5			spare,
+		boolean			retry
+	} with { variant (retry) "FIELDLENGTH(1)" };
+
+	/* TS 44.060 10.3.2 UplinkRLC/MAC control block */
+	type record RlcmacUlCtrlBlock {
+		UlMacCtrlHeader		mac_hdr,
+		RlcmacUlCtrlMsg		payload
+	} with {
+		/* Automatic padding by RAW encoder seems to causing problems
+		 * due to padding sequence 2b inserted shifted from octet
+		 * boundary on some messags. See UL CTRL blocks in TC_t3193.
+		 * See 3GPP TS 44.060 Figure 11.1 (below)
+		 * variant "PADDING(184), PADDING_PATTERN('00101011'B)" */
+		 variant ""
+		};
+
+	external function enc_RlcmacUlCtrlBlock(in RlcmacUlCtrlBlock si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_RlcmacUlCtrlBlock(in octetstring stream) return RlcmacUlCtrlBlock
+		with { extension "prototype(convert) decode(RAW)" };
+
+	/* a single RLC block / LLC-segment */
+	type record LlcBlockHdr {
+		uint6_t		length_ind,
+		/* 1 = new LLC PDU starts */
+		boolean		more,
+		/* 0 = another extension octet after LLC PDU, 1 = no more extension octets */
+		boolean		e
+	} with {
+		variant (e) "FIELDLENGTH(1)"
+		encode "RAW"
+	};
+
+	external function enc_LlcBlockHdr(in LlcBlockHdr si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_LlcBlockHdr(in octetstring stream) return LlcBlockHdr
+		with { extension "prototype(convert) decode(RAW)" };
+
+	type record LlcBlock {
+		/* Header is only present if LI field was present */
+		LlcBlockHdr	hdr optional,
+		octetstring 	payload
+	} with { variant "" };
+	type record of LlcBlock LlcBlocks;
+
+	/* TS 44.060 10.2.1 Downlink RLC data block */
+	type record DlMacHdrDataExt {
+		/* Octet 1 */
+		PowerReduction		pr,
+		BIT1			spare,
+		uint4_t			tfi, /* 3 or 4? */
+		boolean			fbi,
+		/* Octet 2 */
+		uint7_t			bsn,
+		boolean			e
+	} with {
+		variant (e) "FIELDLENGTH(1)"
+	};
+	type record DlMacDataHeader {
+		DlMacHeader		mac_hdr,
+		DlMacHdrDataExt		hdr_ext
+	} with { variant "" };
+	type record RlcmacDlDataBlock {
+		CodingScheme		cs, /* Provided by C++ Decoder */
+		DlMacDataHeader		mac_hdr,
+		/* Octet 3..M / N: manual C++ Decoder */
+		LlcBlocks		blocks
+	} with {
+		variant ""
+	};
+
+	external function enc_RlcmacDlDataBlock(in RlcmacDlDataBlock si) return octetstring;
+	external function dec_RlcmacDlDataBlock(in octetstring stream) return RlcmacDlDataBlock;
+
+
+	/* a single RLC block / LLC-segment */
+	type record EgprsLlcBlockHdr {
+		uint7_t		length_ind,
+		/* 0 = another extension octet after LLC PDU, 1 = no more extension octets */
+		boolean		e
+	} with {
+		variant (e) "FIELDLENGTH(1)"
+		encode "RAW"
+	};
+
+	external function enc_EgprsLlcBlockHdr(in EgprsLlcBlockHdr si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_EgprsLlcBlockHdr(in octetstring stream) return EgprsLlcBlockHdr
+		with { extension "prototype(convert) decode(RAW)" };
+
+	type record EgprsLlcBlock {
+		/* Header is only present if LI field was present */
+		EgprsLlcBlockHdr	hdr optional,
+		octetstring 		payload
+	} with { variant "" };
+	type record of EgprsLlcBlock EgprsLlcBlocks;
+
+	/* TS 44.060 10.3a.1.1 EGPRS downlink RLC data block, manual c++ encoder/decoder */
+	type record EgprsDlMacDataHeader {
+		EgprsHeaderType	header_type, /* Set internally by decoder */
+		uint5_t		tfi,
+		MacRrbp		rrbp,
+		BIT2		esp,
+		uint3_t		usf,
+		uint11_t	bsn1,
+		uint8_t		bsn2_offset,
+		uint2_t		pr, /* power reduction */
+		uint2_t		spb optional,
+		uint4_t		cps
+	} with { variant (spb) "PRESENCE(header_type=RLCMAC_HDR_TYPE_3)" };
+	/* Manual C++ Decoder: */
+	type record RlcmacDlEgprsDataBlock {
+		CodingScheme		mcs, /* Provided by C++ Decoder */
+		EgprsDlMacDataHeader	mac_hdr,
+		boolean			fbi,
+		boolean			e,
+		EgprsLlcBlocks		blocks
+	} with {
+		variant (fbi) "FIELDLENGTH(1)"
+		variant (e) "FIELDLENGTH(1)"
+	};
+
+	/* TS 44.060 10.2.2 */
+	type record UlMacDataHeader {
+		/* Octet 0 */
+		MacPayloadType		payload_type,
+		uint4_t			countdown,
+		boolean			stall_ind,
+		boolean			retry,
+		/* Octet 1 */
+		BIT1			spare,
+		boolean			pfi_ind,
+		uint5_t			tfi,
+		boolean			tlli_ind,
+		/* Octet 2 */
+		uint7_t			bsn,
+		boolean			e
+	} with {
+		variant (stall_ind)	"FIELDLENGTH(1)"
+		variant (retry)		"FIELDLENGTH(1)"
+		variant (pfi_ind)	"FIELDLENGTH(1)"
+		variant (tlli_ind)	"FIELDLENGTH(1)"
+		variant (e)		"FIELDLENGTH(1)"
+	};
+
+	type record RlcMacUlPfi {
+		uint7_t			pfi,
+		boolean			m
+	} with {
+		variant (m) "FIELDLENGTH(1)"
+	};
+
+	/* TS 44.060 10.3a.1.1 10.3a.4 EGPRS Uplink RLC/MAC header, manual c++ encoder/decoder */
+	type record EgprsUlMacDataHeader {
+		EgprsHeaderType	header_type, /* Set internally by decoder */
+		uint5_t		tfi,
+		uint4_t		countdown,
+		BIT1		foi_si,
+		BIT1		r_ri,
+		uint11_t	bsn1,
+		uint8_t		bsn2_offset,
+		uint4_t		cps,
+		boolean		pfi_ind,
+		BIT1		rsb,
+		BIT2		spb optional
+	} with {
+		variant (pfi_ind) "FIELDLENGTH(1)"
+		variant (spb) "PRESENCE(header_type=RLCMAC_HDR_TYPE_3)"
+	};
+	/* Manual C++ Decoder:  10.3a.2.1 EGPRS Uplink RLC data block */
+	type record RlcmacUlEgprsDataBlock {
+		CodingScheme		mcs, /* Provided by C++ Decoder */
+		EgprsUlMacDataHeader	mac_hdr,
+		boolean			tlli_ind,
+		boolean			e,
+		/* Octet 3 ... M (optional): manual C++ Decoder */
+		GprsTlli		tlli optional,
+		RlcMacUlPfi		pfi optional,
+		EgprsLlcBlocks		blocks
+	} with {
+		variant (tlli_ind) "FIELDLENGTH(1)"
+		variant (e) "FIELDLENGTH(1)"
+	};
+
+	/* TS 44.060 10.2.2 */
+	type record RlcmacUlDataBlock {
+		CodingScheme		cs, /* Provided by C++ Decoder */
+		/* MAC header */
+		UlMacDataHeader		mac_hdr,
+		/* Octet 3 ... M (optional): manual C++ Decoder */
+		GprsTlli		tlli optional,
+		RlcMacUlPfi		pfi optional,
+		LlcBlocks		blocks
+	} with {
+		variant (tlli) "PRESENCE(mac_hdr.tlli_ind = true)"
+		variant (pfi) "PRESENCE(mac_hdr.pfi_ind = true)"
+	};
+
+	external function enc_RlcmacUlDataBlock(in RlcmacUlDataBlock si) return octetstring;
+	external function dec_RlcmacUlDataBlock(in octetstring stream) return RlcmacUlDataBlock;
+
+	type union RlcmacUlBlock {
+		RlcmacUlDataBlock	data,
+		RlcmacUlEgprsDataBlock	data_egprs,
+		RlcmacUlCtrlBlock	ctrl
+	} with {
+		variant "TAG(data, mac_hdr.payload_type = MAC_PT_RLC_DATA;
+			     ctrl, {mac_hdr.payload_type = MAC_PT_RLCMAC_NO_OPT,
+				    mac_hdr.payload_type = MAC_PT_RLCMAC_OPT};
+			     data_egprs, {mac_hdr.header_type = RLCMAC_HDR_TYPE_1,
+					  mac_hdr.header_type = RLCMAC_HDR_TYPE_2,
+					  mac_hdr.header_type = RLCMAC_HDR_TYPE_3}
+			     )"
+	};
+
+	/* as the sub-types (RlcmacDl*Block) are not using the RAW coder, we cannot
+	 * use auto-generated functions here, as they would decode those sub-types
+	 * based on the RAW coder, not baed on the manual C++ functions */
+	external function enc_RlcmacUlBlock(in RlcmacUlBlock si) return octetstring;
+	external function dec_RlcmacUlBlock(in octetstring stream) return RlcmacUlBlock;
+
+	type union RlcmacDlBlock {
+		RlcmacDlDataBlock	data,
+		RlcmacDlEgprsDataBlock	data_egprs,
+		RlcmacDlCtrlBlock	ctrl
+	} with {
+		variant "TAG(data, mac_hdr.mac_hdr.payload_type = MAC_PT_RLC_DATA;
+			     ctrl, {mac_hdr.payload_type = MAC_PT_RLCMAC_NO_OPT,
+				    mac_hdr.payload_type = MAC_PT_RLCMAC_OPT};
+			     data_egprs, {mac_hdr.header_type = RLCMAC_HDR_TYPE_1,
+					  mac_hdr.header_type = RLCMAC_HDR_TYPE_2,
+					  mac_hdr.header_type = RLCMAC_HDR_TYPE_3}
+			     )"
+	};
+
+	/* as the sub-types (RlcmacDl*Block) are not using the RAW coder, we cannot
+	 * use auto-generated functions here, as they would decode those sub-types
+	 * based on the RAW coder, not baed on the manual C++ functions */
+	external function enc_RlcmacDlBlock(in RlcmacDlBlock si) return octetstring;
+	external function dec_RlcmacDlBlock(in octetstring stream) return RlcmacDlBlock;
+
+	/* PTCCH (Packet Timing Advance Control Channel) downlink block format.
+	 * See 3GPP TS 44.004, section 7.8. */
+	type record PTCCHTimingAdvanceIE {
+		BIT1			spare ('0'B),
+		uint7_t			ta_val
+	} with { variant "" };
+	type record of PTCCHTimingAdvanceIE PTCCHTimingAdvanceIEs;
+	type record PTCCHDownlinkMsg {
+		PTCCHTimingAdvanceIEs	ta_idx length(16),
+		octetstring		padding length(7)
+	} with { variant "" };
+
+	external function enc_PTCCHDownlinkMsg(in PTCCHDownlinkMsg si) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_PTCCHDownlinkMsg(in octetstring stream) return PTCCHDownlinkMsg
+		with { extension "prototype(convert) decode(RAW)" };
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" }

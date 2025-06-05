@@ -1,0 +1,430 @@
+module BTS_Tests_ASCI {
+
+/* ASCI Integration Tests for OsmoBTS
+ *
+ * (C) 2023 by sysmocom - s.f.m.c. GmbH <info@sysmocom.de>
+ * All Rights Reserved
+ *
+ * SPDX-License-Identifier: AGPL-3.0+
+ *
+ * Authors: Harald Welte; Andreas Eversberg
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+import from Misc_Helpers all;
+import from General_Types all;
+import from Osmocom_Types all;
+import from GSM_Types all;
+import from L1CTL_PortType all;
+import from L1CTL_Types all;
+import from LAPDm_Types all;
+import from IPA_Emulation all;
+import from GSM_RR_Types all;
+import from L3_Templates all;
+
+import from MobileL3_CommonIE_Types all;
+
+import from RSL_Emulation all;
+import from RSL_Types all;
+
+import from BTS_Tests all;
+
+
+
+/* Set up NCH channel: 1 block, starting at slot 0 */
+private function f_init_nch_position() runs on test_CT {
+	si_cfg.si1_present := true;
+	f_rsl_bcch_fill_raw(RSL_SYSTEM_INFO_1, '5506198fb38000000000000000000000000000e5040083'O);
+}
+
+/* convert from boolean value to BIT1 */
+private function bool2bit1(boolean inp) return BIT1 {
+	if (inp) {
+		return '1'B;
+	} else {
+		return '0'B;
+	}
+}
+
+/* encode a VBS/VGCS call reference into it's OCT5 representation */
+private function f_enc_gcr(integer call_ref, boolean is_group_call, boolean ack_required := false)
+return OCT5
+{
+	var DescriptiveGroupOrBroadcastCallReference_V v := {
+		binaryCodingOfGroupOrBroadcastCallReference := int2bit(call_ref, 27),
+		sF := bool2bit1(is_group_call),
+		aF := bool2bit1(ack_required),
+		callPriority := '000'B,
+		cipheringInformation := '0000'B,
+		spare := '0000'B
+	}
+	return bit2oct(encvalue(v));
+}
+
+/* Send Notification command to start and stop notifying an ASCI call.
+ * When it starts, it is expected that NCH is received by MS. Also it is expected that NCH is received again.
+ * When it stops, it is expected that NCH is not received anymore. */
+testcase TC_vbs_notification() runs on test_CT
+{
+	timer T;
+
+	f_init();
+	f_init_nch_position();
+	f_init_l1ctl();
+	f_l1_tune(L1CTL);
+
+	var OCT5 gcr := f_enc_gcr(hex2int('2342'H), false, false);
+	var OCT3 chan_desc := '234266'O;
+	var octetstring notif_nch := '090620B42230000091A1330B2B2B2B2B2B2B2B2B2B2B2B'O;
+	var integer recv_count := 0;
+
+	log("Sending RSL NOTIF_CMD (start)");
+	RSL_CCHAN.send(ts_ASP_RSL_UD(ts_RSL_NOTIF_CMD_START(gcr, chan_desc)));
+
+	/* NCH must be received twice. */
+	T.start(2.0);
+	alt {
+	[] L1CTL.receive(tr_L1CTL_DATA_IND(t_RslChanNr_PCH_AGCH(0), ?, notif_nch)) {
+		log("Received matching NOTIFICATION/NCH.");
+		recv_count := recv_count + 1;
+		if (recv_count != 2) {
+			repeat;
+		}
+		T.stop;
+		}
+	[] L1CTL.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for NCH message");
+		}
+	}
+
+	log("Sending RSL NOTIF_CMD (stop)");
+	RSL_CCHAN.send(ts_ASP_RSL_UD(ts_RSL_NOTIF_CMD_STOP(gcr)));
+
+	/* Flush pending messages and be sure that the sending of notifications has stopped. */
+	f_sleep(1.0);
+	L1CTL.clear;
+
+	/* NCH must not be received. */
+	T.start(2.0);
+	alt {
+	[] L1CTL.receive(tr_L1CTL_DATA_IND(t_RslChanNr_PCH_AGCH(0), ?, notif_nch)) {
+		T.stop;
+		setverdict(fail, "Received unexpected NOTIFICATION/NCH.");
+		}
+	[] L1CTL.receive { repeat; }
+	[] T.timeout {
+		log("Not received NOTIFICATION/NCH. (as expected)");
+		setverdict(pass);
+		}
+	}
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* Sub function to clean up MS and BTS. */
+private function f_vgcs_cleanup() runs on ConnHdlr
+{
+	/* Cleanup L1CTL. */
+	f_L1CTL_RESET(L1CTL);
+	f_l1_tune(L1CTL);
+
+	/* Cleanup VGCS Channel. */
+	f_rsl_chan_deact();
+}
+
+/* A VGCS channel is activated. The BSC sends UPLINK FREE message and UPLINK BUSY message.
+ * When the UPLINK FREE message is sent, the MS is expected to receive several UPLINK FREE messages.
+ * Then the UPLINK BUSY message is sent, the MS is expected to receive one UPLINK BUSY message.
+ */
+private function f_TC_vgcs_uplink_free_and_busy(charstring id) runs on ConnHdlr
+{
+	var octetstring uplink_free := '082B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B'O;
+	var octetstring uplink_busy := '062A'O;
+
+	f_l1_tune(L1CTL);
+	RSL.clear;
+
+	/* Activate channel on the BTS side */
+	log("Activating VGCS channel.");
+	f_rsl_chan_act(g_pars.chan_mode);
+
+	/* enable dedicated mode */
+	f_l1ctl_est_dchan(L1CTL, g_pars);
+
+	/* Send one UPLINK FREE message and expect them to be repeated. */
+	log("Send UPLINK FREE.");
+	RSL.send(ts_RSL_UNITDATA_REQ(g_chan_nr, ts_RslLinkID_DCCH(0), uplink_free));
+	for (var integer i := 0; i < 20; i := i + 1) {
+		f_l1_exp_lapdm(tr_LAPDm_Bter_UI(uplink_free));
+		log("Received UPLINK FREE.");
+	}
+
+	/* Send one UPLINK BUSY message and expect it to be received. */
+	log("Send UPLINK BUSY.");
+	RSL.send(ts_RSL_UNITDATA_REQ(g_chan_nr, ts_RslLinkID_DCCH(0), uplink_busy));
+	f_l1_exp_lapdm(tr_LAPDm_UI(0, cr_MT_CMD, uplink_busy));
+	log("Received UPLINK BUSY.");
+
+	/* Deactivate and cleanup. */
+	f_vgcs_cleanup();
+}
+testcase TC_vgcs_uplink_free_and_busy() runs on test_CT
+{
+	var template RSL_IE_ChannelMode ch_mode;
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+
+	f_init();
+
+	ch_mode := ts_RSL_ChanMode(RSL_CHRT_TCH_F_GROUP, RSL_CMOD_SP_GSM1);
+	pars := valueof(t_Pars(t_RslChanNr_Bm(1), ch_mode));
+	vc_conn := f_start_handler(refers(f_TC_vgcs_uplink_free_and_busy), pars);
+	vc_conn.done;
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* Sub function to test talker detect. */
+private function f_vgcs_talker_detect() runs on ConnHdlr
+{
+	var octetstring uplink_free := '082B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B'O;
+	var octetstring uplink_access := 'C0'O;
+	var template octetstring uplink_grant := '0609C0*'O;
+	var RSL_Message rm;
+	var GsmFrameNumber fn;
+
+	f_l1_tune(L1CTL);
+	RSL.clear;
+
+	/* Activate channel on the BTS side. */
+	log("Activating VGCS channel.");
+	f_rsl_chan_act(g_pars.chan_mode);
+
+	/* Enable dedicated mode. */
+	f_l1ctl_est_dchan(L1CTL, g_pars);
+
+	/* Send one UPLINK FREE message and expect them to be repeated. */
+	log("Send UPLINK FREE.");
+	RSL.send(ts_RSL_UNITDATA_REQ(g_chan_nr, ts_RslLinkID_DCCH(0), uplink_free));
+	f_l1_exp_lapdm(tr_LAPDm_Bter_UI(uplink_free));
+	log("Received UPLINK FREE.");
+
+	/* Send UPLINK ACCESS on VGCS channel. */
+	log("Send UPLINK ACCESS.");
+	fn := f_L1CTL_RACH(L1CTL, oct2int(uplink_access), chan_nr := g_pars.chan_nr);
+
+	/* Receive UPLINK GRANT by the MS. */
+	f_l1_exp_lapdm(tr_LAPDm_UI(0, cr_MT_CMD, uplink_grant));
+	log("Received VGCS UPLINK GRANT.");
+
+	/* Wait for talker detection. */
+	timer T := 1.0;
+	T.start;
+	alt {
+	[] RSL.receive(tr_RSL_TALKER_DET(g_pars.chan_nr, ?)) -> value rm {
+		log("RSL Talker Detect has been detected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive(tr_RSL_CHAN_RQD(?, ?, ?, ?)) -> value rm {
+		setverdict(fail, "RSL_CHAN_RQD was not expected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for RSL Talker Detect.");
+		}
+	}
+}
+
+/* A VGCS channel is activated. The BSC sends UPLINK FREE message. The MS sends RACH on VGCS channel.
+ * The MS receives VGCS UPLINK GRAND, but does not respond to it. It is expeced that the BSC receivce RSL CONN FAIL.
+ */
+private function f_TC_vgcs_talker_fail(charstring id) runs on ConnHdlr
+{
+	var RSL_Message rm;
+
+	/* Perform link establishment and talker detection. */
+	f_vgcs_talker_detect();
+
+	/* Leave dedicated channel, to force link timeout. */
+	f_L1CTL_RESET(L1CTL);
+	f_l1_tune(L1CTL);
+
+	/* Wait for link timeout. */
+	timer T := 40.0;
+	T.start;
+	alt {
+	[] RSL.receive(tr_RSL_CONN_FAIL_IND(g_pars.chan_nr, ?)) -> value rm {
+		log("RSL Conn Fail Ind has been detected as expected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for RSL Conn Fail Ind.");
+		}
+	}
+
+	/* Deactivate and cleanup. */
+	f_vgcs_cleanup();
+}
+testcase TC_vgcs_talker_fail() runs on test_CT
+{
+	var template RSL_IE_ChannelMode ch_mode;
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+
+	f_init();
+
+	ch_mode := ts_RSL_ChanMode(RSL_CHRT_TCH_F_GROUP, RSL_CMOD_SP_GSM1);
+	pars := valueof(t_Pars(t_RslChanNr_Bm(1), ch_mode));
+	pars.t_guard := 60.0;
+	vc_conn := f_start_handler(refers(f_TC_vgcs_talker_fail), pars);
+	vc_conn.done;
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+/* A VGCS channel is activated. The BSC sends UPLINK FREE message. The MS sends RACH on VGCS channel.
+ * The MS receives VGCS UPLINK GRAND and establishes layer 2. Then the BSC forces to releases the uplink.
+ */
+private function f_TC_vgcs_talker_est_rel(charstring id) runs on ConnHdlr
+{
+	var octetstring uplink_free := '082B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B'O;
+	var octetstring l3 := '01020304'O;
+	template RslLinkId link_id := ts_RslLinkID_DCCH(0);
+	var RSL_Message rm;
+
+	/* Perform link establishment and talker detection. */
+	f_vgcs_talker_detect();
+
+	/* Establish layer 2. It also detects, if RSL Est Ind is received. */
+	f_est_rll_mo(0, valueof(link_id), l3);
+
+	/* Release link by BSC. */
+	RSL.send(ts_RSL_REL_REQ(g_chan_nr, link_id, RSL_REL_MODE_LOCAL));
+
+	log("Send UPLINK FREE.");
+	RSL.send(ts_RSL_UNITDATA_REQ(g_chan_nr, link_id, uplink_free));
+	f_l1_exp_lapdm(tr_LAPDm_Bter_UI(uplink_free));
+	log("Received UPLINK FREE.");
+
+	/* Deactivate and cleanup. */
+	f_vgcs_cleanup();
+}
+testcase TC_vgcs_talker_est_rel() runs on test_CT
+{
+	var template RSL_IE_ChannelMode ch_mode;
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+
+	f_init();
+
+	ch_mode := ts_RSL_ChanMode(RSL_CHRT_TCH_F_GROUP, RSL_CMOD_SP_GSM1);
+	pars := valueof(t_Pars(t_RslChanNr_Bm(1), ch_mode));
+	vc_conn := f_start_handler(refers(f_TC_vgcs_talker_est_rel), pars);
+	vc_conn.done;
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+private function f_TC_vgcs_listener_det(charstring id) runs on ConnHdlr
+{
+	var octetstring uplink_access := '25'O;
+	var RSL_Message rm;
+	var GsmFrameNumber fn;
+
+	f_l1_tune(L1CTL);
+	RSL.clear;
+
+	/* Activate channel on the BTS side. */
+	log("Activating VGCS channel.");
+	f_rsl_chan_act(g_pars.chan_mode);
+
+	/* Enable dedicated mode. */
+	f_l1ctl_est_dchan(L1CTL, g_pars);
+
+	/* Send UPLINK ACCESS on VGCS channel. */
+	log("Send UPLINK ACCESS.");
+	fn := f_L1CTL_RACH(L1CTL, oct2int(uplink_access), chan_nr := g_pars.chan_nr);
+
+	/* Wait for listener detection. */
+	timer T := 2.0;
+	T.start;
+	alt {
+	[] RSL.receive(tr_RSL_LISTENER_DET(g_pars.chan_nr, ?)) -> value rm {
+		log("RSL Talker Listener has been detected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive(tr_RSL_CHAN_RQD(?, ?, ?, ?)) -> value rm {
+		setverdict(fail, "RSL_CHAN_RQD was not expected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for RSL Listener Detect.");
+		}
+	}
+
+	/* Send UPLINK ACCESS on VGCS channel. */
+	log("Send second UPLINK ACCESS.");
+	fn := f_L1CTL_RACH(L1CTL, oct2int(uplink_access), chan_nr := g_pars.chan_nr);
+
+	/* Wait for listener detection. */
+	T.start;
+	alt {
+	[] RSL.receive(tr_RSL_LISTENER_DET(g_pars.chan_nr, ?)) {
+		setverdict(fail, "RSL Listener Detect has been detected, but not expected!");
+		T.stop;
+		}
+	[] RSL.receive(tr_RSL_CHAN_RQD(?, ?, ?, ?)) -> value rm {
+		setverdict(fail, "RSL_CHAN_RQD was not expected: ", rm);
+		T.stop;
+		}
+	[] RSL.receive { repeat; }
+	[] T.timeout {
+		log("Timeout waiting for RSL Listener Detect, as expected.");
+		}
+	}
+
+	/* Deactivate and cleanup. */
+	f_vgcs_cleanup();
+}
+testcase TC_vgcs_listener_det() runs on test_CT
+{
+	var template RSL_IE_ChannelMode ch_mode;
+	var ConnHdlrPars pars;
+	var ConnHdlr vc_conn;
+
+	f_init();
+
+	ch_mode := ts_RSL_ChanMode(RSL_CHRT_TCH_F_GROUP, RSL_CMOD_SP_GSM1);
+	pars := valueof(t_Pars(t_RslChanNr_Bm(1), ch_mode));
+	vc_conn := f_start_handler(refers(f_TC_vgcs_listener_det), pars);
+	vc_conn.done;
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__);
+}
+
+control {
+	execute( TC_vbs_notification() );
+	execute( TC_vgcs_uplink_free_and_busy() );
+	execute( TC_vgcs_talker_fail() );
+	execute( TC_vgcs_talker_est_rel() );
+	execute( TC_vgcs_listener_det() );
+
+}
+
+}

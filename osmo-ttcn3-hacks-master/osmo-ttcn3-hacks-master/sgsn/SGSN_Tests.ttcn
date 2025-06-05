@@ -1,0 +1,3294 @@
+module SGSN_Tests {
+
+/* Osmocom SGSN test suite in TTCN-3
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * (C) 2018-2019 sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+friend module SGSN_Tests_Iu;
+friend module SGSN_Tests_NS;
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from GSM_Types all;
+import from Native_Functions all;
+import from Misc_Helpers all;
+import from NS_Types all;
+import from NS_Emulation all;
+import from BSSGP_Types all;
+import from BSSGP_Emulation all;
+import from Osmocom_Gb_Types all;
+import from SCCPasp_Types all;
+
+import from MobileL3_CommonIE_Types all;
+import from MobileL3_GMM_SM_Types all;
+import from MobileL3_Types all;
+import from L3_Templates all;
+import from L3_Common all;
+
+import from GSUP_Types all;
+import from GSUP_Templates all;
+import from GSUP_Emulation all;
+import from IPA_Emulation all;
+
+import from RAN_Adapter all;
+import from RAN_Emulation all;
+import from RANAP_Templates all;
+import from RANAP_PDU_Descriptions all;
+import from RANAP_IEs all;
+
+import from GTPv1C_CodecPort all;
+import from GTPv1U_CodecPort all;
+import from GTPC_Types all;
+import from GTPU_Types all;
+import from GTPv1C_Templates all;
+import from GTPv1U_Templates all;
+import from GTP_Emulation all;
+
+import from LLC_Types all;
+import from LLC_Templates all;
+
+import from SNDCP_Types all;
+
+import from TELNETasp_PortType all;
+import from Osmocom_VTY_Functions all;
+
+import from MobileL3_MM_Types all;
+
+import from BSSGP_ConnHdlr all;
+
+modulepar {
+	/* IP/port on which we run our internal GSUP/HLR emulation */
+	charstring mp_hlr_ip := "127.0.0.1";
+	integer mp_hlr_port := 4222;
+	charstring mp_ggsn_ip := "127.0.0.103";
+	integer mp_echo_interval := 5; /* in seconds. Only used in test enabling g_use_echo  */
+	charstring mp_sgsn_gtp_ip := "127.0.0.10";
+
+	NSConfigurations mp_nsconfig := {
+		{
+			nsei := 96,
+			role_sgsn := false,
+			handle_sns := false,
+			nsvc := {
+				{
+					provider := {
+						ip := {
+							address_family := AF_INET,
+							local_udp_port := 21010,
+							local_ip := "127.0.0.1",
+							remote_udp_port := 23000,
+							remote_ip := "127.0.0.1",
+							data_weight := 1,
+							signalling_weight := 1
+						}
+					},
+					nsvci := 97
+				}
+			}
+		},
+		{
+			nsei := 97,
+			role_sgsn := false,
+			handle_sns := false,
+			nsvc := {
+				{
+					provider := {
+						ip := {
+							address_family := AF_INET,
+							local_udp_port := 21011,
+							local_ip := "127.0.0.1",
+							remote_udp_port := 23000,
+							remote_ip := "127.0.0.1",
+							data_weight := 1,
+							signalling_weight := 1
+						}
+					},
+					nsvci := 98
+				}
+			}
+		},
+		{
+			nsei := 98,
+			role_sgsn := false,
+			handle_sns := false,
+			nsvc := {
+				{
+					provider := {
+						ip := {
+							address_family := AF_INET,
+							local_udp_port := 21012,
+							local_ip := "127.0.0.1",
+							remote_udp_port := 23000,
+							remote_ip := "127.0.0.1",
+							data_weight := 1,
+							signalling_weight := 1
+						}
+					},
+					nsvci := 99
+				}
+			}
+		}
+	};
+
+	RAN_Configurations mp_ranap_cfg := {
+		{
+			transport := RANAP_TRANSPORT_IuCS,
+			sccp_service_type := "mtp3_itu",
+			sctp_addr := { 23908, "127.0.0.1", 2905, "127.0.0.1" },
+			own_pc := 195,
+			own_ssn := 142,
+			peer_pc := 188, /* 0.23.4 */
+			peer_ssn := 142,
+			sio := '83'O,
+			rctx := 2
+		}
+	}
+};
+
+const integer NUM_BVC_PER_NSE := 1;
+type record GbInstance {
+	NS_CT vc_NS,
+	BSSGP_CT vc_BSSGP,
+	BSSGP_BVC_CT vc_BSSGP_BVC[NUM_BVC_PER_NSE],
+	BssgpConfig cfg
+};
+
+const integer NUM_GB := 3;
+type record length(NUM_GB) of GbInstance GbInstances;
+type record length(NUM_GB) of NSConfiguration NSConfigurations;
+
+const integer NUM_RNC := 1;
+type record IuInstance {
+	RAN_Adapter ranap,
+	GTP_Emulation_CT vc_RNC_GTP
+};
+type record length(NUM_RNC) of IuInstance IuInstances;
+type record of RAN_Configuration RAN_Configurations;
+
+type component test_CT {
+	var GbInstances g_gb;
+	var IuInstances g_iu;
+	var boolean g_iu_enable := false;
+
+	var GSUP_Emulation_CT vc_GSUP;
+	var IPA_Emulation_CT vc_GSUP_IPA;
+	/* only to get events from IPA underneath GSUP */
+	port IPA_CTRL_PT GSUP_IPA_EVENT;
+
+	/* only needed at start to get the per-BVC references */
+	port BSSGP_CT_PROC_PT PROC;
+
+	/* used by RIM related test */
+	port BSSGP_PT RIM[NUM_GB];
+	port GTPEM_PT GTPC;
+
+	var GTP_Emulation_CT vc_GGSN_GTP;
+
+	port TELNETasp_PT SGSNVTY;
+
+	var boolean g_initialized := false;
+	var boolean g_use_echo := false;
+};
+
+/* Passed in RAN-INFO message from emulated neighbor using RIM */
+const octetstring si1_default := '198fb100000000000000000000000000007900002b'O;
+const octetstring si3_default := '1b753000f110236ec9033c2747407900003c0b2b2b'O;
+const octetstring si13_default := '009000185a6fc9e08410ab2b2b2b2b2b2b2b2b2b2b'O;
+const octetstring si_default := si1_default & si3_default & si13_default;
+
+private function f_cellid_to_RAI(in BssgpCellId cell_id) return RoutingAreaIdentificationV {
+	/* mcc_mnc is encoded as of 24.008 10.5.5.15 */
+	var BcdMccMnc mcc_mnc := cell_id.ra_id.lai.mcc_mnc;
+
+	var RoutingAreaIdentificationV ret := {
+		mccDigit1 := mcc_mnc[0],
+		mccDigit2 := mcc_mnc[1],
+		mccDigit3 := mcc_mnc[2],
+		mncDigit3 := mcc_mnc[3],
+		mncDigit1 := mcc_mnc[4],
+		mncDigit2 := mcc_mnc[5],
+		lac := int2oct(cell_id.ra_id.lai.lac, 2),
+		rac := int2oct(cell_id.ra_id.rac, 1)
+	}
+	return ret;
+};
+
+private function f_BssgpCellId_to_GTP_CellId(in BssgpCellId cell_id) return GTP_CellId
+{
+	template (value) GTP_CellId ret := ts_GTP_CellId(cell_id.ra_id, cell_id.cell_id);
+	return valueof(ret);
+}
+
+private function f_init_gb(inout GbInstance gb, charstring id, integer offset) runs on test_CT {
+	gb.vc_NS := NS_CT.create(id & "-NS" & int2str(offset)) alive;
+	gb.vc_BSSGP := BSSGP_CT.create(id & "-BSSGP" & int2str(offset)) alive;
+	/* connect lower end of BSSGP emulation with NS upper port */
+	connect(gb.vc_BSSGP:BSCP, gb.vc_NS:NS_SP);
+
+	gb.vc_NS.start(NSStart(mp_nsconfig[offset]));
+	gb.vc_BSSGP.start(BssgpStart(gb.cfg, testcasename()));
+	/* resolve the per-BVC component references */
+	for (var integer i := 0; i < lengthof(gb.cfg.bvc); i := i+1) {
+		connect(self:PROC, gb.vc_BSSGP:PROC);
+		gb.vc_BSSGP_BVC[i] := f_bssgp_get_bvci_ct(gb.cfg.bvc[i].bvci, PROC);
+		disconnect(self:PROC, gb.vc_BSSGP:PROC);
+	}
+	/* connect RIM related port */
+	connect(gb.vc_BSSGP:RIM, self:RIM[offset]);
+}
+
+private function f_init_gsup(charstring id) runs on test_CT {
+	id := id & "-GSUP";
+	var GsupOps ops := {
+		create_cb := refers(GSUP_Emulation.ExpectedCreateCallback)
+	};
+
+	vc_GSUP_IPA := IPA_Emulation_CT.create(id & "-IPA");
+	vc_GSUP := GSUP_Emulation_CT.create(id);
+
+	map(vc_GSUP_IPA:IPA_PORT, system:IPA_CODEC_PT);
+	connect(vc_GSUP:GSUP, vc_GSUP_IPA:IPA_GSUP_PORT);
+	/* we use this hack to get events like ASP_IPA_EVENT_UP */
+	connect(vc_GSUP_IPA:IPA_CTRL_PORT, self:GSUP_IPA_EVENT);
+
+	vc_GSUP.start(GSUP_Emulation.main(ops, id));
+	vc_GSUP_IPA.start(IPA_Emulation.main_server(mp_hlr_ip, mp_hlr_port));
+
+	/* wait for incoming connection to GSUP port before proceeding */
+	timer T := 10.0;
+	T.start;
+	alt {
+		[] GSUP_IPA_EVENT.receive(tr_ASP_IPA_EV(ASP_IPA_EVENT_UP)) { }
+		[] T.timeout {
+			setverdict(fail, "No connection to GSUP Port");
+			mtc.stop;
+		}
+	}
+}
+
+private function f_init_rnc_gtp(charstring id, integer rnc_idx) runs on test_CT {
+	id := id & "-RNC_GTP";
+
+	var GtpEmulationCfg gtp_cfg := {
+		gtpc_bind_ip := omit,
+		gtpc_bind_port := omit,
+		gtpu_bind_ip := mp_ranap_cfg[rnc_idx].sctp_addr.local_ip_addr,
+		gtpu_bind_port := GTP1U_PORT,
+		sgsn_role := false
+	};
+
+	g_iu[rnc_idx].vc_RNC_GTP := GTP_Emulation_CT.create(id);
+	g_iu[rnc_idx].vc_RNC_GTP.start(GTP_Emulation.main(gtp_cfg));
+}
+
+private function f_init_ggsn_gtp(charstring id) runs on test_CT {
+	id := id & "-GGSN_GTP";
+
+	var GtpEmulationCfg gtp_cfg := {
+		gtpc_bind_ip := mp_ggsn_ip,
+		gtpc_bind_port := GTP1C_PORT,
+		gtpu_bind_ip := mp_ggsn_ip,
+		gtpu_bind_port := GTP1U_PORT,
+		sgsn_role := false
+	};
+
+	vc_GGSN_GTP := GTP_Emulation_CT.create(id);
+	vc_GGSN_GTP.start(GTP_Emulation.main(gtp_cfg));
+}
+
+friend function f_init_vty() runs on test_CT {
+	map(self:SGSNVTY, system:SGSNVTY);
+	f_vty_set_prompts(SGSNVTY);
+	f_vty_transceive(SGSNVTY, "enable");
+	f_vty_transceive(SGSNVTY, "reset sgsn state");
+	f_vty_config(SGSNVTY, "sgsn", "auth-policy remote");
+}
+
+private function f_vty_enable_echo_interval(boolean enable) runs on test_CT {
+	if (enable) {
+		f_vty_config(SGSNVTY, "sgsn", "ggsn 0 echo-interval " & int2str(mp_echo_interval));
+	} else {
+		f_vty_config(SGSNVTY, "sgsn", "ggsn 0 no echo-interval");
+	}
+}
+
+
+/* mcc_mnc is 24.008 10.5.5.15 encoded. 262 42 */
+function f_init(BcdMccMnc mcc_mnc := '262F42'H) runs on test_CT {
+	var integer i;
+
+	if (g_initialized == true) {
+		return;
+	}
+	g_initialized := true;
+	g_gb[0].cfg := {
+		nsei := 96,
+		sgsn_role := false,
+		bvc := {
+			{
+				bvci := 196,
+				cell_id := {
+					ra_id := {
+						lai := {
+							mcc_mnc := mcc_mnc,
+							lac := 13135
+						},
+						rac := 0
+					},
+					cell_id := 20960
+				},
+				depth := BSSGP_DECODE_DEPTH_L3,
+				create_cb := refers(BSSGP_Emulation.DefaultCreateCallback)
+			}
+		}
+	};
+	g_gb[1].cfg := {
+		nsei := 97,
+		sgsn_role := false,
+		bvc := {
+			{
+				bvci := 210,
+				cell_id := {
+					ra_id := {
+						lai := {
+							mcc_mnc := mcc_mnc,
+							lac := 13200
+						},
+						rac := 0
+					},
+					cell_id := 20961
+				},
+				depth := BSSGP_DECODE_DEPTH_L3,
+				create_cb := refers(BSSGP_Emulation.DefaultCreateCallback)
+			}
+		}
+	};
+	g_gb[2].cfg := { /* [2] configured to have same RAC as [1] */
+		nsei := 98,
+		sgsn_role := false,
+		bvc := {
+			{
+				bvci := 220,
+				cell_id := {
+					ra_id := {
+						lai := {
+							mcc_mnc := mcc_mnc,
+							lac := 13200
+						},
+						rac := 0
+					},
+					cell_id := 20962
+				},
+				depth := BSSGP_DECODE_DEPTH_L3,
+				create_cb := refers(BSSGP_Emulation.DefaultCreateCallback)
+			}
+		}
+	};
+
+	f_init_vty();
+	f_init_gb(g_gb[0], "SGSN_Test-Gb0", 0);
+	f_init_gb(g_gb[1], "SGSN_Test-Gb1", 1);
+	f_init_gb(g_gb[2], "SGSN_Test-Gb2", 2);
+
+	if (g_iu_enable) {
+		for (i := 0; i < NUM_RNC; i := i+1) {
+			f_ran_adapter_init(g_iu[i].ranap, mp_ranap_cfg[i], "SGSN_Test_" & int2str(i), RNC_RanOps);
+			f_ran_adapter_start(g_iu[i].ranap);
+			f_init_rnc_gtp("SGSN_Test", i);
+		}
+	}
+	f_init_gsup("SGSN_Test");
+	f_init_ggsn_gtp("SGSN_Test");
+	f_vty_enable_echo_interval(g_use_echo);
+}
+
+function f_cleanup() runs on test_CT {
+	var integer i;
+	if (g_iu_enable) {
+		for (i := 0; i < NUM_RNC; i := i+1) {
+			f_ran_adapter_cleanup(g_iu[i].ranap);
+		}
+	}
+	self.stop;
+}
+
+private function RncUnitdataCallback(RANAP_PDU ranap)
+runs on RAN_Emulation_CT return template RANAP_PDU {
+	var template RANAP_PDU resp := omit;
+
+	log ("RANAP_RncUnitDataCallback");
+	/* answer all RESET with RESET ACK */
+	if (match(ranap, tr_RANAP_Reset)) {
+		log("RANAP_RncUnitdataCallback: Responding to RESET with RESET-ACK");
+		var CN_DomainIndicator dom;
+		dom := ranap.initiatingMessage.value_.Reset.protocolIEs[1].value_.cN_DomainIndicator;
+		resp := ts_RANAP_ResetAck(dom);
+	}
+	return resp;
+}
+
+const RanOps RNC_RanOps := {
+	ranap_create_cb := refers(RAN_Emulation.RanapExpectedCreateCallback),
+	ranap_unitdata_cb := refers(RncUnitdataCallback),
+	ranap_connect_ind_auto_res := true,
+	ps_domain := true,
+	decode_dtap := true,
+	role_ms := true,
+	protocol := RAN_PROTOCOL_RANAP,
+	transport := RANAP_TRANSPORT_IuCS,
+	use_osmux := false,
+	bssap_reset_retries := 1,
+	sccp_addr_local := omit,
+	sccp_addr_peer := omit
+};
+
+function f_cell_ids_from_gb(GbInstances gb) return BssgpCellIds
+{
+	var BssgpCellIds cell_ids := {
+		gb[0].cfg.bvc[0].cell_id,
+		gb[1].cfg.bvc[0].cell_id,
+		gb[2].cfg.bvc[0].cell_id
+	}
+	return cell_ids;
+}
+
+/* helper function to create, connect and start a BSSGP_ConnHdlr component */
+function f_start_handler(bssgp_connhdlr_void_fn fn, charstring id, GbInstances gb, integer imsi_suffix,
+			 float t_guard := 30.0, boolean expect_ciph := false)
+runs on test_CT return BSSGP_ConnHdlr {
+	var BSSGP_ConnHdlrPars pars;
+	pars := f_new_BSSGP_ConnHdlrPars(imsi_suffix, f_cell_ids_from_gb(gb), t_NetPars(expect_ciph := expect_ciph), t_guard := t_guard);
+	return f_start_handler_pars(fn, id, gb, pars);
+}
+
+function f_start_handler_pars(bssgp_connhdlr_void_fn fn, charstring id, GbInstances gb, BSSGP_ConnHdlrPars pars)
+runs on test_CT return BSSGP_ConnHdlr {
+	var BSSGP_ConnHdlr vc_conn;
+	if (g_iu_enable) {
+		pars.sccp_addr_local := g_iu[0].ranap.sccp_addr_own;
+		pars.sccp_addr_peer := g_iu[0].ranap.sccp_addr_peer;
+	}
+
+	vc_conn := BSSGP_ConnHdlr.create(id);
+
+	connect(vc_conn:BSSGP[0], gb[0].vc_BSSGP_BVC[0]:BSSGP_SP);
+	connect(vc_conn:BSSGP_SIG[0], gb[0].vc_BSSGP_BVC[0]:BSSGP_SP_SIG);
+	connect(vc_conn:BSSGP_PROC[0], gb[0].vc_BSSGP_BVC[0]:BSSGP_PROC);
+	connect(vc_conn:BSSGP_GLOBAL[0], gb[0].vc_BSSGP:GLOBAL);
+
+	connect(vc_conn:BSSGP[1], gb[1].vc_BSSGP_BVC[0]:BSSGP_SP);
+	connect(vc_conn:BSSGP_SIG[1], gb[1].vc_BSSGP_BVC[0]:BSSGP_SP_SIG);
+	connect(vc_conn:BSSGP_PROC[1], gb[1].vc_BSSGP_BVC[0]:BSSGP_PROC);
+	connect(vc_conn:BSSGP_GLOBAL[1], gb[1].vc_BSSGP:GLOBAL);
+
+	connect(vc_conn:BSSGP[2], gb[2].vc_BSSGP_BVC[0]:BSSGP_SP);
+	connect(vc_conn:BSSGP_SIG[2], gb[2].vc_BSSGP_BVC[0]:BSSGP_SP_SIG);
+	connect(vc_conn:BSSGP_PROC[2], gb[2].vc_BSSGP_BVC[0]:BSSGP_PROC);
+	connect(vc_conn:BSSGP_GLOBAL[2], gb[2].vc_BSSGP:GLOBAL);
+
+	/* FIXME: support multiple RNCs */
+	if (g_iu_enable) {
+		connect(vc_conn:BSSAP, g_iu[0].ranap.vc_RAN:CLIENT);
+		connect(vc_conn:BSSAP_PROC, g_iu[0].ranap.vc_RAN:PROC);
+
+		for (var integer i := 0; i < NUM_RNC; i := i+1) {
+			/* GTP[0] is used by emulated GGSN: */
+			connect(vc_conn:GTP[i + 1], g_iu[i].vc_RNC_GTP:CLIENT);
+			connect(vc_conn:GTP_PROC[i + 1], g_iu[i].vc_RNC_GTP:CLIENT_PROC);
+		}
+	}
+
+	connect(vc_conn:GSUP, vc_GSUP:GSUP_CLIENT);
+	connect(vc_conn:GSUP_PROC, vc_GSUP:GSUP_PROC);
+
+	connect(vc_conn:GTP[GTP_GGSN_IDX], vc_GGSN_GTP:CLIENT);
+	connect(vc_conn:GTP_PROC[GTP_GGSN_IDX], vc_GGSN_GTP:CLIENT_PROC);
+
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+/* TODO:
+   * Detach without Attach
+   * SM procedures without attach / RAU
+   * ATTACH / RAU
+   ** with / without authentication
+   ** with / without P-TMSI allocation
+   * re-transmissions of LLC frames
+   * PDP Context activation
+   ** with different GGSN config in SGSN VTY
+   ** with different PDP context type (v4/v6/v46)
+   ** timeout from GGSN
+   ** multiple / secondary PDP context
+ */
+
+testcase TC_wait_ns_up() runs on test_CT {
+	f_init();
+	f_sleep(20.0);
+	f_cleanup();
+}
+
+private function f_TC_attach(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(false, false);
+	setverdict(pass);
+}
+
+testcase TC_attach() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach), testcasename(), g_gb, 1);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_attach_mnc3() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init('023042'H);
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach), testcasename(), g_gb, 1001);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_umts_aka_umts_res(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(true, false);
+	setverdict(pass);
+}
+testcase TC_attach_umts_aka_umts_res() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_umts_aka_umts_res), testcasename(), g_gb, 1002);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_umts_aka_gsm_sres(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(true, true);
+	setverdict(pass);
+}
+testcase TC_attach_umts_aka_gsm_sres() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_umts_aka_gsm_sres), testcasename(), g_gb, 1003);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Let T3350 expire while the MS holds an active PDP context (OS#4221). Do this by
+ * Establishing a PDP context and then resending an ATTACH REQUEST,
+ * making sure that exactly five ATTACH ACCEPTS are sent */
+private function f_TC_attach_timeout_after_pdp_act(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	/* Vars needed for triggering T3350 timeouts */
+	const integer ran_index := 0;
+	/* See TS 24.008 Rel. 16 Sect. 4.7.3.1.6 c) */
+	const integer gmm_attach_repeats := 5;
+	/* See TS 24.008 Rel. 16 Table 11.4 */
+	const float T3350 := 6.0;
+	var template (value) PDU_L3_MS_SGSN attach_req;
+	timer t_receive_GMM_ATTACH_ACCEPT;
+	var RoutingAreaIdentificationV rai := f_random_RAI();
+	timer T;
+
+	/* First establish PDP context */
+	f_TC_attach(id);
+	f_pdp_ctx_act(apars);
+
+	/* Now, try another GPRS attach procedure. Note that older osmo-sgsn skip a required
+	 * authentication for the second GMM ATTACH REQUEST, so we expect GSUP UPDATE
+	 * LOCATION REQUEST and optionally a GMM IDENTITY REQUEST (IMEI). */
+	attach_req := ts_GMM_ATTACH_REQ(f_mi_get_lv(), rai, false, false, omit, omit);
+	f_send_l3(attach_req, ran_index);
+
+	T.start(1.0);
+	alt {
+	[] as_gmm_auth(ran_index := ran_index) { repeat; };
+	[] as_gmm_gsup_lu_isd();
+	[] as_mm_identity(ran_index);
+	[] as_xid(apars, ran_index);
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for GSUP UPDATE LOCATION REQUEST");
+		return;
+		}
+	}
+
+	BSSGP[ran_index].clear;
+	log("Trying to receive ", gmm_attach_repeats, " ATTACH ACCEPTs");
+	for (var integer i := 1; i <= gmm_attach_repeats; i := i+1) {
+		t_receive_GMM_ATTACH_ACCEPT.start(T3350 + 0.5);
+		alt {
+			[] BSSGP[ran_index].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) {
+				t_receive_GMM_ATTACH_ACCEPT.stop;
+			}
+			[] t_receive_GMM_ATTACH_ACCEPT.timeout {
+				setverdict(fail, "Timeout on receiving ", i, "th ATTACH ACCEPT")
+			}
+		}
+	}
+	log("Have received ", gmm_attach_repeats, " ATTACH ACCEPT messages");
+	log("Make sure not more than ", gmm_attach_repeats, " ATTACH ACCEPT messages are sent");
+	t_receive_GMM_ATTACH_ACCEPT.start(T3350 + 0.5);
+	alt {
+		[] BSSGP[ran_index].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) {
+			setverdict(fail, "Received ", gmm_attach_repeats + 1, "th ATTACH ACCEPT")
+		}
+		[] t_receive_GMM_ATTACH_ACCEPT.timeout { }
+	}
+
+	setverdict(pass);
+}
+
+testcase TC_attach_timeout_after_pdp_act() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_timeout_after_pdp_act),
+				   testcasename(), g_gb, 21, t_guard := 45.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* MS never responds to ID REQ, expect ATTACH REJECT */
+private function f_TC_attach_auth_id_timeout(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	/* Attach via P-TMSI to force Id Request (IMSI) which times out */
+	g_pars.p_tmsi := 'c000004a'O;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	alt {
+	[] BSSGP[0].receive(tr_GMM_ID_REQ(?)) {
+		/* don't send ID Response */
+		repeat;
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT('09'O)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+		setverdict(fail, "Wrong Attach Reject Cause");
+		mtc.stop;
+		}
+	}
+}
+testcase TC_attach_auth_id_timeout() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_auth_id_timeout), testcasename(), g_gb, 2, 40.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* HLR never responds to SAI REQ, expect ATTACH REJECT */
+private function f_TC_attach_auth_sai_timeout(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	alt {
+	[] as_mm_identity();
+	[] GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi)); { }
+	}
+	/* don't send SAI-response from HLR */
+	BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?));
+	setverdict(pass);
+}
+testcase TC_attach_auth_sai_timeout() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_auth_sai_timeout), testcasename(), g_gb, 3);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* HLR rejects SAI, expect ATTACH REJECT */
+private function f_TC_attach_auth_sai_reject(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	alt {
+	[] as_mm_identity();
+	[] GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi)); {
+		GSUP.send(ts_GSUP_SAI_ERR(g_pars.imsi, 23));
+		}
+	}
+	BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?));
+	setverdict(pass);
+}
+testcase TC_attach_auth_sai_reject() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_auth_sai_reject), testcasename(), g_gb, 4);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* HLR never responds to UL REQ, expect ATTACH REJECT */
+private function f_TC_attach_gsup_lu_timeout(charstring id) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	f_gmm_auth();
+	/* Expect MSC to perform LU with HLR */
+	GSUP.receive(tr_GSUP_UL_REQ(g_pars.imsi));
+	/* Never follow-up with ISD_REQ or UL_RES */
+	alt {
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+		f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+		setverdict(fail);
+		mtc.stop;
+		}
+	}
+}
+testcase TC_attach_gsup_lu_timeout() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_gsup_lu_timeout), testcasename(), g_gb, 5);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* HLR rejects UL REQ, expect ATTACH REJECT */
+private function f_TC_attach_gsup_lu_reject(charstring id) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	f_gmm_auth();
+	/* Expect MSC to perform LU with HLR */
+	GSUP.receive(tr_GSUP_UL_REQ(g_pars.imsi)) {
+		GSUP.send(ts_GSUP_UL_ERR(g_pars.imsi, 0));
+	}
+	alt {
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+		f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+		setverdict(fail);
+		mtc.stop;
+		}
+	}
+}
+testcase TC_attach_gsup_lu_reject() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_gsup_lu_reject), testcasename(), g_gb, 6);
+	vc_conn.done;
+	f_cleanup();
+}
+
+
+/* Attempt of combined GPRS + IMSI attach: network should ACK only GPRS attach  */
+private function f_TC_attach_combined(charstring id) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, true, false, omit, omit));
+	f_gmm_auth();
+	/* Expect MSC to perform LU with HLR */
+	as_gmm_gsup_lu_isd();
+
+	BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+		f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+	}
+	f_send_l3(ts_GMM_ATTACH_COMPL);
+	setverdict(pass);
+}
+testcase TC_attach_combined() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_combined), testcasename(), g_gb, 7);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Attempt of GPRS ATTACH in 'accept all' mode */
+private function f_TC_attach_accept_all(charstring id) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	g_pars.net.expect_auth := false;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	f_gmm_auth();
+	BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+		f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+	}
+	f_send_l3(ts_GMM_ATTACH_COMPL);
+	setverdict(pass);
+}
+testcase TC_attach_accept_all() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "auth-policy accept-all");
+	vc_conn := f_start_handler(refers(f_TC_attach_accept_all), testcasename(), g_gb, 8);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Attempt of GPRS ATTACH in 'accept all' mode */
+private function f_TC_attach_closed_foreign(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	/* Simulate a foreign IMSI */
+	g_pars.imsi := '001010123456789'H;
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli);
+
+	g_pars.net.expect_auth := false;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	alt {
+	[] as_mm_identity();
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT('07'O)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT(*, *, *)) {
+		setverdict(fail);
+		mtc.stop;
+		}
+	}
+}
+testcase TC_attach_closed() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "auth-policy closed");
+	/* test with foreign IMSI: Must Reject */
+	vc_conn := f_start_handler(refers(f_TC_attach_closed_foreign), testcasename(), g_gb, 9);
+	vc_conn.done;
+	/* test with home IMSI: Must Accept */
+	vc_conn := f_start_handler(refers(f_TC_attach_accept_all), testcasename(), g_gb, 10);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Routing Area Update from Unknown TLLI -> REJECT */
+private function f_TC_rau_unknown(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	f_send_l3(ts_GMM_RAU_REQ(f_mi_get_lv(), GPRS_UPD_T_RA, old_ra, false, omit, omit));
+	alt {
+	[] BSSGP[0].receive(tr_GMM_RAU_REJECT('0a'O)) { /* gmm cause: implicitly detached */
+		setverdict(pass);
+		}
+	/* FIXME: Expect XID RESET? */
+	[] BSSGP[0].receive { repeat; }
+	}
+}
+testcase TC_rau_unknown() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_rau_unknown), testcasename(), g_gb, 11);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_rau(charstring id) runs on BSSGP_ConnHdlr {
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	f_routing_area_update(g_pars.ra, GPRS_UPD_T_PERIODIC, Tval := 10.0);
+}
+
+testcase TC_attach_rau() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_rau), testcasename(), g_gb, 12);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* general GPRS DETACH helper */
+function f_detach_mo(BIT3 detach_type, boolean power_off, boolean expect_purge, integer ran_index := 0) runs on BSSGP_ConnHdlr {
+	var PDU_L3_SGSN_MS l3_mt;
+	timer T := 5.0;
+	f_send_l3(ts_GMM_DET_REQ_MO(detach_type, power_off), ran_index);
+	if (expect_purge) {
+		GSUP.receive(tr_GSUP_PURGE_MS_REQ(g_pars.imsi, OSMO_GSUP_CN_DOMAIN_PS));
+		GSUP.send(ts_GSUP_PURGE_MS_RES(g_pars.imsi));
+	}
+	T.start;
+	alt {
+	[not expect_purge] GSUP.receive(tr_GSUP_PURGE_MS_REQ(?)) {
+		setverdict(fail, "Unexpected GSUP PURGE MS for unregistered TLLI");
+		mtc.stop;
+		}
+	[power_off] BSSGP[ran_index].receive(tr_GMM_DET_ACCEPT_MT) -> value l3_mt {
+		g_pars.ra := omit;
+		setverdict(fail, "Unexpected DETACH ACCEPT in power-off DETACH");
+		mtc.stop;
+		/* TODO: check if any PDP contexts are deactivated on network side? */
+		}
+	[power_off] T.timeout {
+		setverdict(pass);
+		}
+	[not power_off] BSSGP[ran_index].receive(tr_GMM_DET_ACCEPT_MT) -> value l3_mt {
+		g_pars.ra := omit;
+		setverdict(pass);
+		/* TODO: check if any PDP contexts are deactivated on network side? */
+		}
+	[] BSSGP[ran_index].receive(PDU_L3_SGSN_MS:?) -> value l3_mt {
+		if (power_off) {
+			setverdict(fail, "Unexpected Layer 3 package received in power-off DETACH");
+		} else {
+			setverdict(fail, "Unexpected Layer 3 package received in normal DETACH");
+		}
+		mtc.stop;
+		}
+	[] BSSGP[ran_index].receive { repeat; }
+	}
+}
+
+/* IMSI DETACH (non-power-off) for unknown TLLI */
+private function f_TC_detach_unknown_nopoweroff(charstring id) runs on BSSGP_ConnHdlr {
+	f_detach_mo(c_GMM_DTT_MO_GPRS, false, false);
+}
+testcase TC_detach_unknown_nopoweroff() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_detach_unknown_nopoweroff), testcasename(), g_gb, 13);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* IMSI DETACH (power-off) for unknown TLLI */
+private function f_TC_detach_unknown_poweroff(charstring id) runs on BSSGP_ConnHdlr {
+	f_detach_mo(c_GMM_DTT_MO_GPRS,  true, false);
+}
+testcase TC_detach_unknown_poweroff() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_detach_unknown_poweroff), testcasename(), g_gb, 14);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* IMSI DETACH (non-power-off) for known TLLI */
+private function f_TC_detach_nopoweroff(charstring id) runs on BSSGP_ConnHdlr {
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	f_detach_mo(c_GMM_DTT_MO_GPRS, false, true);
+}
+testcase TC_detach_nopoweroff() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_detach_nopoweroff), testcasename(), g_gb, 15);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* IMSI DETACH (power-off) for known TLLI */
+private function f_TC_detach_poweroff(charstring id) runs on BSSGP_ConnHdlr {
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true);
+}
+testcase TC_detach_poweroff() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_detach_poweroff), testcasename(), g_gb, 16);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_pdp_act(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	f_pdp_ctx_act(apars);
+}
+testcase TC_attach_pdp_act() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act), testcasename(), g_gb, 17);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* PDP Context activation for not-attached subscriber; expect fail */
+private function f_TC_pdp_act_unattached(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	f_send_l3(ts_SM_ACT_PDP_REQ(apars.tid, apars.nsapi, apars.sapi, apars.qos, apars.addr,
+				     apars.apn, apars.pco));
+	alt {
+	/* We might want toalso actually expect a PDPC CTX ACT REJ? */
+	[] BSSGP[0].receive(tr_GMM_DET_REQ_MT(?, ?)) {
+		setverdict(pass);
+		}
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, createPDPContextRequest, ?)) {
+		setverdict(fail, "Unexpected GTP PDP CTX ACT");
+		mtc.stop;
+		}
+	[] BSSGP[0].receive(tr_SM_ACT_PDP_ACCEPT(?, ?)) {
+		setverdict(fail, "Unexpected SM PDP CTX ACT ACK");
+		mtc.stop;
+		}
+	[] BSSGP[0].receive { repeat; }
+	}
+}
+testcase TC_pdp_act_unattached() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_pdp_act_unattached), testcasename(), g_gb, 18);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT + user plane traffic */
+private function f_TC_attach_pdp_act_user(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200));
+}
+testcase TC_attach_pdp_act_user() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_user), testcasename(), g_gb, 19);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT; reject from GGSN */
+private function f_TC_attach_pdp_act_ggsn_reject(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	apars.gtp_resp_cause := GTP_CAUSE_NO_RESOURCES_AVAILABLE;
+	apars.exp_rej_cause := '1a'O;			/* insufficient resources */
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+}
+testcase TC_attach_pdp_act_ggsn_reject() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_ggsn_reject), testcasename(), g_gb, 20);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT + user plane traffic + PDP CTX DEACT in MO direction */
+private function f_TC_attach_pdp_act_user_deact_mo(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200));
+
+	f_pdp_ctx_deact_mo(apars, '00'O);
+}
+testcase TC_attach_pdp_act_user_deact_mo() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_user_deact_mo), testcasename(), g_gb, 21);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT + user plane traffic + PDP CTX DEACT in MT direction */
+private function f_TC_attach_pdp_act_user_deact_mt(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200));
+
+	f_pdp_ctx_deact_mt(apars, false);
+}
+testcase TC_attach_pdp_act_user_deact_mt() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_user_deact_mt), testcasename(), g_gb, 22);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Test MS sending a duplicate Deact PDP Ctx (OS#3956). */
+private function f_TC_attach_pdp_act_deact_dup(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var Gtp1cUnitdata g_ud;
+	var integer i;
+	var OCT1 cause_regular_deact := '24'O;
+
+	/* first perform regular attach + PDP context act */
+	f_TC_attach(id);
+	f_pdp_ctx_act(apars);
+
+	f_send_l3_gmm_llc(ts_SM_DEACT_PDP_REQ_MO(apars.tid, cause_regular_deact, false, omit), 0);
+	f_send_l3_gmm_llc(ts_SM_DEACT_PDP_REQ_MO(apars.tid, cause_regular_deact, false, omit), 0);
+
+	for (i := 0; i < 2; i := i+1) {
+		GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextRequest, apars.ggsn_tei_c)) -> value g_ud {
+			var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+			log("Received deletePDPContextResponse " & int2str(i) & ", seq_nr=" & int2str(seq_nr));
+			GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePdpResp(g_ud.peer, seq_nr,
+								     apars.sgsn_tei_c,
+								     GTP_CAUSE_REQUEST_ACCEPTED));
+		}
+	}
+
+	alt {
+	[] BSSGP[0].receive(tr_SM_DEACT_PDP_ACCEPT_MT(apars.tid)) {
+		setverdict(pass);
+		}
+	[] as_xid(apars, 0);
+	}
+
+	/* Make sure second DeactPdpAccept is sent: */
+	timer T := 2.0;
+	T.start;
+	alt {
+	[] BSSGP[0].receive(tr_SM_DEACT_PDP_ACCEPT_MT(apars.tid)) {
+		setverdict(fail, "Second SM_DEACT_PDP_ACCEPT_MT received");
+		}
+	[] T.timeout {
+		setverdict(pass);
+		}
+	}
+
+	setverdict(pass);
+}
+testcase TC_attach_pdp_act_deact_dup() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_deact_dup), testcasename(), g_gb, 46);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + ATTACH (2nd) */
+private function f_TC_attach_forget_tlli_attach(charstring id) runs on BSSGP_ConnHdlr {
+	g_pars.t_guard  := 5.0;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	/* second to perform regular attach */
+	f_TC_attach(id);
+}
+
+
+testcase TC_attach_second_attempt() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_forget_tlli_attach), testcasename(), g_gb, 22);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_echo_timeout(charstring id) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var integer seq_nr;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+
+	/* Wait to receive first echo request and send initial Restart counter */
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, echoRequest, ?)) -> value g_ud {
+		BSSGP[0].clear;
+		seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_PONG(g_ud.peer, seq_nr, apars.ggsn_restart_ctr));
+		f_sleep(int2float(mp_echo_interval)); /* wait until around next echo is expected */
+	}
+
+	/* At some point next echo request not answered will timeout and SGSN
+	   should drop the pdp ctx. Around T3 (3secs) * 6 (+ extra, a lot due to OS#4178): */
+	timer T := 3.0 * 6.0 + 16.0;
+	T.start;
+	alt {
+		[] BSSGP[0].receive(tr_SM_DEACT_PDP_REQ_MT(apars.tid, ?, true)) {
+			f_send_l3_gmm_llc(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid));
+			setverdict(pass);
+		}
+		[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextRequest, apars.ggsn_tei_c)) -> value g_ud {
+			/* SGSN currently doesn't send this message because it expects GGSN to be non-reachable anyway */
+			seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+			log("Received deletePDPContextRequest seq_nr=" & int2str(seq_nr));
+			GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePdpResp(g_ud.peer, seq_nr,
+								     apars.sgsn_tei_c,
+								     GTP_CAUSE_REQUEST_ACCEPTED));
+			repeat;
+		}
+		[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, echoRequest, ?)) -> value g_ud {
+			seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+			log("Received EchoRequest seq_nr=" & int2str(seq_nr));
+			repeat;
+		}
+		[] T.timeout {
+			setverdict(fail, "BSSGP DeactPdpReq not received");
+			mtc.stop;
+		}
+		[] as_xid(apars);
+	}
+	T.stop
+
+	setverdict(pass);
+}
+/* ATTACH + trigger Recovery procedure through CreatePdpResp */
+testcase TC_attach_echo_timeout() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	g_use_echo := true;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_echo_timeout), testcasename(), g_gb, 67, 50.0);
+	vc_conn.done;
+	g_use_echo := false;
+	f_cleanup();
+}
+
+private function f_TC_attach_restart_ctr_echo(charstring id) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* Activate a pdp context against the  GGSN */
+	f_pdp_ctx_act(apars);
+	/* Wait to receive first echo request and send initial Restart counter */
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, echoRequest, ?)) -> value g_ud {
+		var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_PONG(g_ud.peer, seq_nr, apars.ggsn_restart_ctr));
+	}
+	/* Wait to receive second echo request and send incremented Restart
+	   counter. This will fake a restarted GGSN, and pdp ctx allocated
+	   should be released by SGSN */
+	apars.ggsn_restart_ctr := int2oct(oct2int(apars.ggsn_restart_ctr) + 1, 1);
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, echoRequest, ?)) -> value g_ud {
+		var integer seq_nr := oct2int(g_ud.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_PONG(g_ud.peer, seq_nr, apars.ggsn_restart_ctr));
+	}
+	var OCT1 cause_network_failure := int2oct(38, 1)
+	alt {
+	[] BSSGP[0].receive(tr_SM_DEACT_PDP_REQ_MT(apars.tid, cause_network_failure, true)) {
+		f_send_l3(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid));
+		setverdict(pass);
+		}
+	[] as_xid(apars);
+	}
+	setverdict(pass);
+}
+/* ATTACH + trigger Recovery procedure through EchoResp */
+testcase TC_attach_restart_ctr_echo() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	g_use_echo := true
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_restart_ctr_echo), testcasename(), g_gb, 23, 30.0);
+	vc_conn.done;
+	g_use_echo := false
+	f_cleanup();
+}
+
+private function f_TC_attach_restart_ctr_create(charstring id) runs on BSSGP_ConnHdlr {
+	var Gtp1cUnitdata g_ud;
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var integer seq_nr := 23;
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	/* Use this CTX ACT to send initial Restart counter to SGSN. */
+	apars.gtp_resp_cause := GTP_CAUSE_NO_RESOURCES_AVAILABLE;
+	apars.exp_rej_cause := '1a'O;			/* insufficient resources */
+	f_pdp_ctx_act(apars, true);
+
+	/* Increment restart_ctr. This will fake a restarted GGSN when CreatePdpResp is
+/* received. */
+	apars.ggsn_restart_ctr := int2oct(oct2int(apars.ggsn_restart_ctr) + 1, 1);
+
+	/* FIXME: Once we can easily handle different pdp ctx simultaneously, it
+	   would be great to have an active pdp context here before triggering
+	   Recovery, and making sure the the DEACT request is sent by the SGSN.
+	*/
+
+	/* Activate a pdp context against the GGSN, send incremented Recovery
+	   IE. This should trigger the recovery path, but still this specific
+	   CTX activation should work. */
+	apars.exp_rej_cause := omit; /* default value for tests */
+	apars.gtp_resp_cause := GTP_CAUSE_REQUEST_ACCEPTED;  /* default value for tests */
+	f_pdp_ctx_act(apars, true);
+
+	setverdict(pass);
+}
+/* ATTACH + trigger Recovery procedure through CreatePdpResp */
+testcase TC_attach_restart_ctr_create() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_restart_ctr_create), testcasename(), g_gb, 24, 30.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT + user plane traffic + PDP CTX DEACT in MT direction + trigger T3395 */
+private function f_TC_attach_pdp_act_deact_mt_t3395_expire(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var integer seq_nr := 23;
+	var Gtp1cPeer peer;
+	var integer i;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+
+	BSSGP[0].clear;
+	peer := valueof(ts_GtpPeerC(apars.sgsn_ip_c));
+	GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePDP(peer, seq_nr, apars.sgsn_tei_c, apars.nsapi, '1'B));
+
+	for (i := 0; i < 5; i := i+1) {
+		alt {
+			[] BSSGP[0].receive(tr_SM_DEACT_PDP_REQ_MT(apars.tid, ?, true)) {}
+			[] as_xid(apars);
+		}
+	}
+
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextResponse, apars.ggsn_tei_c)) {}
+
+	f_send_l3(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid));
+	setverdict(pass);
+}
+testcase TC_attach_pdp_act_deact_mt_t3395_expire() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_deact_mt_t3395_expire), testcasename(), g_gb, 25, 60.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* ATTACH + PDP CTX ACT dropped + retrans */
+private function f_TC_attach_pdp_act_deact_gtp_retrans(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var Gtp1cUnitdata g_ud_first, g_ud_second;
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	/* then activate PDP context on the Gb side */
+	f_send_l3_gmm_llc(ts_SM_ACT_PDP_REQ(apars.tid, apars.nsapi, apars.sapi, apars.qos, apars.addr,
+				     apars.apn, apars.pco), 0);
+
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, createPDPContextRequest, ?)) -> value g_ud_first {}
+	log("First createPDPContextRequest received, dropping & waiting for retransmission");
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, createPDPContextRequest, ?)) -> value g_ud_second {
+		if (g_ud_first != g_ud_second) {
+			setverdict(fail, "Retransmitted GTP message createPDPContextRequest is different from original one!");
+			mtc.stop;
+		}
+		f_process_gtp_ctx_act_req(apars, g_ud_second.gtpc);
+		var integer seq_nr := oct2int(g_ud_second.gtpc.opt_part.sequenceNumber);
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_CreatePdpResp(g_ud_second.peer, seq_nr,
+						apars.sgsn_tei_c, apars.gtp_resp_cause,
+						apars.ggsn_tei_c, apars.ggsn_tei_u,
+						apars.nsapi,
+						apars.ggsn_ip_c, apars.ggsn_ip_u, apars.chg_id,
+						omit, omit));
+	}
+	BSSGP[0].receive(tr_SM_ACT_PDP_ACCEPT) {}
+
+	/* Now the same with Deact */
+	f_send_l3_gmm_llc(ts_SM_DEACT_PDP_REQ_MO(apars.tid, '00'O, false, omit), 0);
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextRequest, apars.ggsn_tei_c)) -> value g_ud_first {}
+	log("First deletePDPContextRequest received, dropping & waiting for retransmission");
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextRequest, apars.ggsn_tei_c)) -> value g_ud_second {
+		if (g_ud_first != g_ud_second) {
+			setverdict(fail, "Retransmitted GTP message deletePDPContextRequest is different from original one!");
+			mtc.stop;
+		}
+		var integer seq_nr := oct2int(g_ud_second.gtpc.opt_part.sequenceNumber);
+		BSSGP[0].clear;
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_DeletePdpResp(g_ud_second.peer, seq_nr,
+							     apars.sgsn_tei_c,
+							     GTP_CAUSE_REQUEST_ACCEPTED));
+	}
+	alt {
+	[] BSSGP[0].receive(tr_SM_DEACT_PDP_ACCEPT_MT(apars.tid)) {
+		setverdict(pass);
+		}
+	[] as_xid(apars, 0);
+	}
+
+	setverdict(pass);
+}
+testcase TC_attach_pdp_act_deact_gtp_retrans() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_deact_gtp_retrans), testcasename(), g_gb, 27);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Test that SGSN GTP response retransmit queue works fine */
+private function f_TC_attach_pdp_act_deact_gtp_retrans_resp(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var integer seq_nr := 23;
+	var Gtp1cUnitdata g_ud_first, g_ud_second;
+	var template Gtp1cUnitdata g_delete_req;
+	/* first perform regular attach + PDP context act */
+	f_TC_attach(id);
+	f_pdp_ctx_act(apars);
+
+	/* Now perform an MT DeleteCtxReq and emulate GGSN didn't receive response and sends a duplicated DeleteCtxReq */
+	BSSGP[0].clear;
+	var Gtp1cPeer peer := valueof(ts_GtpPeerC(apars.sgsn_ip_c));
+	g_delete_req := ts_GTPC_DeletePDP(peer, seq_nr, apars.sgsn_tei_c, apars.nsapi, '1'B);
+	GTP[GTP_GGSN_IDX].send(g_delete_req);
+	alt {
+	[] BSSGP[0].receive(tr_SM_DEACT_PDP_REQ_MT(apars.tid, ?, true)) {
+			f_send_l3_gmm_llc(ts_SM_DEACT_PDP_ACCEPT_MO(apars.tid), 0);
+		}
+	[] as_xid(apars, 0);
+	}
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextResponse, apars.ggsn_tei_c)) -> value g_ud_first {
+		if (g_ud_first.gtpc.gtpc_pdu.deletePDPContextResponse.cause.causevalue != '80'O) {
+			setverdict(fail, "Received deletePDPContextResponse cause is not 'Request accepted'");
+			mtc.stop;
+		}
+	};
+
+	/* Send duplicate DeleteCtxReq */
+	log("First deletePDPContextResponse received, dropping & retransmitting retransmission of deletePDPContextRequest");
+	GTP[GTP_GGSN_IDX].send(g_delete_req);
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextResponse, apars.ggsn_tei_c)) -> value g_ud_second {
+		if (g_ud_first != g_ud_second) {
+			setverdict(fail, "Retransmitted GTP message deletePDPContextResponse is different from original one!");
+			mtc.stop;
+		}
+	}
+
+	/* Let's send now a new DeleteCtxReq (increased seq_nr) to make sure it
+	 * is handled differently by SGSN (expect "non-existent" cause) */
+	g_delete_req := ts_GTPC_DeletePDP(peer, seq_nr + 1, apars.sgsn_tei_c, apars.nsapi, '1'B);
+	GTP[GTP_GGSN_IDX].send(g_delete_req);
+	/* Response with cause "non-existent" must be sent with TEID 0 according to specs */
+	GTP[GTP_GGSN_IDX].receive(tr_GTPC_MsgType(?, deletePDPContextResponse, '00000000'O)) -> value g_ud_second {
+		if (g_ud_second.gtpc.gtpc_pdu.deletePDPContextResponse.cause.causevalue != 'C0'O) {
+			setverdict(fail, "Received deletePDPContextResponse cause is not 'Non-existent'");
+			mtc.stop;
+		}
+	}
+
+	setverdict(pass);
+}
+testcase TC_attach_pdp_act_deact_gtp_retrans_resp() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_deact_gtp_retrans_resp), testcasename(), g_gb, 28);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_hlr_location_cancel_request_update(charstring id) runs on BSSGP_ConnHdlr {
+	/* MS: perform regular attach */
+	f_TC_attach(id);
+
+	/* HLR: cancel the location request */
+	GSUP.send(ts_GSUP_CL_REQ(g_pars.imsi, OSMO_GSUP_CANCEL_TYPE_UPDATE));
+	GSUP.receive(tr_GSUP_CL_RES(g_pars.imsi));
+
+	/* ensure no Detach Request got received */
+	timer T := 5.0;
+	T.start;
+	alt {
+		[] BSSGP[0].receive(tr_GMM_DET_REQ_MT(*, *, *)) {
+			T.stop;
+			setverdict(fail, "Unexpected GMM Detach Request");
+			mtc.stop;
+		}
+		[] T.timeout {
+			setverdict(pass);
+			mtc.stop;
+		}
+		[] BSSGP[0].receive {
+			repeat;
+		}
+	}
+}
+
+/* ATTACH + PDP CTX ACT + user plane traffic + ERROR IND in MT direction */
+private function f_TC_attach_pdp_act_user_error_ind_ggsn(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200));
+
+	/* Send Error indication as response from upload PDU and expect deact towards MS */
+	f_pdp_ctx_deact_mt(apars, true);
+}
+testcase TC_attach_pdp_act_user_error_ind_ggsn() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_user_error_ind_ggsn), testcasename(), g_gb, 26);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_hlr_location_cancel_request_update() runs on test_CT {
+	/* MS <-> SGSN: GMM Attach
+	 * HLR -> SGSN: Cancel Location Request
+	 * HLR <- SGSN: Cancel Location Ack
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_hlr_location_cancel_request_update), testcasename(), g_gb, 31);
+	vc_conn.done;
+	f_cleanup();
+}
+
+
+private function f_TC_hlr_location_cancel_request_withdraw(charstring id) runs on BSSGP_ConnHdlr {
+	/* MS: perform regular attach */
+	f_TC_attach(id);
+
+	/* HLR: cancel the location request */
+	GSUP.send(ts_GSUP_CL_REQ(g_pars.imsi, OSMO_GSUP_CANCEL_TYPE_WITHDRAW));
+	GSUP.receive(tr_GSUP_CL_RES(g_pars.imsi));
+
+	/* MS: receive a Detach Request */
+	BSSGP[0].receive(tr_GMM_DET_REQ_MT(c_GMM_DTT_MT_IMSI_DETACH, ?, ?));
+	f_send_l3(ts_GMM_DET_ACCEPT_MO);
+
+	setverdict(pass);
+}
+
+testcase TC_hlr_location_cancel_request_withdraw() runs on test_CT {
+	/* MS <-> SGSN: GMM Attach
+	 * HLR -> SGSN: Cancel Location Request
+	 * HLR <- SGSN: Cancel Location Ack
+	 * MS  <- SGSN: Detach Request
+	 * SGSN->   MS: Detach Complete
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_hlr_location_cancel_request_withdraw), testcasename(), g_gb, 29);
+	vc_conn.done;
+	f_cleanup();
+}
+
+
+private function f_hlr_location_cancel_request_unknown_subscriber(
+		charstring id,
+		GSUP_CancelType canceltype) runs on BSSGP_ConnHdlr {
+
+	/* HLR: cancel the location request */
+	GSUP.send(ts_GSUP_CL_REQ(g_pars.imsi, canceltype));
+
+	/* cause 2 = IMSI_UNKNOWN */
+	GSUP.receive(tr_GSUP_CL_ERR(g_pars.imsi, 2));
+
+	setverdict(pass);
+}
+
+private function f_TC_hlr_location_cancel_request_unknown_subscriber_withdraw(charstring id) runs on BSSGP_ConnHdlr {
+	f_hlr_location_cancel_request_unknown_subscriber(id, OSMO_GSUP_CANCEL_TYPE_WITHDRAW);
+}
+
+testcase TC_hlr_location_cancel_request_unknown_subscriber_withdraw() runs on test_CT {
+	/* HLR -> SGSN: Cancel Location Request
+	 * HLR <- SGSN: Cancel Location Error
+	 */
+
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_hlr_location_cancel_request_unknown_subscriber_withdraw), testcasename(), g_gb, 30);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_hlr_location_cancel_request_unknown_subscriber_update(charstring id) runs on BSSGP_ConnHdlr {
+	f_hlr_location_cancel_request_unknown_subscriber(id, OSMO_GSUP_CANCEL_TYPE_WITHDRAW);
+}
+
+testcase TC_hlr_location_cancel_request_unknown_subscriber_update() runs on test_CT {
+	/* HLR -> SGSN: Cancel Location Request
+	 * HLR <- SGSN: Cancel Location Error
+	 */
+
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_hlr_location_cancel_request_unknown_subscriber_update), testcasename(), g_gb, 30);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_detach_check_subscriber_list(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach(id);
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true);
+}
+
+testcase TC_attach_detach_check_subscriber_list() runs on test_CT {
+	/* MS <-> SGSN: Attach
+	 * MS ->  SGSN: Detach Req (Power off)
+	 * VTY -> SGSN: Check if MS is NOT in subscriber cache
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	var integer id := 33;
+	var charstring imsi := hex2str(f_gen_imsi(id));
+
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_detach_check_subscriber_list), testcasename(), g_gb, id);
+	vc_conn.done;
+
+	f_vty_transceive_not_match(SGSNVTY, "show subscriber cache", pattern "* IMSI: {imsi}*");
+	f_cleanup();
+}
+
+/* Attempt an attach, but loose the Identification Request (IMEI) */
+private function f_TC_attach_no_imei_response(charstring id) runs on BSSGP_ConnHdlr {
+	var integer count_req := 0;
+	var MobileIdentityLV mi;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), f_random_RAI(), true, false, omit, omit));
+
+	alt {
+		[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+			/* break */
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('001'B)) {
+			mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+			f_send_l3(ts_GMM_ID_RESP(mi));
+			repeat;
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('010'B)) {
+			/* ignore ID REQ IMEI */
+			count_req := count_req + 1;
+			repeat;
+		}
+	}
+	if (count_req != 5) {
+		setverdict(fail, "Did not received GMM ID Request Type IMEI 5 times!");
+		mtc.stop;
+	}
+	setverdict(pass);
+}
+
+testcase TC_attach_no_imei_response() runs on test_CT {
+	/* MS -> SGSN: Attach Request IMSI
+	 * MS <- SGSN: Identity Request IMSI (optional)
+	 * MS -> SGSN: Identity Response IMSI (optional)
+	 * MS <- SGSN: Identity Request IMEI
+	 * MS -x SGSN: no response
+	 * MS <- SGSN: re-send: Identity Request IMEI 4x
+	 * MS <- SGSN: Attach Reject
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_no_imei_response), testcasename(), g_gb, 32, 60.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Attempt an attach, but loose the Identification Request (IMSI) */
+private function f_TC_attach_no_imsi_response(charstring id) runs on BSSGP_ConnHdlr {
+	var integer count_req := 0;
+	var MobileIdentityLV mi;
+
+	/* set p_tmsi to use it in Attach Req via f_mi_get_lv() */
+	g_pars.p_tmsi := 'c0000035'O;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), f_random_RAI(), true, false, omit, omit));
+
+	alt {
+		[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+			/* break */
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('001'B)) {
+			/* ignore ID REQ IMSI */
+			count_req := count_req + 1;
+			repeat;
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('010'B)) {
+			mi := valueof(ts_MI_IMEI_LV(g_pars.imei));
+			f_send_l3(ts_GMM_ID_RESP(mi));
+			repeat;
+		}
+	}
+	if (count_req != 5) {
+		setverdict(fail, "Did not received GMM ID Request Type IMSI 5 times!");
+		mtc.stop;
+	}
+	setverdict(pass);
+}
+
+testcase TC_attach_no_imsi_response() runs on test_CT {
+	/* MS -> SGSN: Attach Request TMSI (unknown)
+	 * MS <- SGSN: Identity Request IMEI (optional)
+	 * MS -> SGSN: Identity Response IMEI (optional)
+	 * MS <- SGSN: Identity Request IMSI
+	 * MS -x SGSN: no response
+	 * MS <- SGSN: re-send: Identity Request IMSI 4x
+	 * MS <- SGSN: Attach Reject
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_no_imsi_response), testcasename(), g_gb, 35, 60.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_sgsn_vty_destroy_subscriber_imsi(TELNETasp_PT pt, charstring imsi) {
+	f_vty_transceive(pt, "update-subscriber imsi " & imsi & " destroy");
+}
+
+testcase TC_attach_check_subscriber_list() runs on test_CT {
+	/* MS <-> SGSN: Attach
+	 * VTY -> SGSN: Check if MS is in subscriber cache
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	var integer id := 34;
+	var charstring imsi := hex2str(f_gen_imsi(id));
+
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach), testcasename(), g_gb, id);
+	vc_conn.done;
+
+	f_vty_transceive_match(SGSNVTY, "show subscriber cache", pattern "* IMSI: {imsi}*");
+	f_sgsn_vty_destroy_subscriber_imsi(SGSNVTY, imsi);
+	f_cleanup();
+}
+
+private function f_TC_attach_closed_imsi_added(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+	var PDU_L3_SGSN_MS l3_mt;
+
+	/* unregister the old IMSI */
+	f_bssgp_client_unregister(g_pars.imsi);
+	/* Simulate a foreign IMSI */
+	g_pars.imsi := '001010123456700'H;
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli);
+
+	/* there is no auth */
+	g_pars.net.expect_auth := false;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit));
+	f_gmm_auth();
+	alt {
+		[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+			setverdict(fail, "Received unexpected GMM Attach REJECT");
+			mtc.stop;
+		}
+		[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT(*, *, *)) -> value l3_mt {
+			f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+			f_send_l3(ts_GMM_ATTACH_COMPL);
+			setverdict(pass);
+		}
+	}
+}
+
+private function f_TC_attach_closed_add_vty(charstring id) runs on BSSGP_ConnHdlr {
+
+	f_TC_attach_closed_foreign(id);
+	f_TC_attach_closed_imsi_added(id);
+
+}
+
+
+testcase TC_attach_closed_add_vty() runs on test_CT {
+	/* VTY-> SGSN: policy close
+	 * MS -> SGSN: Attach Request
+	 * MS <- SGSN: Identity Request IMSI
+	 * MS -> SGSN: Identity Response IMSI
+	 * MS <- SGSN: Attach Reject
+	 * VTY-> SGSN: policy imsi-acl add IMSI
+	 * MS -> SGSN: Attach Request
+	 * MS <- SGSN: Identity Request IMSI
+	 * MS -> SGSN: Identity Response IMSI
+	 * MS <- SGSN: Identity Request IMEI
+	 * MS -> SGSN: Identity Response IMEI
+	 * MS <- SGSN: Attach Accept
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "auth-policy closed");
+	f_vty_config(SGSNVTY, "sgsn", "imsi-acl del 001010123456789");
+	f_vty_config(SGSNVTY, "sgsn", "imsi-acl del 001010123456700");
+	f_vty_config(SGSNVTY, "sgsn", "imsi-acl add 001010123456700");
+	/* test with foreign IMSI: Must Reject */
+	vc_conn := f_start_handler(refers(f_TC_attach_closed_add_vty), testcasename(), g_gb, 9);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Attempt an attach, but never answer a Attach Complete */
+private function f_TC_attach_check_complete_resend(charstring id) runs on BSSGP_ConnHdlr {
+	var integer count_req := 0;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), f_random_RAI(), true, false, omit, omit));
+	f_gmm_auth();
+	/* Expect SGSN to perform LU with HLR */
+	as_gmm_gsup_lu_isd();
+
+	timer T := 10.0;
+	T.start;
+	alt {
+		[] T.timeout {
+			/* break */
+		}
+		[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT(*, *, *)) {
+			/* ignore */
+			count_req := count_req + 1;
+			T.start;
+			repeat;
+		}
+	}
+	if (count_req != 5) {
+		setverdict(fail, "Did not received GMM Attach Complete.");
+		mtc.stop;
+	}
+	setverdict(pass);
+}
+
+testcase TC_attach_check_complete_resend() runs on test_CT {
+	/* MS -> SGSN: Attach Request IMSI
+	 * MS <- SGSN: Identity Request *
+	 * MS -> SGSN: Identity Response *
+	 * MS <- SGSN: Attach Complete 5x
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_check_complete_resend), testcasename(), g_gb, 36, 60.0);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_rau_a_a(charstring id) runs on BSSGP_ConnHdlr {
+	/* first perform regular attach */
+	f_TC_attach(id);
+
+	/* then send RAU */
+	f_routing_area_update(g_pars.ra);
+
+	/* do another RAU */
+	f_routing_area_update(g_pars.ra);
+
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true);
+}
+testcase TC_attach_rau_a_a() runs on test_CT {
+	/* MS <-> SGSN: Successful Attach
+	 * MS  -> SGSN: Routing Area Update Request
+	 * MS <-  SGSN: Routing Area Update Accept
+	 * MS  -> SGSN: Routing Area Update Request
+	 * MS <-  SGSN: Routing Area Update Accept
+	 * MS  -> SGSN: Detach (PowerOff)
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_rau_a_a), testcasename(), g_gb, 37);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_rau_a_b(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach(id);
+
+	log("attach complete sending rau");
+	f_routing_area_update(g_pars.ra);
+
+	log("rau complete unregistering");
+	f_bssgp_client_unregister(g_pars.imsi);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+
+	log("sending second RAU via different RA");
+	f_routing_area_update(old_ra := g_pars.ra, ran_index := 1);
+
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true, 1);
+}
+testcase TC_attach_rau_a_b() runs on test_CT {
+	/* MS <-> SGSN: Successful Attach
+	 * MS  -> SGSN: Routing Area _a_ Update Request
+	 * MS <-  SGSN: Routing Area _a_ Update Accept
+	 * MS  -> SGSN: Routing Area _b_ Update Request
+	 * MS <-  SGSN: Routing Area _b_ Update Accept
+	 * MS  -> SGSN: Detach (PowerOff)
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_rau_a_b), testcasename(), g_gb, 38);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* MS fills wrong Old RA during 2nd RAU. SGSN rejects it. */
+private function f_TC_attach_rau_a_b_wrong_old_ra(charstring id) runs on BSSGP_ConnHdlr {
+	var integer ran_index := 1;
+	f_TC_attach(id);
+
+	log("attach complete sending rau");
+	f_routing_area_update(g_pars.ra);
+
+	log("rau complete unregistering");
+	f_bssgp_client_unregister(g_pars.imsi);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+
+	log("sending second RAU via different RA with wrong Old RA");
+	var RoutingAreaIdentificationV wrong_old_ra := g_pars.ra;
+	wrong_old_ra.rac := int2oct((oct2int(wrong_old_ra.rac) + 5) / 3, 1);
+	f_send_l3(ts_GMM_RAU_REQ(f_mi_get_lv(), GPRS_UPD_T_RA, old_ra := wrong_old_ra), ran_index);
+
+	timer T := 2.0;
+	T.start;
+	alt {
+	[] BSSGP[ran_index].receive(tr_GMM_RAU_REJECT);
+	[] BSSGP[ran_index].receive(tr_LLC_XID_MT_CMD(?, ?)) {
+		/* Ignore XID Reset */
+		repeat;
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout rx RAU Reject");
+		mtc.stop;
+		}
+	}
+
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true, ran_index := ran_index);
+}
+testcase TC_attach_rau_a_b_wrong_old_ra() runs on test_CT {
+	/* MS <-> SGSN: Successful Attach
+	 * MS  -> SGSN: Routing Area _a_ Update Request
+	 * MS <-  SGSN: Routing Area _a_ Update Accept
+	 * MS  -> SGSN: Routing Area _b_ Update Request (Wrong Old Routing Area)
+	 * MS <-  SGSN: Routing Area _b_ Update Reject
+	 * MS  -> SGSN: Detach (PowerOff)
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_rau_a_b_wrong_old_ra), testcasename(), g_gb, 39);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_gmm_attach_req_while_gmm_attach(charstring id) runs on BSSGP_ConnHdlr {
+	var integer count_req := 0;
+	var MobileIdentityLV mi;
+	var RoutingAreaIdentificationV rand_rai := f_random_RAI();
+	var PDU_L3_SGSN_MS l3_mt;
+
+	f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), rand_rai, true, false, omit, omit));
+
+	alt {
+		[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+			setverdict(fail, "Unexpected GMM ATTACH REJECT");
+			mtc.stop;
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('001'B)) {
+			mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+			f_send_l3(ts_GMM_ID_RESP(mi));
+			repeat;
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('010'B)) {
+			/* send out a second GMM_Attach Request.
+			 * If the SGSN follows the rules, this 2nd ATTACH REQ should be ignored, because
+			 * of the same content */
+			f_send_l3(ts_GMM_ATTACH_REQ(f_mi_get_lv(), rand_rai, true, false, omit, omit));
+			mi := valueof(ts_MI_IMEI_LV(g_pars.imei));
+			f_send_l3(ts_GMM_ID_RESP(mi));
+		}
+	}
+	f_sleep(1.0);
+
+	/* we've sent already a IMEI answer, we should NOT asked again for IMEI */
+	alt {
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('001'B)) {
+			mi := valueof(ts_MI_IMSI_LV(g_pars.imsi));
+			f_send_l3(ts_GMM_ID_RESP(mi));
+			repeat;
+		}
+		[] BSSGP[0].receive(tr_GMM_ID_REQ('010'B)) {
+			setverdict(fail, "Unexpected GMM ID REQ (IMEI).");
+			mtc.stop;
+		}
+		[] BSSGP[0].receive(tr_GMM_ATTACH_REJECT(?)) {
+			setverdict(fail, "Unexpected GMM ATTACH REJECT");
+			mtc.stop;
+		}
+		[] BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+			f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+			f_send_l3(ts_GMM_ATTACH_COMPL);
+			setverdict(pass);
+			/* FIXME: Extract P-TMSI, if any. Only send Complete if necessary */
+		}
+	}
+}
+
+testcase TC_attach_gmm_attach_req_while_gmm_attach() runs on test_CT {
+	/* Testing if the SGSN ignore Attach Request with the exact same content */
+	/* MS -> SGSN: Attach Request IMSI
+	 * MS <- SGSN: Identity Request IMSI (optional)
+	 * MS -> SGSN: Identity Response IMSI (optional)
+	 * MS <- SGSN: Identity Request IMEI
+	 * MS -> SGSN: Attach Request (2nd)
+	 * MS <- SGSN: Identity Response IMEI
+	 * MS <- SGSN: Attach Accept
+	 * MS -> SGSN: Attach Complete
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "auth-policy accept-all");
+	vc_conn := f_start_handler(refers(f_TC_attach_gmm_attach_req_while_gmm_attach), testcasename(), g_gb, 39);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_usim_resync(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	var template (value) PDU_L3_MS_SGSN attach_req := ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit);
+
+	/* send Attach Request */
+	/* indicate R99 capability of the MS to enable UMTS AKA in presence of
+	 * 3G auth vectors */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.revisionLevelIndicatior := '1'B;
+	/* The thing is, if the solSACapability is 'omit', then the
+	 * revisionLevelIndicatior is at the wrong place! */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.solSACapability := '0'B;
+	f_send_l3(attach_req);
+
+	/* do the auth */
+	var PDU_L3_MS_SGSN l3_mo;
+	var PDU_L3_SGSN_MS l3_mt;
+	var default di := activate(as_mm_identity());
+
+	var GSUP_IE auth_tuple;
+	var template AuthenticationParameterAUTNTLV autn;
+
+	g_pars.vec := f_gen_auth_vec_3g();
+	autn := {
+		elementIdentifier := '28'O,
+		lengthIndicator := lengthof(g_pars.vec.autn),
+		autnValue := g_pars.vec.autn
+		};
+	auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G3G(g_pars.vec.rand,
+							g_pars.vec.sres,
+							g_pars.vec.kc,
+							g_pars.vec.ik,
+							g_pars.vec.ck,
+							g_pars.vec.autn,
+							g_pars.vec.res));
+	log("GSUP sends 2G and 3G auth tuples", auth_tuple);
+	GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi));
+	GSUP.send(ts_GSUP_SAI_RES(g_pars.imsi, auth_tuple));
+
+	var template PDU_L3_SGSN_MS auth_ciph_req := tr_GMM_AUTH_REQ(g_pars.vec.rand);
+	auth_ciph_req.msgs.gprs_mm.authenticationAndCipheringRequest.authenticationParameterAUTN := autn;
+	BSSGP[0].receive(auth_ciph_req) -> value l3_mt;
+
+	/* send the gmm auth failure with resync IE */
+	f_send_l3(ts_GMM_AUTH_FAIL_UMTS_AKA_RESYNC(g_pars.vec.auts));
+
+	/* wait for the GSUP resync request */
+	GSUP.receive(tr_GSUP_SAI_REQ_UMTS_AKA_RESYNC(
+		g_pars.imsi,
+		g_pars.vec.auts,
+		g_pars.vec.rand));
+
+	/* generate new key material */
+	g_pars.vec := f_gen_auth_vec_3g();
+	autn := {
+		elementIdentifier := '28'O,
+		lengthIndicator := lengthof(g_pars.vec.autn),
+		autnValue := g_pars.vec.autn
+		};
+
+	auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G3G(g_pars.vec.rand,
+							g_pars.vec.sres,
+							g_pars.vec.kc,
+							g_pars.vec.ik,
+							g_pars.vec.ck,
+							g_pars.vec.autn,
+							g_pars.vec.res));
+	/* send new key material */
+	GSUP.send(ts_GSUP_SAI_RES(g_pars.imsi, auth_tuple));
+
+	/* wait for the new Auth Request */
+	auth_ciph_req := tr_GMM_AUTH_REQ(g_pars.vec.rand);
+	auth_ciph_req.msgs.gprs_mm.authenticationAndCipheringRequest.authenticationParameterAUTN := autn;
+	BSSGP[0].receive(auth_ciph_req) -> value l3_mt;
+	var BIT4 ac_ref := l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.acReferenceNumber.valueField;
+	var template (value) PDU_L3_MS_SGSN auth_ciph_resp := ts_GMM_AUTH_RESP_2G(ac_ref, g_pars.vec.sres);
+	auth_ciph_resp := ts_GMM_AUTH_RESP_2G(ac_ref, g_pars.vec.sres);
+	auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationParResp := {
+		valueField := substr(g_pars.vec.res, 0, 4)
+	};
+	auth_ciph_resp.msgs.gprs_mm.authenticationAndCipheringResponse.authenticationRespParExt := {
+		elementIdentifier := '21'O,
+		lengthIndicator := lengthof(g_pars.vec.res) - 4,
+		valueField := substr(g_pars.vec.res, 4, lengthof(g_pars.vec.res) - 4)
+	};
+	l3_mo := valueof(auth_ciph_resp);
+	if (ispresent(l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest) and
+		l3_mt.msgs.gprs_mm.authenticationAndCipheringRequest.imeisvRequest.valueField == '001'B) {
+		l3_mo.msgs.gprs_mm.authenticationAndCipheringResponse.imeisv :=
+					valueof(ts_MI_IMEISV_TLV(g_pars.imei & '00'H));
+	}
+	f_send_l3(l3_mo);
+	deactivate(di);
+
+	/* Expect SGSN to perform LU with HLR */
+	as_gmm_gsup_lu_isd();
+
+	BSSGP[0].receive(tr_GMM_ATTACH_ACCEPT('001'B, ?, ?)) -> value l3_mt {
+		f_process_attach_accept(l3_mt.msgs.gprs_mm.attachAccept);
+	}
+	f_send_l3(ts_GMM_ATTACH_COMPL);
+	setverdict(pass);
+}
+
+testcase TC_attach_usim_resync() runs on test_CT {
+	/* MS -> SGSN: Attach Request
+	 * MS <- SGSN: Identity Request IMSI
+	 * MS -> SGSN: Identity Response IMSI
+	 * MS <- SGSN: Identity Request IMEI
+	 * MS -> SGSN: Identity Response IMEI
+	 * HLR<- SGSN: SAI Request
+	 * HLR-> SGSN: SAI Response
+	 * MS <- SGSN: Auth Request
+	 * MS -> SGSN: Auth Failure (with AUTS)
+	 * HLR<- SGSN: SAI Request (with AUTS & RAND)
+	 * HLR-> SGSN: SAI Response (new key material)
+	 * MS <- SGSN: Auth Request (new key material)
+	 * MS -> SGSN: Auth Response
+	 * MS <- SGSN: Attach Accept
+	 * MS -> SGSN: Attach Complete
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_resync), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_usim_crypt(OCT1 netcap_a2345, BIT3 auth_req_ciph) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+
+	var template (value) PDU_L3_MS_SGSN attach_req := ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit);
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.spare_octets := netcap_a2345; /* GEA2345... */
+
+	/* send Attach Request */
+	/* indicate R99 capability of the MS to enable UMTS AKA in presence of
+	 * 3G auth vectors */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.revisionLevelIndicatior := '1'B;
+	/* The thing is, if the solSACapability is 'omit', then the
+	 * revisionLevelIndicatior is at the wrong place! */
+	attach_req.msgs.gprs_mm.attachRequest.msNetworkCapability.msNetworkCapabilityV.solSACapability := '0'B;
+	f_send_l3(attach_req);
+
+	/* do the auth */
+	var PDU_L3_MS_SGSN l3_mo;
+	var PDU_L3_SGSN_MS l3_mt;
+	var default di := activate(as_mm_identity());
+
+	var GSUP_IE auth_tuple;
+	var template AuthenticationParameterAUTNTLV autn;
+
+	g_pars.vec := f_gen_auth_vec_3g();
+	autn := {
+		elementIdentifier := '28'O,
+		lengthIndicator := lengthof(g_pars.vec.autn),
+		autnValue := g_pars.vec.autn
+		};
+	auth_tuple := valueof(ts_GSUP_IE_AuthTuple2G3G(g_pars.vec.rand,
+							g_pars.vec.sres,
+							g_pars.vec.kc,
+							g_pars.vec.ik,
+							g_pars.vec.ck,
+							g_pars.vec.autn,
+							g_pars.vec.res));
+	log("GSUP sends 2G and 3G auth tuples", auth_tuple);
+	GSUP.receive(tr_GSUP_SAI_REQ(g_pars.imsi));
+	GSUP.send(ts_GSUP_SAI_RES(g_pars.imsi, auth_tuple));
+
+	var template PDU_L3_SGSN_MS auth_ciph_req := tr_GMM_AUTH_REQ(g_pars.vec.rand, auth_req_ciph);
+	auth_ciph_req.msgs.gprs_mm.authenticationAndCipheringRequest.authenticationParameterAUTN := autn;
+	BSSGP[0].receive(auth_ciph_req) -> value l3_mt;
+
+	setverdict(pass);
+	deactivate(di);
+}
+
+private function f_TC_attach_usim_a54_a54(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach_usim_crypt('10'O, '100'B);
+}
+
+private function f_TC_attach_usim_a54_a53(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach_usim_crypt('20'O, '011'B);
+}
+
+private function f_TC_attach_usim_a53_a54(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach_usim_crypt('30'O, '011'B);
+}
+
+private function f_TC_attach_usim_a50_a54(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach_usim_crypt('30'O, '000'B);
+}
+
+private function f_TC_attach_usim_a54_a50(charstring id) runs on BSSGP_ConnHdlr {
+	f_TC_attach_usim_crypt('00'O, '000'B);
+}
+
+testcase TC_attach_usim_a54_a54() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "encryption gea 0 3 4");
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_a54_a54), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_attach_usim_a54_a53() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "encryption gea 0 3 4");
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_a54_a53), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_attach_usim_a53_a54() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "encryption gea 0 3");
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_a53_a54), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_attach_usim_a50_a54() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "encryption gea 0");
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_a50_a54), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+testcase TC_attach_usim_a54_a50() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	f_vty_config(SGSNVTY, "sgsn", "encryption gea 0 3 4");
+	vc_conn := f_start_handler(refers(f_TC_attach_usim_a54_a50), testcasename(), g_gb, 40);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Send LLC NULL to see if the SGSN survives it (OS#3952) */
+private function f_TC_llc_null(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(false, false);
+	f_sleep(1.0);
+	f_send_llc(ts_LLC_NULL('0'B, c_LLC_SAPI_LLGMM, LLC_CR_UL_CMD));
+	/* try to detach to check if SGSN is still alive */
+	f_detach_mo(c_GMM_DTT_MO_GPRS, true, true);
+}
+testcase TC_llc_null() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_llc_null), testcasename(), g_gb, 41);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Send LLC SABM to see if the SGSN rejects it properly with DM */
+private function f_TC_llc_sabm_dm_llgmm(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(false, false);
+	f_sleep(1.0);
+	f_send_llc(ts_LLC_SABM({}, '1'B, c_LLC_SAPI_LLGMM, LLC_CR_UL_CMD));
+	BSSGP[0].receive(tr_LLC_DM(?, c_LLC_SAPI_LLGMM, LLC_CR_DL_RSP));
+	setverdict(pass);
+}
+testcase TC_llc_sabm_dm_llgmm() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_llc_sabm_dm_llgmm), testcasename(), g_gb, 42);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Send LLC SABM to see if the SGSN rejects it properly with DM */
+private function f_TC_llc_sabm_dm_ll5(charstring id) runs on BSSGP_ConnHdlr {
+	f_gmm_attach(false, false);
+	f_sleep(1.0);
+	f_send_llc(ts_LLC_SABM({}, '1'B, c_LLC_SAPI_LL5, LLC_CR_UL_CMD));
+	BSSGP[0].receive(tr_LLC_DM(?, c_LLC_SAPI_LL5, LLC_CR_DL_RSP));
+	setverdict(pass);
+}
+testcase TC_llc_sabm_dm_ll5() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_llc_sabm_dm_ll5), testcasename(), g_gb, 43);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* test XID handshake with empty L3 info: expect empty return (some phones require that, OS#3426 */
+private function f_TC_xid_empty_l3(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var template (value) XID_Information xid;
+	var template XID_Information xid_rx;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+
+	/* start MO XID */
+	xid := { ts_XID_L3(''O) };
+	xid_rx := { tr_XID_L3(''O) };
+	f_send_llc(ts_LLC_XID_MO_CMD(xid, apars.sapi));
+	alt {
+	[] BSSGP[0].receive(tr_LLC_XID(xid_rx, apars.sapi));
+	[] as_xid(apars);
+	}
+	setverdict(pass);
+}
+testcase TC_xid_empty_l3() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_xid_empty_l3), testcasename(), g_gb, 44);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_xid_n201u(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var template (value) XID_Information xid;
+	var template XID_Information xid_rx;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+
+	/* start MO XID */
+	xid := { ts_XID_N201U(1234) };
+	xid_rx := { tr_XID_N201U(1234) };
+	f_send_llc(ts_LLC_XID_MO_CMD(xid, apars.sapi));
+	alt {
+	[] BSSGP[0].receive(tr_LLC_XID_MT_RSP(xid_rx, apars.sapi));
+	[] as_xid(apars);
+	}
+	setverdict(pass);
+}
+testcase TC_xid_n201u() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_xid_n201u), testcasename(), g_gb, 45);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_pdp_act_gmm_detach(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* do a normal detach */
+	f_detach_mo(c_GMM_DTT_MO_GPRS, false, true);
+}
+
+testcase TC_attach_pdp_act_gmm_detach() runs on test_CT {
+	/* MS  -> SGSN: Attach Request
+	 * MS <-> SGSN: [..]
+	 * MS  -> SGSN: Attach Complete
+	 * MS  -> SGSN: PDP Activate Request
+	 * MS <-  SGSN: PDP Activate Accept
+	 * MS  -> SGSN: GMM Detach Request
+	 * MS <-  SGSN: GMM Detach Accept
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_pdp_act_gmm_detach), testcasename(), g_gb, 26);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private function f_TC_attach_req_id_req_ra_update(charstring id) runs on BSSGP_ConnHdlr {
+	var RoutingAreaIdentificationV old_ra := f_random_RAI();
+	var RoutingAreaIdentificationV new_ra := f_random_RAI();
+	while (old_ra == new_ra) { new_ra := f_random_RAI(); };
+	var template (value) PDU_L3_MS_SGSN attach_req := ts_GMM_ATTACH_REQ(f_mi_get_lv(), old_ra, false, false, omit, omit);
+	var PDU_L3_SGSN_MS l3_mt;
+
+	f_send_l3(attach_req, 0);
+
+	BSSGP[0].receive(tr_GMM_ID_REQ(?));
+
+	f_send_l3(ts_GMM_RAU_REQ(f_mi_get_lv(), GPRS_UPD_T_RA, new_ra, false, omit, omit));
+	alt {
+	[] BSSGP[0].receive(tr_GMM_RAU_REJECT('0a'O)) {
+		setverdict(pass);
+		}
+	[] BSSGP[0].receive { repeat; }
+	}
+}
+
+/* This test triggers crash in osmo-sgsn before osmo-sgsn.git I64fa5cf1b427d3abb99e553e584897261a827ce6.
+ * See OS#3957 and OS#4245 for more information.
+ */
+testcase TC_attach_req_id_req_ra_update() runs on test_CT {
+	/*
+	 * MS --> SGSN: Attach Req (TMSI, RAI=901-70-356-101)
+	 * MS <-- SGSN: Identity Request (IMEI)
+	 * MS --> SGSN: RA Updating (RAI=901-70-2758-208)
+	 */
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_attach_req_id_req_ra_update), testcasename(), g_gb, 47);
+	vc_conn.done;
+	f_cleanup();
+}
+
+private altstep as_nopaging_ps(integer ran_idx := 0) runs on BSSGP_ConnHdlr {
+var PDU_BSSGP rx;
+[] BSSGP_SIG[ran_idx].receive(tr_BSSGP_PS_PAGING(?)) -> value rx {
+	setverdict(fail, "Received unexpected PS PAGING: ", rx);
+	mtc.stop;
+	}
+}
+
+/* SUSPEND, then DL traffic: should not pass + no paging expected */
+private function f_TC_suspend_nopaging(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var default d;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+
+	/* now suspend GPRS */
+	f_bssgp_suspend();
+
+	d := activate(as_nopaging_ps());
+
+	/* at this point we don't expect any downlink traffic at all, neither actual LLC/SNDCP data,
+	 * nor any related paging requests */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), expect_fwd := false);
+
+	deactivate(d);
+}
+testcase TC_suspend_nopaging() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_suspend_nopaging), testcasename(), g_gb, 48);
+	vc_conn.done;
+	f_cleanup();
+}
+
+
+/* SUSPEND, then RESUME: data expected to flow after explicit resume */
+private function f_TC_suspend_resume(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var OCT1 susp_ref;
+	var default d;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+
+	/* now suspend GPRS */
+	susp_ref := f_bssgp_suspend();
+
+	d := activate(as_nopaging_ps());
+
+	/* at this point we don't expect any downlink traffic at all, neither actual LLC/SNDCP data,
+	 * nor any related paging requests */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), expect_fwd := false);
+
+	deactivate(d);
+
+	/* resume GPRS */
+	f_bssgp_resume(susp_ref);
+
+	/* now data should be flowing again */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+}
+testcase TC_suspend_resume() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_suspend_resume), testcasename(), g_gb, 49);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* SUSPEND, then RAU: data expected to flow after implicit resume */
+private function f_TC_suspend_rau(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+	var default d;
+
+	/* first perform regular attach */
+	f_TC_attach(id);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+
+	/* now suspend GPRS */
+	f_bssgp_suspend();
+
+	d := activate(as_nopaging_ps());
+
+	/* at this point we don't expect any downlink traffic at all, neither actual LLC/SNDCP data,
+	 * nor any related paging requests */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), expect_fwd := false);
+
+	deactivate(d);
+
+	/* perform RAU (implicit RESUME) */
+	f_routing_area_update(g_pars.ra);
+
+	/* give SGSN some time to actually receve + process the RAU Complete we sent */
+	f_sleep(0.5);
+
+	/* now data should be flowing again */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+
+}
+testcase TC_suspend_rau() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_suspend_rau), testcasename(), g_gb, 50);
+	vc_conn.done;
+	f_cleanup();
+}
+
+
+/* wait for T3314 expiration and check that PS PAGING is created on DL PDU */
+private function f_TC_paging_ps(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+
+	/* now wait for T3314 expiration (test_CT below has reduced it to 3s) */
+	f_sleep(5.0);
+
+	/* now data should be flowing again, but with PS PAGING */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100));
+	BSSGP_SIG[0].receive(tr_BSSGP_PS_PAGING(?));
+
+	/* FIXME: simulate paging response */
+	/* FIXME: verify PDU actually arrives only after paging response was successful */
+	setverdict(pass);
+}
+testcase TC_paging_ps() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_vty_config(SGSNVTY, "sgsn", "timer 3314 3");
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_paging_ps), testcasename(), g_gb, 51);
+	vc_conn.done;
+	f_vty_config(SGSNVTY, "sgsn", "timer 3314 default");
+	f_cleanup();
+}
+
+/*
+ * Wait for T3314 expiration and check that PS PAGING is created on DL PDU
+ * Use a Routing Area with 2 cells and expect paging on both cells.
+ *
+ * MS   <-> SGSN: Attach Procedure
+ * MS   <-> SGSN: PDP Context Request/Response
+ * MS       SGSN: Timeout of T3314, MS location known only on Routing Area precision
+ * GGSN  -> SGSN: User Data
+ * MS   <-- SGSN: Paging PS all BVCI within the Routing Area
+ */
+private function f_TC_paging_ps_ra_multiple_cells(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[0]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[2]);
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false, ran_index := 1);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars, ran_index := 1);
+
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 1);
+
+	/* now wait for T3314 expiration (test_CT below has reduced it to 3s) */
+	f_sleep(5.0);
+
+	/* now data should be flowing again, but with PS PAGING */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 1);
+	BSSGP_SIG[1].receive(tr_BSSGP_PS_PAGING(?));
+	BSSGP_SIG[2].receive(tr_BSSGP_PS_PAGING(?));
+
+	/* FIXME: simulate paging response */
+	/* FIXME: verify PDU actually arrives only after paging response was successful */
+}
+
+testcase TC_paging_ps_ra_multiple_cells() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_vty_config(SGSNVTY, "sgsn", "timer 3314 3");
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_paging_ps_ra_multiple_cells), testcasename(), g_gb, 52);
+	vc_conn.done;
+	f_vty_config(SGSNVTY, "sgsn", "timer 3314 default");
+	f_cleanup();
+}
+
+/* Run a RIM single report procedure over the sgsn. Since the SGSN will only do a transparent routing of the
+ * RIM messages this basically tests if the message is correctly transfered from one GB interface to the
+ * other and vice versa. */
+testcase TC_bssgp_rim_single_report() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+
+	timer T := 2.0;
+
+	var template RIM_Routing_Address dst_addr;
+	var template RIM_Routing_Address src_addr;
+	var template (value) RAN_Information_Request_RIM_Container req_cont;
+	var template (value) RAN_Information_RIM_Container res_cont;
+	var template (value) PDU_BSSGP bssgp_rim_pdu;
+	var template PDU_BSSGP bssgp_rim_pdu_expect;
+
+	dst_addr := t_RIM_Routing_Address_cid(g_gb[1].cfg.bvc[0].cell_id);
+	src_addr := t_RIM_Routing_Address_cid(g_gb[0].cfg.bvc[0].cell_id);
+
+
+	/* Send NACC Ran information request to SGSN at GB interface #0. We epect the SGSN to forward this request
+	 * based on the cell id in dst_addr to GB interface #1. */
+	req_cont := ts_RAN_Information_Request_RIM_Container(ts_RIM_Application_Identity(RIM_APP_ID_NACC),
+							     ts_RIM_Sequence_Number(1),
+							     ts_RIM_PDU_Indications(false, RIM_PDU_TYPE_SING_REP),
+							     ts_RIM_Protocol_Version_Number(1),
+							     tsu_RAN_Information_Request_Application_Container_NACC(g_gb[1].cfg.bvc[0].cell_id),
+							     omit);
+	bssgp_rim_pdu := ts_RAN_INFORMATION_REQUEST(ts_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, dst_addr),
+						    ts_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, src_addr),
+						    req_cont);
+	bssgp_rim_pdu_expect := tr_RAN_INFORMATION_REQUEST(tr_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, dst_addr),
+							   tr_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, src_addr),
+							   tr_RAN_Information_Request_RIM_Container);
+	RIM[0].send(bssgp_rim_pdu);
+	T.start;
+	alt {
+	[] RIM[1].receive(bssgp_rim_pdu_expect) {
+		setverdict(pass);
+		}
+	[] RIM[1].receive {
+		setverdict(fail, "Unexpected BSSGP RIM PDU received");
+		}
+	[] T.timeout {
+		setverdict(fail, "No BSSGP RIM PDU received");
+		mtc.stop;
+		}
+	}
+
+	/* Now also emulate also the response as well and send it back on GB interface #1. Expect the result on
+	 * GB interface #0 */
+	res_cont := ts_RAN_Information_RIM_Container(ts_RIM_Application_Identity(RIM_APP_ID_NACC),
+						     ts_RIM_Sequence_Number(2),
+						     ts_RIM_PDU_Indications(false, RIM_PDU_TYPE_SING_REP),
+						     ts_RIM_Protocol_Version_Number(1),
+						     tsu_ApplContainer_or_ApplErrContainer_NACC(tsu_ApplContainer_NACC(g_gb[0].cfg.bvc[0].cell_id, false, 3, si_default)),
+						     omit);
+	bssgp_rim_pdu := ts_PDU_BSSGP_RAN_INFORMATION(ts_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, src_addr),
+									    ts_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, dst_addr),
+									    res_cont);
+	bssgp_rim_pdu_expect := tr_PDU_BSSGP_RAN_INFORMATION(tr_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, src_addr),
+							     tr_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, dst_addr),
+							     ?);
+	RIM[1].send(bssgp_rim_pdu);
+	T.start;
+	alt {
+	[] RIM[0].receive(bssgp_rim_pdu_expect) {
+		setverdict(pass);
+		}
+	[] RIM[0].receive {
+		setverdict(fail, "Unexpected BSSGP RIM PDU received");
+		}
+	[] T.timeout {
+		setverdict(fail, "No BSSGP RIM PDU received");
+		mtc.stop;
+		}
+	}
+
+	f_cleanup();
+}
+
+testcase TC_rim_eutran_to_geran() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	/* connect RIM related port */
+	connect(vc_GGSN_GTP:CLIENT_DEFAULT, self:GTPC);
+
+	var Gtp1cPeer peer := {
+		connId := 1,
+		remName := mp_sgsn_gtp_ip,
+		remPort := GTP1C_PORT
+	}
+	var GTP_CellId gtp_ci := f_BssgpCellId_to_GTP_CellId(g_gb[1].cfg.bvc[0].cell_id);
+
+	var template (value) RIM_Routing_Address_GTPC gtpc_dst_addr, gtpc_src_addr;
+	var template (value) RAN_Information_Request_RIM_Container_GTPC gtpc_rim_req_cont;
+	var template (value) PDU_BSSGP_RAN_INFORMATION_REQUEST_GTPC gtpc_bssgp_cont;
+	var template (value) RIM_RoutingAddress gtpc_rim_ra;
+	var template (value) RIM_RoutingAddress_Discriminator gtpc_rim_ra_discr;
+	var template (value) Gtp1cUnitdata gtpc_pdu;
+
+	gtpc_dst_addr := ts_GTPC_RIM_Routing_Address_cid(gtp_ci);
+	gtpc_src_addr := ts_GTPC_RIM_Routing_Address_enbid(gtp_ci, tac := 3, gnbid := '12345678123456'O);
+
+	gtpc_rim_req_cont := ts_GTPC_RAN_Information_Request_RIM_Container(ts_GTPC_RIM_Application_Identity(RIM_APP_ID_NACC),
+									ts_GTPC_RIM_Sequence_Number(1),
+									ts_GTPC_RIM_PDU_Indications(false, RIM_PDU_TYPE_SING_REP),
+									ts_GTPC_RIM_Protocol_Version_Number(1),
+									tsu_GTPC_RAN_Information_Request_Application_Container_NACC(gtp_ci),
+									omit);
+	gtpc_bssgp_cont := ts_GTPC_RAN_Information_Request(ts_GTPC_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, gtpc_dst_addr),
+							   ts_GTPC_RIM_Routing_Information(RIM_ADDR_EUTRAN_NODEB_ID, gtpc_src_addr),
+							   gtpc_rim_req_cont);
+
+	/* Assemble RIM Routing Address (essentially a copy of the destination cell identifier)*/
+	gtpc_rim_ra := ts_RIM_RoutingAddress(enc_RIM_Routing_Address_GTPC(valueof(gtpc_dst_addr)));
+	gtpc_rim_ra_discr := ts_RIM_RoutingAddress_Discriminator(hex2bit(RIM_ADDR_GERAN_CELL_ID));
+	gtpc_pdu := ts_GTPC_RANInfoRelay(peer, ts_RANTransparentContainer_RAN_INFO_REQ(gtpc_bssgp_cont),
+					 gtpc_rim_ra, gtpc_rim_ra_discr);
+	GTPC.send(gtpc_pdu);
+
+	var template RIM_Routing_Address bssgp_dst_addr, bssgp_src_addr;
+	var template PDU_BSSGP bssgp_rim_pdu_expect;
+	bssgp_dst_addr := t_RIM_Routing_Address_cid(g_gb[1].cfg.bvc[0].cell_id);
+	bssgp_src_addr := t_RIM_Routing_Address_enbid(g_gb[1].cfg.bvc[0].cell_id, tac := 3, gnbid := '12345678123456'O);
+	bssgp_rim_pdu_expect := tr_RAN_INFORMATION_REQUEST(tr_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, bssgp_dst_addr),
+							   tr_RIM_Routing_Information(RIM_ADDR_EUTRAN_NODEB_ID, bssgp_src_addr),
+							   tr_RAN_Information_Request_RIM_Container);
+	timer T := 2.0;
+	T.start;
+	alt {
+	[] RIM[1].receive(bssgp_rim_pdu_expect) {
+		setverdict(pass);
+		T.stop;
+		}
+	[] RIM[1].receive {
+		setverdict(fail, "Unexpected BSSGP RIM PDU received");
+		}
+	[] T.timeout {
+		setverdict(fail, "No BSSGP RIM PDU received");
+		mtc.stop;
+		}
+	}
+
+	/* Now also emulate also the response as well and send it back on GB
+	   interface #1. Expect the result on * GTPC */
+	var template (value) RAN_Information_RIM_Container res_cont;
+	var template (value) PDU_BSSGP bssgp_rim_pdu;
+	res_cont := ts_RAN_Information_RIM_Container(ts_RIM_Application_Identity(RIM_APP_ID_NACC),
+						     ts_RIM_Sequence_Number(2),
+						     ts_RIM_PDU_Indications(false, RIM_PDU_TYPE_SING_REP),
+						     ts_RIM_Protocol_Version_Number(1),
+						     tsu_ApplContainer_or_ApplErrContainer_NACC(tsu_ApplContainer_NACC(g_gb[1].cfg.bvc[0].cell_id, false, 3, si_default)),
+						     omit);
+	bssgp_rim_pdu := ts_PDU_BSSGP_RAN_INFORMATION(ts_RIM_Routing_Information(RIM_ADDR_EUTRAN_NODEB_ID, bssgp_src_addr),
+						      ts_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, bssgp_dst_addr),
+						      res_cont);
+	RIM[1].send(bssgp_rim_pdu);
+
+	var template RAN_Information_RIM_Container_GTPC rim_cont;
+	var template PDU_BSSGP_RAN_INFORMATION_GTPC gtpc_bssgp_cont_ack;
+	var template Gtp1cUnitdata gtpc_pdu_exp;
+	rim_cont := tr_GTPC_RAN_Information_RIM_Container(ts_GTPC_RIM_Application_Identity(RIM_APP_ID_NACC),
+							  ts_GTPC_RIM_Sequence_Number(2),
+							  ts_GTPC_RIM_PDU_Indications(false, RIM_PDU_TYPE_SING_REP),
+							  ts_GTPC_RIM_Protocol_Version_Number(1),
+							  tru_GTPC_ApplContainer_or_ApplErrContainer_NACC(tru_GTPC_ApplContainer_NACC(gtp_ci, false, 3, si_default)),
+							  omit);
+	gtpc_bssgp_cont_ack := tr_GTPC_RAN_Information(tr_GTPC_RIM_Routing_Information(RIM_ADDR_EUTRAN_NODEB_ID, gtpc_src_addr),
+						       tr_GTPC_RIM_Routing_Information(RIM_ADDR_GERAN_CELL_ID, gtpc_dst_addr),
+						       rim_cont);
+	gtpc_pdu_exp := tr_GTPC_RANInfoRelay(peer, tr_RANTransparentContainer_RAN_INFO(gtpc_bssgp_cont_ack));
+
+	T.start;
+	alt {
+	[] GTPC.receive(gtpc_pdu_exp) {
+		setverdict(pass);
+		T.stop;
+		}
+	[] GTPC.receive {
+		setverdict(fail, "Unexpected GTPC RIM PDU received");
+		}
+	[] T.timeout {
+		setverdict(fail, "No GTPC RIM PDU received");
+		mtc.stop;
+		}
+	}
+
+	f_cleanup();
+}
+
+/* Test if the SGSN routes traffic to new cell after the MS attached to it */
+private function f_TC_cell_change_different_rai_ci_attach(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false, ran_index := 0);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars, ran_index := 0);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 0);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 0);
+
+	/* Now attach on different cell: */
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[0]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+	f_gmm_attach(false, false, ran_index := 1, old_ra := f_cellid_to_RAI(g_pars.bssgp_cell_id[0]));
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 1);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 1, n_u := 1);
+}
+testcase TC_cell_change_different_rai_ci_attach() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_cell_change_different_rai_ci_attach), testcasename(), g_gb, 68);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Test if the SGSN routes traffic to new cell after the MS attached to it */
+/* Assumption: g_gb[1] and g_gb[2] configured with same RAC */
+private function f_TC_cell_change_different_ci_attach(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[0]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false, ran_index := 1);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars, ran_index := 1);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 1);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 1);
+
+	/* Now attach on different cell: */
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[1]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[2]);
+	f_gmm_attach(false, false, ran_index := 2, old_ra := f_cellid_to_RAI(g_pars.bssgp_cell_id[1]));
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 2);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 2, n_u := 1);
+}
+testcase TC_cell_change_different_ci_attach() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_cell_change_different_ci_attach), testcasename(), g_gb, 69);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Test if the SGSN silently drops MO data message coming from new BVCI if RAC changed (eg. cell change) */
+private function f_TC_cell_change_different_rai_ci_data(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false, ran_index := 0);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars, ran_index := 0);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 0);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 0);
+
+	/* Send some data over new bvci, it should be silently discarded since
+	 * RAC changed and SGSN expects a RAU to occur in that case */
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+	var octetstring payload := f_rnd_octstring(200);
+	var PDU_SN sndcp := valueof(ts_SN_UD(apars.nsapi, payload));
+	BSSGP[1].send(ts_LLC_UI(enc_PDU_SN(sndcp), apars.sapi, '0'B, 1));
+	var Gtp1uPeer peer := valueof(ts_GtpPeerU(apars.sgsn_ip_u));
+	timer T := 2.0;
+	T.start;
+	alt {
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPU_GPDU(peer, apars.ggsn_tei_u, payload)) {
+		setverdict(fail, "Unexpected GTP message");
+	}
+	[] T.timeout { setverdict(pass); }
+	}
+
+	/* Expect SGSN to continue routing DL data to last known NSEI+BVCI */
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[1]);
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 0);
+}
+testcase TC_cell_change_different_rai_ci_data() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_cell_change_different_rai_ci_data), testcasename(), g_gb, 70);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* Test if the SGSN routes traffic to new cell after the MS switched cell without re-attaching */
+/* Assumption: g_gb[1] and g_gb[2] configured with same RAC */
+private function f_TC_cell_change_different_ci_data(charstring id) runs on BSSGP_ConnHdlr {
+	var PdpActPars apars := valueof(t_PdpActPars(mp_ggsn_ip));
+
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[0]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[1]);
+
+	/* first perform regular attach */
+	f_gmm_attach(false, false, ran_index := 1);
+	/* then activate PDP context */
+	f_pdp_ctx_act(apars, ran_index := 1);
+	/* then transceive a downlink PDU */
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 1);
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 1);
+
+	/* Now attach on different cell: */
+	f_bssgp_client_unregister(g_pars.imsi, BSSGP_PROC[1]);
+	f_bssgp_client_register(g_pars.imsi, g_pars.tlli, BSSGP_PROC[2]);
+
+	f_gtpu_xceive_mo(apars, f_rnd_octstring(200), ran_index := 2, n_u := 1);
+	f_gtpu_xceive_mt(apars, f_rnd_octstring(100), ran_index := 2);
+}
+testcase TC_cell_change_different_ci_data() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	vc_conn := f_start_handler(refers(f_TC_cell_change_different_ci_data), testcasename(), g_gb, 71);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* SGSN terminated SGSN Context Request procedure (we request, SGSN responds)
+ * 3GPP TS 23.401, Figure D.3.6-1: "Gn/Gp SGSN to MME Tracking Area Update procedure" */
+private function f_TC_sgsn_context_req_in(charstring id) runs on BSSGP_ConnHdlr {
+	var integer seq_nr := f_rnd_int(65535);
+	var Gtp1cUnitdata gtpc_ud;
+	var OCT4 teidc := f_gtp_teid_random();
+	timer T;
+
+	var Gtp1cPeer peer := {
+		connId := 1,
+		remName := mp_sgsn_gtp_ip,
+		remPort := GTP1C_PORT
+	}
+
+	/* The MS attaches to GERAN/UTRAN and enjoys the service */
+	f_gmm_attach(false, false);
+
+	/* The MS switches to an LTE cell and performs Tracking Area Update Request there.
+	 * The MME requests information about the MS by sending SGSN Context Request. */
+	var template (value) GTPC_PDUs ctx_req;
+	ctx_req := ts_SGSNContextReqPDU(rai := ts_RoutingAreaIdentity('250'H, 'F99'H, '4242'O, 'DE'O),
+					teic := teidc,
+					sgsn_addr_control := f_inet_addr(mp_ggsn_ip),
+					ptmsi := ts_PTMSI(g_pars.p_tmsi),
+					ptmsi_sig := ts_PTMSI_sig('010203'O));
+	GTP[GTP_GGSN_IDX].send(ts_GTPC_SGSNContextReq(peer, seq_nr, ctx_req));
+
+	/* The SGSN responds with subscriber's IMSI */
+	var template (present) GTPC_PDUs ctx_rsp;
+	ctx_rsp := tr_SGSNContextRespPDU(cause := GTP_CAUSE_REQUEST_ACCEPTED,
+					 imsi := g_pars.imsi);
+
+	/* SGSN Address for Control Plane */
+	var octetstring sgsn_addr := f_inet_addr(mp_sgsn_gtp_ip);
+	ctx_rsp.sgsn_ContextResponse.sgsn_addr_controlPlane := tr_GsnAddr(sgsn_addr);
+
+	/* TODO: match PDP Context */
+
+	T.start(2.0);
+	alt {
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_SGSNContextResp(?, ?, ctx_rsp)) -> value gtpc_ud {
+		var OCT4 remote_teidc := gtpc_ud.gtpc.gtpc_pdu.sgsn_ContextResponse.teidControlPlane.teidControlPlane;
+
+		log("Rx SGSN Context Resp from SGSN, sending Ack");
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_SGSNContextAck(gtpc_ud.peer, remote_teidc, seq_nr));
+		setverdict(pass);
+		}
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_SGSNContextResp) -> value gtpc_ud {
+		var OCT4 remote_teidc := gtpc_ud.gtpc.gtpc_pdu.sgsn_ContextResponse.teidControlPlane.teidControlPlane;
+
+		GTP[GTP_GGSN_IDX].send(ts_GTPC_SGSNContextAck(gtpc_ud.peer, remote_teidc, seq_nr,
+						ts_SGSNContextAckPDU(GTP_CAUSE_INVALID_MSG_FORMAT)));
+		setverdict(fail, "Rx unexpected SGSN Context Resp");
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for SGSN Context Resp");
+		}
+	}
+
+	/* HLR/HSS tells SGSN to forget this MS/UE */
+	GSUP.send(ts_GSUP_CL_REQ(g_pars.imsi, OSMO_GSUP_CANCEL_TYPE_UPDATE));
+	GSUP.receive(tr_GSUP_CL_RES(g_pars.imsi));
+}
+testcase TC_sgsn_context_req_in() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_sgsn_context_req_in), testcasename(), g_gb, 72);
+	vc_conn.done;
+	f_cleanup();
+}
+
+/* SGSN originated SGSN Context Request procedure (SGSN requests, we respond)
+ * 3GPP TS 23.401, Figure D.3.5-1 "Routing Area Update procedure" */
+private function f_TC_sgsn_context_req_out(charstring id) runs on BSSGP_ConnHdlr {
+	var integer seq_nr := f_rnd_int(65535);
+	var Gtp1cUnitdata gtpc_ud;
+	var OCT4 teidc := f_gtp_teid_random();
+	timer T;
+
+	/* The MS goes to GERAN/UTRAN from an LTE cell */
+	f_send_l3(ts_GMM_RAU_REQ(mi_lv := valueof(ts_MI_TMSI_LV('DE42DE42'O)),
+				 upd_type := GPRS_UPD_T_RA,
+				 old_ra := f_random_RAI()), 0);
+
+
+	/* The SGSN has no idea about the MS and inquires the MME about it */
+	T.start(2.0);
+	alt {
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_SGSNContextReq(?, ?)) -> value gtpc_ud {
+		log("Rx SGSN Context Req from SGSN");
+		setverdict(pass);
+		T.stop;
+		}
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_SGSNContextResp) {
+		setverdict(fail, "Rx unexpected SGSN Context Req");
+		mtc.stop;
+		}
+	[] BSSGP[0].receive(tr_LLC_XID_MT_CMD(?, ?)) {
+		/* Ignore XID Reset */
+		repeat;
+		}
+	[] BSSGP[0].receive(tr_GMM_RAU_REJECT) {
+		/* osmo-sgsn -latest would send RAU Reject (Implicitly detached) */
+		setverdict(fail, "Rx unexpected RAU Reject");
+		mtc.stop;
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for SGSN Context Req");
+		mtc.stop;
+		}
+	}
+
+	/* The MME responds */
+	var OCT8 kc := f_rnd_octstring(8);
+
+	var template (value) PDP_Context_GTPC pdp_ctx;
+	pdp_ctx := ts_PDP_Context_GTPC(pdp_addr := f_inet_addr("10.10.10.10"),
+				       ggsn_gsn_addr := f_inet_addr(mp_ggsn_ip),
+				       apn := '08696E7465726E6574'O);
+
+	var template (value) GTPC_PDUs ctx_rsp;
+	ctx_rsp := ts_SGSNContextRespPDU(cause := GTP_CAUSE_REQUEST_ACCEPTED,
+					 imsi := g_pars.imsi,
+					 teic := teidc,
+					 mm_context := ts_MM_ContextGSM(kc),
+					 pdp_ctx_list := { pdp_ctx });
+	GTP[GTP_GGSN_IDX].send(ts_GTPC_SGSNContextResp(gtpc_ud.peer, '12345678'O, seq_nr, ctx_rsp));
+
+	/* TODO: Security Functions (auth/ciphering?) */
+
+	/* The SGSN ACKs */
+	T.start(2.0);
+	alt {
+	[] GTP[GTP_GGSN_IDX].receive(tr_GTPC_SGSNContextAck) -> value gtpc_ud {
+		log("Rx SGSN Context ACK from SGSN");
+		setverdict(pass);
+		T.stop;
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for SGSN Contect ACK");
+		mtc.stop;
+		}
+	}
+
+	/* TODO: Update PDP Context Req/Resp */
+	/* TODO: 7..10 Update Location, ISD */
+
+	/* RAU procedure completion */
+	T.start(2.0);
+	alt {
+	[] as_routing_area_update_gb(0) {
+		log("RAU procedure completed");
+		setverdict(pass);
+		T.stop;
+		}
+	[] BSSGP[0].receive { repeat; }
+	[] T.timeout {
+		setverdict(fail, "Timeout completing the RAU procedure");
+		mtc.stop;
+		}
+	}
+}
+testcase TC_sgsn_context_req_out() runs on test_CT {
+	var BSSGP_ConnHdlr vc_conn;
+	f_init();
+	f_sleep(1.0);
+	vc_conn := f_start_handler(refers(f_TC_sgsn_context_req_out), testcasename(), g_gb, 73);
+	vc_conn.done;
+	f_cleanup();
+}
+
+control {
+	execute( TC_attach() );
+	execute( TC_attach_mnc3() );
+	execute( TC_attach_umts_aka_umts_res() );
+	execute( TC_attach_umts_aka_gsm_sres() );
+	execute( TC_attach_timeout_after_pdp_act() );
+	execute( TC_attach_auth_id_timeout() );
+	execute( TC_attach_auth_sai_timeout() );
+	execute( TC_attach_auth_sai_reject() );
+	execute( TC_attach_gsup_lu_timeout() );
+	execute( TC_attach_gsup_lu_reject() );
+	execute( TC_attach_combined() );
+	execute( TC_attach_accept_all() );
+	execute( TC_attach_closed() );
+	execute( TC_attach_no_imei_response() );
+	execute( TC_attach_no_imsi_response() );
+	execute( TC_attach_closed_add_vty(), 20.0 );
+	execute( TC_attach_check_subscriber_list(), 20.0 );
+	execute( TC_attach_detach_check_subscriber_list(), 20.0 );
+	execute( TC_attach_check_complete_resend() );
+	execute( TC_hlr_location_cancel_request_update(), 20.0 );
+	execute( TC_hlr_location_cancel_request_withdraw(), 20.0 );
+	execute( TC_hlr_location_cancel_request_unknown_subscriber_withdraw(), 20.0 );
+	execute( TC_hlr_location_cancel_request_unknown_subscriber_update(), 20.0 );
+	execute( TC_rau_unknown() );
+	execute( TC_attach_rau() );
+	execute( TC_attach_rau_a_a() );
+	execute( TC_attach_rau_a_b() );
+	execute( TC_attach_rau_a_b_wrong_old_ra() );
+	execute( TC_attach_usim_resync() );
+	execute( TC_attach_usim_a54_a54() );
+	execute( TC_attach_usim_a54_a53() );
+	execute( TC_attach_usim_a53_a54() );
+	execute( TC_attach_usim_a50_a54() );
+	execute( TC_attach_usim_a54_a50() );
+	execute( TC_detach_unknown_nopoweroff() );
+	execute( TC_detach_unknown_poweroff() );
+	execute( TC_detach_nopoweroff() );
+	execute( TC_detach_poweroff() );
+	execute( TC_attach_pdp_act() );
+	execute( TC_pdp_act_unattached() );
+	execute( TC_attach_pdp_act_user() );
+	execute( TC_attach_pdp_act_ggsn_reject() );
+	execute( TC_attach_pdp_act_user_deact_mo() );
+	execute( TC_attach_pdp_act_user_deact_mt() );
+	execute( TC_attach_pdp_act_deact_dup() );
+	execute( TC_attach_second_attempt() );
+	execute( TC_attach_echo_timeout() );
+	execute( TC_attach_restart_ctr_echo() );
+	execute( TC_attach_restart_ctr_create() );
+	execute( TC_attach_pdp_act_deact_mt_t3395_expire() );
+	execute( TC_attach_pdp_act_deact_gtp_retrans() );
+	execute( TC_attach_pdp_act_deact_gtp_retrans_resp() );
+	execute( TC_attach_pdp_act_user_error_ind_ggsn() );
+	execute( TC_attach_pdp_act_gmm_detach() );
+	execute( TC_attach_gmm_attach_req_while_gmm_attach() );
+
+	execute( TC_xid_empty_l3() );
+	execute( TC_xid_n201u() );
+
+	execute( TC_llc_null() );
+	execute( TC_llc_sabm_dm_llgmm() );
+	execute( TC_llc_sabm_dm_ll5() );
+
+	execute( TC_suspend_nopaging() );
+	execute( TC_suspend_resume() );
+	execute( TC_suspend_rau() );
+	execute( TC_paging_ps() );
+	execute( TC_paging_ps_ra_multiple_cells() );
+
+	execute( TC_bssgp_rim_single_report() );
+	execute( TC_rim_eutran_to_geran() );
+
+	execute( TC_cell_change_different_rai_ci_attach() );
+	execute( TC_cell_change_different_rai_ci_data() );
+	execute( TC_cell_change_different_ci_attach() );
+	execute( TC_cell_change_different_ci_data() );
+
+	execute( TC_sgsn_context_req_in() );
+	execute( TC_sgsn_context_req_out() );
+
+	/* At the end, may crash osmo-sgsn, see OS#3957, OS#4245 */
+	execute( TC_attach_req_id_req_ra_update() );
+}
+
+
+
+}

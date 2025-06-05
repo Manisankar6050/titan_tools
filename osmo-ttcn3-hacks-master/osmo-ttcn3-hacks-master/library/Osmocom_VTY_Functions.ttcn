@@ -1,0 +1,340 @@
+/* Osmocom VTY interface functions in TTCN-3
+ * (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module Osmocom_VTY_Functions {
+
+import from Misc_Helpers all;
+import from TELNETasp_PortType all;
+import from Osmocom_Types all;
+import from TCCConversion_Functions all;
+import from Socket_API_Definitions all;
+
+modulepar {
+	charstring mp_prompt_prefix := "OpenBSC";
+	float mp_prompt_timeout := 2.0;
+}
+
+const charstring VTY_VIEW_SUFFIX := "> ";
+const charstring VTY_ENABLE_SUFFIX := "# ";
+const charstring VTY_CFG_SUFFIX := "(*)";
+
+template charstring t_vty_unknown := pattern "*% Unknown command.";
+
+/* configure prompts in TELNETasp module */
+function f_vty_set_prompts(TELNETasp_PT pt, charstring prompt_prefix := mp_prompt_prefix) {
+	var ASP_TelnetDynamicConfig vty_prompt[3] := {
+		{
+			prompt := {
+				id := 1,
+				prompt := prompt_prefix & VTY_VIEW_SUFFIX,
+				has_wildcards := false
+			}
+		}, {
+			prompt := {
+				id := 2,
+				prompt := prompt_prefix & VTY_ENABLE_SUFFIX,
+				has_wildcards := false
+			}
+		}, {
+			prompt := {
+				id := 3,
+				prompt := prompt_prefix & VTY_CFG_SUFFIX,
+				has_wildcards := true
+			}
+		}
+	};
+
+	/* set some configuration that isn't possible to express
+	 * in the config file due to syntactic restrictions (Who invents config
+	 * files that don't permit regular expressions? */
+	for (var integer i := 0; i < sizeof(vty_prompt); i:= i + 1) {
+		pt.send(vty_prompt[i]);
+	}
+}
+
+/* wait for any of the permitted prompts; buffer + return all intermediate output */
+function f_vty_wait_for_prompt(TELNETasp_PT pt, boolean strict := true, charstring log_label := "(?)")
+return charstring {
+	var charstring rx, buf := "";
+	var integer fd;
+	timer T;
+
+	T.start(mp_prompt_timeout);
+	alt {
+	[] pt.receive(pattern "[\w-]+" & VTY_VIEW_SUFFIX) { };
+	[] pt.receive(pattern "[\w-]+\# ") { };
+	[] pt.receive(pattern "[\w-]+\(*\)\# ") { };
+	[] pt.receive(t_vty_unknown) -> value rx {
+		if (strict) {
+			setverdict(fail, "VTY: Unknown Command: " & log_label);
+			mtc.stop;
+		} else {
+			log("VTY: Unknown Command (ignored): " & log_label);
+			buf := buf & rx;
+			repeat;
+		}
+		};
+	[] pt.receive(charstring:?) -> value rx { buf := buf & rx; repeat };
+	[] pt.receive(integer:?) -> value fd {
+		if (fd == -1) {
+			setverdict(fail, "VTY Telnet Connection Failure: " & log_label);
+			mtc.stop;
+		} else {
+			repeat; /* telnet connection succeeded */
+		}
+	}
+	[] T.timeout {
+		setverdict(fail, "VTY Timeout for prompt: " & log_label);
+		mtc.stop;
+		};
+	}
+	T.stop;
+	return buf;
+}
+
+/* send a VTY command and obtain response until prompt is received */
+function f_vty_transceive_ret(TELNETasp_PT pt, charstring tx, boolean strict := true) return charstring {
+	pt.send(tx);
+	return f_vty_wait_for_prompt(pt, strict, tx);
+}
+
+/* send a VTY command and obtain response until prompt is received */
+function f_vty_transceive(TELNETasp_PT pt, charstring tx, boolean strict := true) {
+	var charstring unused := f_vty_transceive_ret(pt, tx, strict);
+}
+
+type integer BtsNr (0..255);
+type integer BtsTrxNr (0..255);
+type integer BtsTimeslotNr (0..7);
+type integer MscNr (0..255);
+type integer Cs7Nr (0..255);
+
+type charstring BtsGprsMode ("none", "gprs", "egrps");
+
+/* enter the'confiugration' mode of the VTY */
+function f_vty_enter_config(TELNETasp_PT pt) {
+	f_vty_transceive(pt, "configure terminal")
+}
+
+function f_vty_enter_cfg_network(TELNETasp_PT pt) {
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "network")
+}
+
+function f_vty_enter_cfg_bts(TELNETasp_PT pt, BtsNr bts := 0) {
+	f_vty_enter_cfg_network(pt);
+	f_vty_transceive(pt, "bts " & int2str(bts));
+}
+
+function f_vty_enter_cfg_trx(TELNETasp_PT pt, BtsNr bts := 0, BtsTrxNr trx := 0) {
+	f_vty_enter_cfg_bts(pt, bts);
+	f_vty_transceive(pt, "trx " & int2str(trx));
+}
+
+function f_vty_enter_cfg_ts(TELNETasp_PT pt, BtsNr bts := 0, BtsTrxNr trx := 0, BtsTimeslotNr ts) {
+	f_vty_enter_cfg_trx(pt, bts, trx);
+	f_vty_transceive(pt, "timeslot " & int2str(ts));
+}
+
+function f_vty_enter_cfg_msc(TELNETasp_PT pt, MscNr msc := 0) {
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "msc " & int2str(msc));
+}
+
+function f_vty_enter_cfg_cs7_inst(TELNETasp_PT pt, Cs7Nr cs7_inst := 0) {
+	f_vty_enter_config(pt);
+	f_vty_transceive(pt, "cs7 instance " & int2str(cs7_inst));
+}
+
+type record of charstring rof_charstring;
+function f_vty_config3(TELNETasp_PT pt, rof_charstring config_nodes, rof_charstring cmds)
+{
+	/* enter config mode; enter node */
+	f_vty_enter_config(pt);
+	for (var integer i := 0; i < sizeof(config_nodes); i := i+1) {
+		f_vty_transceive(pt, config_nodes[i]);
+	}
+	/* execute commands */
+	for (var integer i := 0; i < sizeof(cmds); i := i+1) {
+		f_vty_transceive(pt, cmds[i]);
+	}
+	/* leave config mode */
+	f_vty_transceive(pt, "end");
+}
+
+function f_vty_config2(TELNETasp_PT pt, rof_charstring config_nodes, charstring cmd)
+{
+	f_vty_config3(pt, config_nodes, { cmd });
+}
+
+function f_vty_config(TELNETasp_PT pt, charstring config_node, charstring cmd)
+{
+	f_vty_config2(pt, {config_node}, cmd);
+}
+
+function f_vty_cfg_bts(TELNETasp_PT pt, BtsNr bts := 0, rof_charstring cmds) {
+	f_vty_config3(pt, {"network", "bts " & int2str(bts)}, cmds);
+}
+
+function f_vty_cfg_msc(TELNETasp_PT pt, MscNr msc := 0, rof_charstring cmds) {
+	f_vty_config3(pt, {"msc " & int2str(msc)}, cmds);
+}
+
+function f_vty_transceive_match(TELNETasp_PT pt, charstring cmd, template charstring exp_ret) {
+	var charstring ret := f_vty_transceive_ret(pt, cmd);
+	if (not match(ret, exp_ret)) {
+		setverdict(fail, "Non-matching VTY response: ", ret);
+		mtc.stop;
+	}
+}
+
+function f_vty_transceive_not_match(TELNETasp_PT pt, charstring cmd, template charstring exp_ret) {
+	var charstring ret := f_vty_transceive_ret(pt, cmd);
+	if (match(ret, exp_ret)) {
+		setverdict(fail, "Unexpected matching VTY response: ", ret);
+		mtc.stop;
+	}
+}
+
+function f_vty_transceive_match_regex(TELNETasp_PT pt, charstring cmd, charstring regex, integer groupno) return charstring
+{
+	var charstring resp := f_vty_transceive_ret(pt, cmd);
+	return regexp(resp, regex, groupno);
+}
+
+function f_vty_transceive_match_regexp_retry(TELNETasp_PT pt, charstring cmd, charstring regex,
+					     integer groupno, integer num_attempts, float retry_delay) return charstring
+{
+	 while (num_attempts > 0) {
+		var charstring ret := f_vty_transceive_match_regex(pt, cmd, regex, groupno);
+		if (ret != "") {
+			return ret;
+		}
+		f_sleep(retry_delay);
+		num_attempts := num_attempts - 1;
+	}
+
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail,
+				log2str("No matching VTY response for regular expression '",
+					regex, "' after ", num_attempts, " attempts." ));
+	return "";
+}
+
+private type record of charstring StrList;
+
+/* Perform a 'show talloc-context' to get a count of the given object_strs that are still allocated.
+ * Retry 'attempts' times until the actual talloc object count matches 'expect_count'.
+ * Useful to ensure that no mem leaks remain after running a test. */
+function f_verify_talloc_count(TELNETasp_PT pt, StrList object_strs, integer expect_count := 0,
+			       integer attempts := 5, float wait_time := 3.0)
+{
+	var charstring show_cmd := "show talloc-context application full filter ";
+	for (var integer i := 0; i < lengthof(object_strs); i := i + 1) {
+		var charstring obj_str := object_strs[i];
+		/* spaces confuse the VTY command */
+		obj_str := f_replaceEveryOccurenceOfSubstring(obj_str, " ", ".");
+		/* In the regexp, expect word start and word end to bound the obj name */
+		obj_str := "\\<" & obj_str & "\\>";
+		if (i > 0) {
+			show_cmd := show_cmd & "\\|";
+		}
+		show_cmd := show_cmd & obj_str;
+	}
+
+	while (attempts > 0) {
+		attempts := attempts - 1;
+		var charstring ret := f_vty_transceive_ret(pt, show_cmd);
+
+		var boolean ok := true;
+		for (var integer i := 0; i < lengthof(object_strs); i := i + 1) {
+			var charstring object_str := object_strs[i];
+			var integer count := f_strstr_count(ret, object_str);
+			log("talloc reports ", object_str, " x ", count, ", expecting ", expect_count);
+			if (count != expect_count) {
+				ok := false;
+			}
+		}
+		if (ok) {
+			return;
+		}
+		if (attempts == 0) {
+			break;
+		}
+		log("count mismatch, retrying in ", wait_time);
+		f_sleep(wait_time);
+	}
+	Misc_Helpers.f_shutdown(__BFILE__, __LINE__, fail, "talloc count mismatch");
+}
+
+public function f_verify_talloc_bytes(TELNETasp_PT pt, Misc_Helpers.ro_charstring object_strs, integer expect_bytes := 0,
+				       integer attempts := 5, float wait_time := 3.0)
+{
+	var charstring show_cmd := "show talloc-context application brief";
+
+	while (attempts > 0) {
+		attempts := attempts - 1;
+		var charstring ret := f_vty_transceive_ret(pt, show_cmd);
+
+		var Misc_Helpers.ro_charstring lines := f_str_split(ret);
+
+		var boolean ok := true;
+		for (var integer i := 0; i < lengthof(object_strs); i := i + 1) {
+			var charstring object_str := object_strs[i];
+
+			var integer bytes := 0;
+
+			for (var integer j := 0; j < lengthof(lines); j := j + 1) {
+				var charstring line := lines[j];
+				if (f_strstr(line, object_str) < 0) {
+					continue;
+				}
+				var Misc_Helpers.ro_charstring tokens := f_str_split(line, " ");
+				if (lengthof(tokens) < 4) {
+					continue;
+				}
+				if (tokens[3] != "bytes") {
+					continue;
+				}
+				bytes := f_str2int(tokens[2]);
+			}
+
+			if (bytes != expect_bytes) {
+				ok := false;
+				log("ERROR: talloc reports ", object_str, " = ", bytes, " bytes, expecting ", expect_bytes,
+				    " from VTY response ", lines);
+			} else {
+				log("ok: talloc reports ", object_str, " = ", bytes, " bytes");
+			}
+		}
+		if (ok) {
+			return;
+		}
+		if (attempts == 0) {
+			break;
+		}
+		log("bytes count mismatch, retrying in ", wait_time);
+		f_sleep(wait_time);
+	}
+	setverdict(fail, "talloc bytes count mismatch");
+	mtc.stop;
+}
+
+public function f_logp(TELNETasp_PT pt, charstring log_msg)
+{
+	// log on TTCN3 log output
+	log(log_msg);
+	// log in stderr log
+	if (pt.checkstate("Mapped")) {
+		f_vty_transceive(pt, "logp lglobal notice TTCN3 f_logp(): " & log_msg);
+	}
+}
+
+}

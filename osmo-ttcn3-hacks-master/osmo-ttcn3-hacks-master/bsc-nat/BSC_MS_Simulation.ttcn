@@ -1,0 +1,158 @@
+module BSC_MS_Simulation {
+
+/* (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * (C) 2018 sysmocom - s.f.m.c. Gmbh; Author: Daniel Willmann
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import from Osmocom_Types all;
+import from IPL4asp_Types all;
+
+import from IPA_Emulation all;
+
+import from Osmocom_CTRL_Functions all;
+import from Osmocom_CTRL_Types all;
+
+import from SCCP_Types all;
+import from SCCPasp_Types all;
+import from SCCP_Emulation all;
+
+import from BSSAP_CodecPort all;
+import from RAN_Emulation all;
+
+import from BSC_MS_ConnectionHandler all;
+
+type function void_fn_bsc(charstring id) runs on BSC_CT;
+type record of BSC_MS_ConnHdlr BSC_MS_ConnHdlrList;
+
+type component BSC_CT {
+	/* component references */
+	var IPA_Emulation_CT vc_IPA;
+	var SCCP_CT vc_SCCP;
+	var RAN_Emulation_CT vc_BSSMAP;
+	/* test port to SCCP emulation */
+	port SCCPasp_PT SCCP;
+	/* test port to SCCPLite CTRL over IPA emulation */
+	port IPA_CTRL_PT SCCPLITE_IPA_CTRL;
+
+	var BSC_MS_TestHdlrParams g_pars;
+
+	var charstring g_bsc_num_str;
+}
+
+modulepar {
+	integer mp_num_iterations := 10;
+}
+
+/* helper function to create and connect a BSC_MS_ConnHdlr component */
+private function f_connect_handler(inout BSC_MS_ConnHdlr vc_conn) runs on BSC_CT {
+	/* connect client BSSAP port to BSSAP dispatcher */
+	connect(vc_conn:BSSAP, vc_BSSMAP:CLIENT);
+}
+
+private function f_start_handler(void_fn_bsc_ms fn, charstring id, template (omit) BSC_MS_TestHdlrParams pars := omit)
+runs on BSC_CT return BSC_MS_ConnHdlr {
+	var BSC_MS_ConnHdlr vc_conn;
+	vc_conn := BSC_MS_ConnHdlr.create(id);
+	f_connect_handler(vc_conn);
+	vc_conn.start(f_handler_init(fn, id, pars));
+	return vc_conn;
+}
+
+/* first function inside ConnHdlr component; sets g_pars + starts function */
+private function f_handler_init(void_fn_bsc_ms fn, charstring id, template (omit) BSC_MS_TestHdlrParams pars := omit)
+runs on BSC_MS_ConnHdlr {
+	if (isvalue(pars)) {
+		g_pars := valueof(pars);
+	}
+	fn.apply(id);
+}
+
+function bsc_do_nothing(charstring id)
+runs on BSC_CT {
+}
+
+/* Submit a location-state TRAP BSC->BSC-NAT */
+function bsc_ctrl_location(charstring id)
+runs on BSC_CT {
+	log("Starting main of BSC_CT");
+	f_ctrl_trap(SCCPLITE_IPA_CTRL, "bts.0.location-state",
+		    "1234567,fix3d,0.340000,0.560000,0.780000,operational,unlocked,on,001,01");
+	f_ctrl_exp_set(SCCPLITE_IPA_CTRL, "rf_locked", "1", "1");
+	/* Leave some time for SET_REPLY to reach the other side before closing
+	   conn towards BSC-NAT, otherwise TCP FIN is sent before SET_REPLY and
+	   bsc-nat sends a CTRL ERR to whoever sent the SET cmd. */
+	f_sleep(1.0);
+}
+
+function main(charstring remote_ip, PortNumber remote_port,
+		charstring local_ip, PortNumber local_port,
+		MSC_SCCP_MTP3_parameters sccp_pars,
+		BSC_MS_TestHdlrParams pars,
+		void_fn_bsc_ms fn_bsc_ms, void_fn_bsc fn_bsc, charstring id) runs on BSC_CT
+{
+	var integer i := 0;
+	timer T := 2.0;
+	var IPA_CCM_Parameters ccm_pars := IPA_Emulation.c_IPA_default_ccm_pars;
+	ccm_pars.name := id;
+	g_pars := pars;
+
+	/* create components for IPA/SCCP/BSS[M]AP stack */
+	vc_IPA := IPA_Emulation_CT.create(id & "-IPA");
+	vc_SCCP := SCCP_CT.create(id & "-SCCP");
+	vc_BSSMAP := RAN_Emulation_CT.create(id & "-BSSMAP");
+
+	map(vc_IPA:IPA_PORT, system:IPA_CODEC_PT);
+
+	/* connect MTP3 service provider (IPA) to lower side of SCCP */
+	connect(vc_IPA:MTP3_SP_PORT, vc_SCCP:MTP3_SCCP_PORT);
+
+	/* connect BSSMAP dispatcher to upper side of SCCP */
+	connect(vc_BSSMAP:BSSAP, vc_SCCP:SCCP_SP_PORT);
+
+	/* connect BSSMAP dispatcher to IPA_Emulation MGCP */
+	connect(vc_BSSMAP:MGCP, vc_IPA:IPA_MGCP_PORT);
+	/* connect BSSMAP dispatcher to IPA_Emulation CTRL */
+	connect(vc_BSSMAP:CTRL, vc_IPA:IPA_CTRL_PORT);
+
+	/* connect BSSMAP dispatcher to IPA_Emulation CTRL */
+	connect(self:SCCPLITE_IPA_CTRL, vc_BSSMAP:CTRL_CLIENT);
+
+	/* start components */
+	vc_IPA.start(IPA_Emulation.main_client(remote_ip, remote_port, local_ip, local_port, ccm_pars));
+	vc_SCCP.start(SCCPStart(sccp_pars));
+	vc_BSSMAP.start(RAN_Emulation.main(BSC_MS_ConnectionHandler.BSC_MS_RanOps, id));
+
+	/* Initial delay to wait for IPA connection establishment */
+	T.start;
+	alt {
+	[] SCCPLITE_IPA_CTRL.receive(tr_ASP_IPA_EV(ASP_IPA_EVENT_UP)) { }
+	[] T.timeout {
+		setverdict(fail, "Timeout CTRL waiting for ASP_IPA_EVENT_UP");
+		mtc.stop;
+		}
+	}
+
+	var BSC_MS_ConnHdlrList vc_conns;
+	for (i := 0; i < mp_num_iterations; i := i+1) {
+		vc_conns[i] := f_start_handler(fn_bsc_ms, id & "-MS-" & int2str(i), g_pars);
+	}
+
+	fn_bsc.apply(id);
+
+	for (i := 0; i < mp_num_iterations; i := i+1) {
+		vc_conns[i].done;
+	}
+
+	/* explicitly stop all components that we started above */
+	vc_IPA.stop;
+	vc_BSSMAP.stop;
+	vc_SCCP.stop;
+}
+
+}

@@ -1,0 +1,337 @@
+/* RUA Templates in TTCN-3
+ * (C) 2021 Pau Espin Pedrol <pespin@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module RUA_Templates {
+
+import from RUA_IEs all;
+import from RUA_CommonDataTypes all;
+import from RUA_Constants all;
+import from RUA_Containers all;
+import from RUA_PDU_Contents all;
+import from RUA_PDU_Descriptions all;
+
+/*********************************************************************************
+ * 3GPP TS 25.468
+ *********************************************************************************/
+
+template (value) Cause ts_RUA_Cause(template (value) CauseRadioNetwork c) := {
+	radioNetwork := c
+}
+
+/* 9.1.3 CONNECT */
+template (value) RUA_PDU
+ts_RUA_Connect(template (value) CN_DomainIndicator domain,
+	       template (value) bitstring context_id,
+	       template (value) Establishment_Cause est_cause,
+	       template (value) octetstring ranap_msg) := {
+	initiatingMessage := {
+		procedureCode := id_Connect,
+		criticality := reject,
+		value_ := {
+			connect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 6,
+						criticality := reject,
+						value_ := { establishment_Cause := est_cause }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := {
+							rANAP_Message := ranap_msg
+						}
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+template (present) RUA_PDU
+tr_RUA_Connect(template (present) CN_DomainIndicator domain := ?,
+	       template (present) bitstring context_id := ?,
+	       template (present) Establishment_Cause est_cause := ?,
+	       template (present) octetstring ranap_msg := ?) := {
+	initiatingMessage := {
+		procedureCode := id_Connect,
+		criticality := reject,
+		value_ := {
+			connect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 6,
+						criticality := reject,
+						value_ := { establishment_Cause := est_cause }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := {
+							rANAP_Message := ranap_msg
+						}
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/* 9.1.4 DIRECT TRANSFER */
+template (value) RUA_PDU
+ts_RUA_DirectTransfer(template (value) CN_DomainIndicator domain,
+		      template (value) bitstring context_id,
+		      template (value) octetstring ranap_msg) := {
+	initiatingMessage := {
+		procedureCode := id_DirectTransfer,
+		criticality := reject,
+		value_ := {
+			directTransfer := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+template (present) RUA_PDU
+tr_RUA_DirectTransfer(template (present) CN_DomainIndicator domain := ?,
+		      template (present) bitstring context_id := ?,
+		      template (present) octetstring ranap_msg := ?) := {
+	initiatingMessage := {
+		procedureCode := id_DirectTransfer,
+		criticality := reject,
+		value_ := {
+			directTransfer := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/* 9.1.5 DISCONNECT */
+template (value) RUA_PDU
+ts_RUA_Disconnect(template (value) CN_DomainIndicator domain,
+		      template (value) bitstring context_id,
+		      template (value) Cause cause,
+		      template (value) octetstring ranap_msg) := {
+	initiatingMessage := {
+		procedureCode := 3,
+		criticality := reject,
+		value_ := {
+			disconnect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 1,
+						criticality := reject,
+						value_ := { cause := cause }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/* Same as ts_RUA_Disconnect() but without a ranap arg */
+template (value) RUA_PDU
+ts_RUA_Disconnect_no_ranap(template (value) CN_DomainIndicator domain,
+			   template (value) bitstring context_id,
+			   template (value) Cause cause) := {
+	initiatingMessage := {
+		procedureCode := 3,
+		criticality := reject,
+		value_ := {
+			disconnect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 1,
+						criticality := reject,
+						value_ := { cause := cause }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+template (present) RUA_PDU
+tr_RUA_Disconnect(template (present) CN_DomainIndicator domain := ?,
+		      template (present) bitstring context_id := ?,
+		      template (present) Cause cause := ?,
+		      template (present) octetstring ranap_msg := ?) := {
+	initiatingMessage := {
+		procedureCode := 3,
+		criticality := reject,
+		value_ := {
+			disconnect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 1,
+						criticality := reject,
+						value_ := { cause := cause }
+					}, {
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/* Same as tr_RUA_Disconnect() but without a ranap arg: match also a RUA Disconnect without any RANAP payload. */
+template (present) RUA_PDU
+tr_RUA_Disconnect_opt_ranap(template (present) CN_DomainIndicator domain := ?,
+			    template (present) bitstring context_id := ?,
+			    template (present) Cause cause := ?) := {
+	initiatingMessage := {
+		procedureCode := 3,
+		criticality := reject,
+		value_ := {
+			disconnect_ := {
+				protocolIEs := {
+					{
+						id := 7,
+						criticality := reject,
+						value_ := { cN_DomainIndicator := domain }
+					}, {
+						id := 3,
+						criticality := reject,
+						value_ := { context_ID := context_id }
+					}, {
+						id := 1,
+						criticality := reject,
+						value_ := { cause := cause }
+					},
+					*
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+/* 9.1.6 CONNECTIONLESS TRANSFER */
+template (value) RUA_PDU
+ts_RUA_ConnectionlessTransfer(template (value) octetstring ranap_msg) := {
+	initiatingMessage := {
+		procedureCode := id_ConnectionlessTransfer,
+		criticality := reject,
+		value_ := {
+			connectionlessTransfer := {
+				protocolIEs := {
+					{
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+
+template (present) RUA_PDU
+tr_RUA_ConnectionlessTransfer(template (present) octetstring ranap_msg := ?) := {
+	initiatingMessage := {
+		procedureCode := id_ConnectionlessTransfer,
+		criticality := reject,
+		value_ := {
+			connectionlessTransfer := {
+				protocolIEs := {
+					{
+						id := 4,
+						criticality := reject,
+						value_ := { rANAP_Message := ranap_msg }
+					}
+				},
+				protocolExtensions := omit
+			}
+		}
+	}
+}
+};

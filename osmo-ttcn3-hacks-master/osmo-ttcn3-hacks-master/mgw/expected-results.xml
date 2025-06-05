@@ -1,0 +1,107 @@
+<?xml version="1.0"?>
+<testsuite name='Titan' tests='84' failures='5' errors='0' skipped='0' inconc='0' time='MASKED'>
+  <testcase classname='MGCP_Test' name='TC_selftest' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_auep_null' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_no_lco' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_noprefix' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_unsupp_mode' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_osmo_ign' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_early_bidir_mode' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_unsupp_param' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_missing_callid' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_missing_mode' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_unsupp_packet_intv' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_illegal_double_lco' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_sdp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_wildcarded' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_wildcarded_exhaust' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_mdcx_without_crcx' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_dlcx_without_crcx' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_dlcx_non_existant_ep' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_mdcx_wildcarded' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_dlcx_wildcarded' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_ep_callid_connid' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_ep_callid' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_ep' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_ep_callid_inval' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_ep_callid_connid_inval' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_and_dlcx_retrans' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_osmux_wildcard' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_osmux_fixed' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_osmux_fixed_twice' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_osmux_257' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_receive_only_osmux' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_loopback_osmux' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux_bidir' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux_bidir_amr_bwe' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_osmux_wildcard' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_osmux_fixed' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_dlcx_30ep' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_rtpem_selftest' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_receive_only_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_loopback_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_loopback_rtp_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_bidir' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_diff_pt_and_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_diff_pt_and_rtp_bidir' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_unsolicited_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_one_mdcx_rtp_ho' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_confecho_sendonly_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_ts101318_rfc5993_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_ts101318_rfc5993_rtp_conversion_fmtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_oa_bwe_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_oa_oa_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_bwe_bwe_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_oa_oa_no_bwe_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_oa_no_bwe_oa_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_bwe_bwe_no_oa_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_amr_bwe_no_oa_bwe_rtp_conversion' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_conn_timeout' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_e1_crcx_and_dlcx_ep' time='MASKED'>
+    <failure type='fail-verdict'>Response didn't match template
+      MGCP_Test.ttcn:MASKED MGCP_Test control part
+      MGCP_Test.ttcn:MASKED TC_e1_crcx_and_dlcx_ep testcase
+    </failure>
+  </testcase>
+  <testcase classname='MGCP_Test' name='TC_e1_crcx_with_overlap' time='MASKED'>
+    <failure type='fail-verdict'>Response didn't match template
+      MGCP_Test.ttcn:MASKED MGCP_Test control part
+      MGCP_Test.ttcn:MASKED TC_e1_crcx_with_overlap testcase
+    </failure>
+  </testcase>
+  <testcase classname='MGCP_Test' name='TC_e1_crcx_loopback' time='MASKED'>
+    <failure type='fail-verdict'>Response didn't match template
+      MGCP_Test.ttcn:MASKED MGCP_Test control part
+      MGCP_Test.ttcn:MASKED TC_e1_crcx_loopback testcase
+    </failure>
+  </testcase>
+  <testcase classname='MGCP_Test' name='TC_e1_dlcx_wildcarded' time='MASKED'>
+    <failure type='fail-verdict'>Response didn't match template
+      MGCP_Test.ttcn:MASKED MGCP_Test control part
+      MGCP_Test.ttcn:MASKED TC_e1_dlcx_wildcarded testcase
+    </failure>
+  </testcase>
+  <testcase classname='MGCP_Test' name='TC_crcx_mdcx_ip4' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_crcx_mdcx_ip6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_ipv4_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux_bidir_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux_bidir_ipv4_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_and_rtp_osmux_bidir_ipv6_ipv4' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_osmux_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_osmux_ipv4_ipv6' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_osmux_ipv6_ipv4' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_rfci_unordered' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_mdcx_recvonly' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_rtp' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_rtp_rfci_unordered' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_rtp_mdcx_recvonly' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_iuup_rtp_mdcx_to_iuup' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_two_crcx_mdcx_and_rtp_clearmode' time='MASKED'/>
+  <testcase classname='MGCP_Test' name='TC_one_crcx_loopback_rtp_implicit' time='MASKED'/>
+</testsuite>

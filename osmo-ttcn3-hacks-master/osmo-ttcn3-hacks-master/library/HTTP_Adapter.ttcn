@@ -1,0 +1,297 @@
+module HTTP_Adapter {
+
+/* HTTP Adapter component, originally part of Integration Tests for osmo-remsim-server
+ * (C) 2019 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * This test suite tests osmo-remsim-server by attaching to the external interfaces
+ * such as RSPRO for simulated clients + bankds and RSRES (REST backend interface).
+ */
+
+import from HTTPmsg_Types all;
+import from HTTPmsg_PortType all;
+import from Native_Functions all;
+
+type component http_CT {
+	port HTTPmsg_PT HTTP;
+	/* double underscore to have "g_pars" available on components extending this one: */
+	var template (omit) HTTP_Adapter_Params g_http_pars;
+};
+
+type record HTTP_Adapter_Params {
+	charstring http_host,
+	integer http_port,
+	boolean use_ssl
+};
+
+function f_http_init(template (omit) HTTP_Adapter_Params http_pars := omit) runs on http_CT {
+	map(self:HTTP, system:HTTP);
+	g_http_pars := http_pars;
+}
+
+template (value) Connect ts_HTTP_Connect(template (value) charstring hostname,
+					 template (value) integer http_port := 80,
+					 template (value) boolean use_ssl := false) := {
+	hostname := hostname,
+	portnumber := http_port,
+	use_ssl := use_ssl
+}
+template (value) Close ts_HTTP_Close(template (omit) integer client_id := omit) := { client_id := client_id };
+
+/* function to add HeaderLines to a an existing set of HeaderLines. HeaderLines that are already present, are updated. */
+function f_overlay_HTTP_Header(HeaderLines hdr, HeaderLines additional_hdr) return template (value) HeaderLines
+{
+	var integer i;
+	var integer k;
+	var boolean updated;
+
+	for (i := 0; i < lengthof(additional_hdr); i := i+1) {
+		updated := false;
+		for (k := 0; k < lengthof(hdr); k := k+1) {
+			if (f_str_tolower(hdr[k].header_name) == f_str_tolower(additional_hdr[i].header_name)) {
+				hdr[k] := additional_hdr[i];
+				updated := true;
+			}
+		}
+		if (updated == false) {
+			hdr := hdr & { additional_hdr[i] };
+		}
+	}
+
+	return hdr;
+}
+
+template (value) HeaderLine ts_HeaderLine(charstring header_name, charstring header_value) := {
+	header_name := header_name,
+	header_value := header_value
+}
+
+function f_ts_HTTP_Header(template (omit) charstring body := omit,
+			  template (omit) octetstring binary_body := omit,
+			  template (omit) charstring host := omit,
+			  HeaderLines custom_hdr := { })
+return template (value) HeaderLines {
+	var HeaderLines hdr := { };
+
+	/* Make sure we never use body or binary_body at the same time */
+	if (not istemplatekind(body, "omit") and not istemplatekind(binary_body, "omit")) {
+		setverdict(fail, "use wither (ascii) body or binary_body");
+	}
+
+	/* Build default header */
+	if (not istemplatekind(host, "omit")) {
+		hdr := hdr & {valueof(ts_HeaderLine("Host", valueof(host)))};
+	}
+	hdr := hdr & {{ header_name := "Content-Type", header_value := "application/json" }};
+	if (not istemplatekind(body, "omit")) {
+		hdr := hdr & {valueof(ts_HeaderLine("Content-Length", int2str(lengthof(body))))};
+	}
+	else if (not istemplatekind(binary_body, "omit")) {
+		hdr := hdr & {valueof(ts_HeaderLine("Content-Length", int2str(lengthof(binary_body))))};
+	}
+
+	return f_overlay_HTTP_Header(hdr, custom_hdr);
+}
+
+function f_ts_body_or_empty(template (omit) charstring body) return template (value) charstring {
+	if (istemplatekind(body, "omit")) {
+		return "";
+	}
+	return body;
+}
+
+template (value) HTTPMessage ts_HTTP_Req(charstring url,
+					 charstring method := "GET",
+					 template (omit) charstring body := omit,
+					 integer v_maj := 1, integer v_min := 1,
+					 charstring host,
+					 HeaderLines custom_hdr := { },
+					 template (omit) integer client_id := omit) := {
+	request := {
+		client_id := client_id,
+		method := method,
+		uri := url,
+		version_major := v_maj,
+		version_minor := v_min,
+		header := f_ts_HTTP_Header(body, omit, host, custom_hdr),
+		body := f_ts_body_or_empty(body)
+	}
+}
+
+function f_ts_body_or_empty_bin(template (omit) octetstring body) return template (value) octetstring {
+	if (istemplatekind(body, "omit")) {
+		return ''O;
+	}
+	return body;
+}
+
+template (value) HTTPMessage ts_HTTP_Req_Bin(charstring url,
+					     charstring method := "GET",
+					     template (omit) octetstring body := omit,
+					     integer v_maj := 1, integer v_min := 1,
+					     charstring host,
+					     HeaderLines custom_hdr := { },
+					     template (omit) integer client_id := omit) := {
+	request_binary := {
+		client_id := client_id,
+		method := method,
+		uri := url,
+		version_major := v_maj,
+		version_minor := v_min,
+		header := f_ts_HTTP_Header(omit, body, host, custom_hdr),
+		body := f_ts_body_or_empty_bin(body)
+	}
+}
+
+template HTTPMessage tr_HTTP_Resp(template integer sts := ?) := {
+	response := {
+		client_id := ?,
+		version_major := ?,
+		version_minor := ?,
+		statuscode := sts,
+		statustext := ?,
+		header := ?,
+		body := ?
+	}
+};
+
+template HTTPMessage tr_HTTP_Resp_Bin(template integer sts := ?) := {
+	response_binary := {
+		client_id := ?,
+		version_major := ?,
+		version_minor := ?,
+		statuscode := sts,
+		statustext := ?,
+		header := ?,
+		body := ?
+	}
+};
+
+template HTTPMessage tr_HTTP_Resp2xx := tr_HTTP_Resp((200..299));
+
+function f_http_tx_request(charstring url, charstring method := "GET",
+			   template (omit) charstring body := omit,
+			   template (omit) octetstring binary_body := omit,
+			   HeaderLines custom_hdr := { },
+			   float tout := 2.0,
+			   template (omit) integer client_id := omit,
+			   template (omit) HTTP_Adapter_Params http_pars := omit)
+runs on http_CT {
+	var Connect_result rc;
+	timer T := tout;
+	var template integer use_client_id := omit;
+	var HTTP_Adapter_Params use_http_pars;
+
+	if (istemplatekind(http_pars, "omit")) {
+		if (istemplatekind(g_http_pars, "omit")) {
+			/* The user is expected to either pass global http_pars with on initialization (f_http_init) or
+			 * to pass individual http_pars with each request. */
+			setverdict(fail, "no HTTP parameters set");
+			self.stop;
+		}
+		/* Use globally set HTTP parameters */
+		use_http_pars := valueof(g_http_pars);
+	} else {
+		/* Use request-individual HTTP parameters */
+		use_http_pars := valueof(http_pars);
+	}
+
+	/* In case the caller didn't specify a client_id, we will create a new connection. */
+	if (istemplatekind(client_id, "omit")) {
+		HTTP.send(ts_HTTP_Connect(use_http_pars.http_host, use_http_pars.http_port, use_http_pars.use_ssl));
+		T.start;
+		alt {
+		[] HTTP.receive(Connect_result:?) -> value rc;
+		[] HTTP.receive {
+			setverdict(fail, "HTTP connection to client failed");
+			self.stop;
+			}
+		[] T.timeout {
+			setverdict(fail, "Timeout waiting for completion of HTTP connection");
+			self.stop;
+			}
+		}
+		use_client_id := rc.client_id;
+	} else {
+		use_client_id := client_id;
+	}
+
+	if (not istemplatekind(body, "omit") and istemplatekind(binary_body, "omit")) {
+		/* HTTP message with ASCII content */
+		HTTP.send(ts_HTTP_Req(url, method, body, host := use_http_pars.http_host & ":" & int2str(use_http_pars.http_port),
+				      custom_hdr := custom_hdr, client_id := use_client_id));
+	} else if (not istemplatekind(binary_body, "omit") and istemplatekind(body, "omit")) {
+		/* HTTP message with binary content */
+		HTTP.send(ts_HTTP_Req_Bin(url, method, binary_body,
+					  host := use_http_pars.http_host & ":" & int2str(use_http_pars.http_port),
+					  custom_hdr := custom_hdr, client_id := use_client_id));
+	} else if (istemplatekind(binary_body, "omit") and istemplatekind(body, "omit")) {
+		/* HTTP message without content (e.g. a GET request) */
+		HTTP.send(ts_HTTP_Req(url, method, host := use_http_pars.http_host & ":" & int2str(use_http_pars.http_port),
+				      custom_hdr := custom_hdr, client_id := use_client_id));
+	} else {
+		setverdict(fail, "either binary_body or body must be used (a request can contain either ASCII data or binary data, not both!");
+	}
+}
+
+function f_http_rx_response(template HTTPMessage exp := tr_HTTP_Resp2xx,
+	 		    float tout := 2.0,
+			    template (omit) integer client_id := omit,
+			    boolean keep_connection := false)
+runs on http_CT return HTTPMessage {
+	var HTTPMessage resp;
+	timer T := tout;
+	T.start;
+	alt {
+	[] HTTP.receive(exp) -> value resp {
+		setverdict(pass);
+		}
+	[] HTTP.receive(tr_HTTP_Resp) -> value resp {
+		setverdict(fail, "Unexpected HTTP response ", resp);
+		}
+	[] HTTP.receive(tr_HTTP_Resp_Bin) -> value resp {
+		setverdict(fail, "Unexpected (binary) HTTP response ", resp);
+		}
+	[] T.timeout {
+		setverdict(fail, "Timeout waiting for HTTP response");
+		self.stop;
+		}
+	}
+
+	if (not keep_connection) {
+		HTTP.send(ts_HTTP_Close(client_id));
+	}
+
+	return resp;
+}
+
+/* run a HTTP request and return the response */
+function f_http_transact(charstring url, charstring method := "GET",
+			 template (omit) charstring body := omit,
+			 template (omit) octetstring binary_body := omit,
+			 template HTTPMessage exp := tr_HTTP_Resp2xx,
+			 float tout := 2.0, HeaderLines custom_hdr := { },
+			 template (omit) integer client_id := omit,
+			 boolean keep_connection := false,
+			 template (omit) HTTP_Adapter_Params http_pars := omit)
+runs on http_CT return HTTPMessage {
+	f_http_tx_request(url, method, body, binary_body, custom_hdr, tout, client_id, http_pars);
+	return f_http_rx_response(exp, tout, client_id, keep_connection);
+}
+
+function f_http_client_id_from_http_response(template HTTPMessage response_http) return template integer {
+	if (ispresent(response_http.response_binary)) {
+		return response_http.response_binary.client_id;
+	} else if (ispresent(response_http.response)) {
+		return response_http.response.client_id;
+	}
+
+	return omit;
+}
+
+}

@@ -1,0 +1,525 @@
+/* GPRS RLC/MAC Control Messages as per 3GPP TS 44.060 manually transcribed from the CSN.1 syntax, as no CSN.1
+ * tool for Eclipse TITAN could be found.  Implements only the minimum necessary messages for Osmocom teseting
+ * purposes. */
+
+/* (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * contributions by sysmocom - s.f.m.c. GmbH
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module RLCMAC_CSN1_Templates {
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from GSM_Types all;
+	import from MobileL3_GMM_SM_Types all;
+	import from RLCMAC_CSN1_Types all;
+
+	/* 11.2.1 Packet Access Reject */
+	template PacketAccessRejectStruct tr_PacketAccessRejectStruct_TLLI(template GprsTlli tlli := ?,
+									   template uint8_t wait_ind := *,
+									   template BIT1 wait_ind_size := *) := {
+		id_type := '0'B,
+		id := {
+			tlli := tlli
+		},
+		wait_ind_presence := ?,
+		wait_ind := wait_ind,
+		wait_ind_size := wait_ind_size
+	}
+	template RlcmacDlCtrlMsg tr_RlcMacDlCtrl_PKT_ACC_REJ(template PacketAccessRejectStruct rej := ?) := {
+		msg_type := PACKET_ACCESS_REJECT,
+		u := {
+			access_reject := {
+				page_mode := ?,
+				reject_struct := rej
+			}
+		}
+	}
+
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_CTRL_ACK(GprsTlli tlli,
+						CtrlAck ack := MS_RCVD_TWO_RLC_SAME_RTI_DIFF_RBSN) := {
+		msg_type := PACKET_CONTROL_ACK,
+		u := {
+			ctrl_ack := {
+				tlli := tlli,
+				ctrl_ack := ack
+			}
+		}
+	}
+
+	const ILevel iNone := {
+		presence := '0'B,
+		i_level := omit
+	}
+	const ChannelQualityReport c_ChQualRep_default := {
+		c_value := 0,
+		rxqual := 0,
+		sign_var := 0,
+		i_levels := { iNone, iNone, iNone, iNone, iNone, iNone, iNone, iNone }
+	}
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_DL_ACK(uint5_t dl_tfi,
+								    AckNackDescription andesc,
+					ChannelQualityReport qual_rep := c_ChQualRep_default) := {
+		msg_type := PACKET_DL_ACK_NACK,
+		u := {
+			dl_ack_nack := {
+				dl_tfi := dl_tfi,
+				ack_nack_desc := andesc,
+				chreq_desc_presence := '0'B,
+				chreq_desc := omit,
+				ch_qual_rep := qual_rep
+			}
+		}
+	}
+
+	private function f_presence_bit_MSRadioAccessCapabilityV(template (omit) MSRadioAccessCapabilityV ms_rac) return BIT1 {
+		if (istemplatekind(ms_rac, "omit")) {
+			return '0'B;
+		}
+		return '1'B;
+	}
+
+	private function f_template_MSRadioAccessCapabilityV_to_MSRadioAccCap2(template (omit) MSRadioAccessCapabilityV ms_rac) return template (omit) MSRadioAccCap2 {
+		var template (omit) MSRadioAccCap2 ms_rac2 := omit;
+		if (istemplatekind(ms_rac, "omit")) {
+			return ms_rac2;
+		}
+		ms_rac2 := { msRadioAccessCapabilityV := ms_rac };
+		return ms_rac2;
+	}
+
+	const ChannelReqDescription c_ChReqDesc_default := {
+		peak_tput_class := 0,
+		priority := 0,
+		rlc_mode := RLC_MODE_ACKNOWLEDGED,
+		llc_pdu_type := LLC_PDU_IS_NOT_SACK_OR_ACK,
+		RlcOctetCount := 0
+	}
+
+	template (value) ChannelReqDescription ts_ChannelReqDescription(uint4_t peak_tput_class := 0,
+									uint2_t	priority := 0,
+									RlcMode	rlc_mode := RLC_MODE_ACKNOWLEDGED,
+									LlcPduType llc_pdu_type := LLC_PDU_IS_NOT_SACK_OR_ACK,
+									uint16_t RlcOctetCount := 0)  := {
+		peak_tput_class := peak_tput_class,
+		priority := priority,
+		rlc_mode := rlc_mode,
+		llc_pdu_type := llc_pdu_type,
+		RlcOctetCount := RlcOctetCount
+	};
+
+	/* TS 44.060 sec 11.2.16 */
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_RES_REQ(GprsTlli tlli,
+						     template (omit) MSRadioAccessCapabilityV ms_rac,
+						     ChannelReqDescription ch_req_desc := c_ChReqDesc_default,
+						     RlcAccessType acc_type := RLC_ACC_TYPE_TWO_PHASE)
+	:= {
+		msg_type := PACKET_RESOURCE_REQUEST,
+		u := {
+			resource_req := {
+				acc_type_presence := '1'B,
+				acc_type := acc_type,
+				id_type := '1'B,
+				id := { tlli := tlli },
+				ms_rac2_presence := f_presence_bit_MSRadioAccessCapabilityV(ms_rac),
+				ms_rac2 := f_template_MSRadioAccessCapabilityV_to_MSRadioAccCap2(ms_rac),
+				ch_req_desc := ch_req_desc,
+				change_mark_presence := '0'B,
+				change_mark := omit,
+				C_val := '000000'B,
+				sign_var_presence := '0'B,
+				sign_var := omit,
+				I_levels := {
+					iNone, iNone, iNone, iNone,
+					iNone, iNone, iNone, iNone
+				}
+			}
+		}
+	};
+
+	const CCNMeasReport ccn_meas_rep_def := {
+		rxlev_servig_cell := 0,
+		zero := '0'B,
+		num_meas := 0,
+		meas := { }
+	}
+
+	/* TS 44.060 sec 11.2.3a */
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_CELL_CHG_NOTIF(uint5_t tfi,
+						GsmArfcn arfcn,
+						uint6_t bsic,
+						template (value) CCNMeasReport ccn_meas_rep := ccn_meas_rep_def)
+	:= {
+		msg_type := PACKET_CELL_CHANGE_NOTIFICATION,
+		u := {
+			cell_chg_notif := {
+				gtfi := {
+					is_dl_tfi := false,
+					tfi := tfi
+				},
+				u := {
+					u0 := {
+						tag := '0'B,
+						arfcn := arfcn,
+						bsic := bsic
+					}
+				},
+				ba_psi3_presence := '0'B,
+				ba_used := '0'B,
+				psi3_change_mark := omit,
+				pmo_used := '0'B,
+				pccn_sending := '0'B,
+				ccn_meas_rep := ccn_meas_rep,
+				rel_additions := omit
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.3a */
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_CELL_CHG_NOTIF_UTRAN(uint5_t tfi,
+						uint14_t uarfcn,
+						uint10_t scrambling_code,
+						template (value) CCNMeasReport ccn_meas_rep := ccn_meas_rep_def)
+	:= {
+		msg_type := PACKET_CELL_CHANGE_NOTIFICATION,
+		u := {
+			cell_chg_notif := {
+				gtfi := {
+					is_dl_tfi := false,
+					tfi := tfi
+				},
+				u := {
+					u10 := {
+						tag := '10'B,
+						utran_target_cell := {
+							fdd_presence := '1'B,
+							fdd := {
+							    arfcn := uarfcn,
+							    bandwidth_presence := '0'B,
+							    bandwidth := omit,
+							    scrambling_code := scrambling_code
+							},
+							tdd_presence := '0'B,
+							tdd := omit,
+							reporting_quantity := 1
+						}
+					}
+				},
+				ba_psi3_presence := '0'B,
+				ba_used := '0'B,
+				psi3_change_mark := omit,
+				pmo_used := '0'B,
+				pccn_sending := '0'B,
+				ccn_meas_rep := ccn_meas_rep,
+				rel_additions := omit
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.3a */
+	template (value) RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_CELL_CHG_NOTIF_EUTRAN(uint5_t tfi,
+						uint16_t earfcn,
+						uint9_t phys_layer_cell_id,
+						template (value) CCNMeasReport ccn_meas_rep := ccn_meas_rep_def)
+	:= {
+		msg_type := PACKET_CELL_CHANGE_NOTIFICATION,
+		u := {
+			cell_chg_notif := {
+				gtfi := {
+					is_dl_tfi := false,
+					tfi := tfi
+				},
+				u := {
+					u110 := {
+						tag := '110'B,
+						arfcn_bsic_presence := '0'B,
+						arfcn := omit,
+						bsic := omit,
+
+						utran_target_cell_presence := '0'B,
+						utran_target_cell := omit,
+
+						eutran_target_cell_presence := '1'B,
+						eutran_target_cell := {
+							earfcn := earfcn,
+							meas_bandwidth_presence := '0'B,
+							meas_bandwidth := omit,
+							phys_layer_cell_id := phys_layer_cell_id,
+							reporting_quantity := 1
+						},
+						eutran_ccn_meas_rep_presence := '1'B,
+						eutran_ccn_meas_rep := {
+							utran_ba_used := 0,
+							n_eutran := 1,
+							cells := {{frequency_list_index := 1,
+								   cell_identity := phys_layer_cell_id,
+								   reporting_quantity := 1}}
+						}
+					}
+				},
+				ba_psi3_presence := '0'B,
+				ba_used := '0'B,
+				psi3_change_mark := omit,
+				pmo_used := '0'B,
+				pccn_sending := '0'B,
+				ccn_meas_rep := ccn_meas_rep,
+				rel_additions := omit
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.2a */
+	template RlcmacDlCtrlMsg tr_RlcMacDlCtrl_PKT_CELL_CHG_CONTINUE(template GlobalTfi tfi := ?)
+	:= {
+		msg_type := PACKET_CELL_CHANGE_CONTINUE,
+		u := {
+			cell_chg_continue := {
+				page_mode := ?,
+				zero := '0'B,
+				gtfi := tfi,
+				arfcn_bsic_presence := ?,
+				arfcn := *,
+				bsic := *,
+				container_id := *
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.9 */
+	template (value) NCMeasurement ts_NCMeasurement(uint6_t frequency_n, BIT6 bsic, uint6_t rxlev)
+	:= {
+		frequency_n := frequency_n,
+		bsic_n_presence := '1'B,
+		bsic_n := bsic,
+		rxlev_n := rxlev
+	};
+	template (value) NCMeasurementReport ts_NCMeasurementReport(BIT1 nc_mode,
+							    uint6_t rxlev_serving_cell,
+							    template (value) NCMeasurementList nc_meas_list := {})
+	:= {
+		nc_mode := nc_mode,
+		rxlev_serving_cell := rxlev_serving_cell,
+		zero := '0'B,
+		num_nc_measurements := 0, /* automatically updated */
+		nm_measurements := nc_meas_list
+	};
+	template RlcmacUlCtrlMsg ts_RlcMacUlCtrl_PKT_MEAS_REPORT(template (value) GprsTlli tlli,
+								template (value) NCMeasurementReport nc_meas_rep)
+	:= {
+		msg_type := PACKET_MEASUREMENT_REPORT,
+		u := {
+			meas_report := {
+				tlli := tlli,
+				psi5_change_mark_presence := '0'B,
+				psi5_change_mark := omit,
+				additions_99 := '0'B,
+				nc_meas_report := nc_meas_rep
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.9b */
+	template RepeatedAddFrequencyItem tr_RepeatedAddFrequencyItem(template (present) uint10_t start_frequency := ?,
+								      template (present) uint6_t bsic := ?)
+	:= {
+		presence := '1'B,
+		item := {
+			start_frequency := start_frequency,
+			bsic := bsic,
+			cell_sel_par_present := ?,
+			cell_sel_par := *,
+			nr_of_frequencies := 0,
+			freq_diff_length := ?
+			/* TODO: support Frequency diff list */
+		}
+	};
+	template NCFrequencyList tr_NCFrequencyList(template FreqIndexList removed_freq_index := *, template RepeatedAddFrequencyItemList repeated_add_frequency := *)
+	:= {
+		removed_freq_present := ?,
+		nr_of_removed_freq := *,
+		removed_freq_index := removed_freq_index,
+		repeated_add_frequency := repeated_add_frequency,
+		repeated_add_frequency_term := '0'B
+	};
+	template NCMeasurementParameters tr_NCMeasurementParameters(template (present) NetworkControlOrder nco := ?,
+								    template uint3_t nc_non_drx_period := *,
+								    template uint3_t nc_reporting_period_i := *,
+								    template uint3_t nc_reporting_period_t := *,
+								    template NCFrequencyList nc_freq_list := *)
+	:= {
+		nco := nco,
+		nc_period_present := ?,
+		nc_non_drx_period := nc_non_drx_period,
+		nc_reporting_period_i := nc_reporting_period_i,
+		nc_reporting_period_t := nc_reporting_period_t,
+		nc_freq_list_present := ?,
+		nc_freq_list := nc_freq_list
+	};
+	/* This template is used by osmo-pcu to reset the GSM Neighbour Cell List of the MS */
+	template (value) NCMeasurementParameters ts_NCMeasurementParametersRESET
+	:= {
+		nco := NC_RESET,
+		nc_period_present := '0'B,
+		nc_non_drx_period := omit,
+		nc_reporting_period_i := omit,
+		nc_reporting_period_t := omit,
+		nc_freq_list_present := '0'B,
+		nc_freq_list := omit
+	};
+	template RlcmacDlCtrlMsg tr_RlcMacDlCtrl_PKT_MEAS_ORDER(template (present) GlobalTfiOrTlli tfi_or_tlli := ?,
+								template (present) uint3_t pmo_index := ?,
+								template (present) uint3_t pmo_count := ?,
+								template (present) NCMeasurementParameters nc_meas_param := ?)
+	:= {
+		msg_type := PACKET_MEASUREMENT_ORDER,
+		u := {
+			meas_order := {
+				page_mode := ?,
+				tfi_or_tlli := tfi_or_tlli,
+				pmo_index := pmo_index,
+				pmo_count := pmo_count,
+				nc_meas_param_present := '1'B,
+				nc_meas_param := nc_meas_param,
+				zero := '0'B
+			}
+		}
+	};
+
+	/* TS 44.060 sec 11.2.9e */
+	template RlcmacDlCtrlMsg tr_RlcMacDlCtrl_PKT_NEIGH_CELL_DATA(template (present) GlobalTfi tfi := ?,
+								     template (present) uint5_t container_index := ?)
+	:= {
+		msg_type := PACKET_NEIGHBOUR_CELL_DATA,
+		u := {
+			neighbour_cell_data := {
+				page_mode := ?,
+				zero := '0'B,
+				gtfi := tfi,
+				container_id := ?,
+				spare := '0'B,
+				container_index := container_index,
+				arfcn_bsic_presence := ?,
+				arfcn := *,
+				bsic := *,
+				container_list := ?
+			}
+		}
+	};
+
+	private function f_presence_bit_tfi(template uint5_t tfi) return BIT1 {
+		if (istemplatekind(tfi, "omit")) {
+			return '0'B;
+		}
+		return '1'B;
+	}
+
+	template DynamicAllocation tr_DynamicAllocation(template uint5_t tfi:= ?) := {
+		extd_dyn_alloc := ?,
+		p0_present := ?,
+		p0 := *,
+		pr_mode := *,
+		usf_granularity := ?,
+		ul_tfi_ass_present := f_presence_bit_tfi(tfi),
+		ul_tfi_assignment := tfi,
+		reserved := '0'B,
+		tbf_starting_time_present := ?,
+		tbf_starting_time := *,
+		ts_allocation := ?
+	};
+
+	template PktUlAssGprs tr_PktUlAssGprsDynamic(template DynamicAllocation dyn_alloc := ?) := {
+		ch_coding_cmd := ?,
+		tlli_block_chan_coding := ?,
+		pkt_ta := ?,
+		freq_par_present := ?,
+		freq_par := *,
+		alloc_present := '01'B,
+		dyn_block_alloc := dyn_alloc,
+		sgl_block_alloc := omit
+	};
+
+	template PktUlAssEgprs tr_PktUlAssEgprsDynamic(template DynamicAllocation dyn_alloc := ?) := {
+		dual_carrier := '00'B,
+		tlli_present := ?,
+		tlli := *,
+		compact_reduced_ma_present := ?,
+		compact_reduced_ma := *,
+		chan_coding_cmd := ?,
+		resegment := ?,
+		window_size := ?,
+		ats_present := ?,
+		ats := *, /* ? */
+		arac_retrans_req := ?,
+		tlli_block_chan_coding := ?,
+		bep_period2_present := ?,
+		bep_period2 := *,
+		pkt_ta := ?,
+		pkt_ext_ta_present := ?,
+		pkt_ext_ta := *,
+		freq_par_present := ?,
+		freq_par := *,
+		alloc_present := ?,
+		dyn_block_alloc := dyn_alloc,
+		multi_block_alloc := omit
+	};
+
+	template AckNackDescription tr_AckNackDescription(template BIT1 final_ack := ?) := {
+		final_ack := final_ack,
+		starting_seq_nr := ?,
+		receive_block_bitmap := ?
+	};
+
+	template UlAckNackGprsAdditionsRel99 tr_UlAckNackGprsAdditionsRel99(template boolean tbf_est := ?) := {
+		ext_pkt_ta_present := ?,
+		ext_pkt_ta := *,
+		tbf_est := tbf_est
+	};
+
+	template UlAckNackGprs tr_UlAckNackGprs(template GprsTlli tlli := *,
+						template AckNackDescription acknack_desc := ?,
+						template UlAckNackGprsAdditionsRel99 rel99 := *) := {
+		ch_coding_cmd := ?,
+		ack_nack_desc := acknack_desc,
+		cont_res_tlli_present := ?,
+		cont_res_tlli := tlli,
+		pkt_ta_present := ?,
+		pkt_ta := *,
+		pwr_ctrl_present := ?,
+		pwr_ctrl := *,
+		extension_bits_present := ?,
+		extension_bits := *,
+		not_used := '0'B,
+		rel99_present := ?,
+		rel99 := rel99
+	};
+
+	template UlAckNackEgprs tr_UlAckNackEgprs(template GprsTlli tlli := *) := {
+		msg_excape := '00'B,
+		ch_coding_cmd := ?,
+		resegment := ?,
+		preemptive_tx := ?,
+		prr_retrans_req := ?,
+		arac_retrans_req := ?,
+		cont_res_tlli_present := ?,
+		cont_res_tlli := tlli,
+		tbf_est := ?,
+		pkt_ta_present := ?,
+		pkt_ta := *,
+		pkt_ext_ta_present := ?,
+		pkt_ext_ta := *,
+		pwr_ctrl_present := ?,
+		pwr_ctrl := *
+	};
+
+	template (value) EgprsAckNackDescriptionIE ts_EgprsAckNackDescriptionIE(template (value) EgprsAckNackDescription andesc) := {
+		len_present := '1'B,
+		len := 0, /* Overwritten by RAW encoder */
+		acknack_desc := andesc
+	}
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" variant "BYTEORDER(last)" };

@@ -1,0 +1,934 @@
+/* TITAN REW encode/decode definitions for 3GPP TS 44.060 RLC/MAC Blocks */
+
+/* (C) 2017-2018 Harald Welte <laforge@gnumonks.org>
+ * (C) 2020 by sysmocom s.f.m.c. GmbH <info@sysmocom.de>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module RLCMAC_Templates {
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from GSM_Types all;
+	import from RLCMAC_CSN1_Types all;
+	import from RLCMAC_CSN1_Templates all;
+	import from RLCMAC_Types all;
+
+	template CodingScheme cs_gprs_any := (CS_1, CS_2, CS_3, CS_4);
+	template CodingScheme mcs_egprs_any := (MCS_1, MCS_2, MCS_3, MCS_4, MCS_5,
+						MCS_6, MCS_7, MCS_8, MCS_9);
+
+	/* TS 44.060 10.4.5 */
+	function f_rrbp_fn_delay(MacRrbp rrbp) return uint32_t {
+		select (rrbp) {
+		case (RRBP_Nplus13_mod_2715648) { return 13; }
+		case (RRBP_Nplus17_or_18_mod_2715648) { return 17; }
+		case (RRBP_Nplus21_or_22_mod_2715648) { return 21;  }
+		case (RRBP_Nplus26_mod_2715648) { return 26; }
+		}
+		return 0;
+	}
+
+	function f_rrbp_ack_fn(uint32_t current_fn, MacRrbp rrbp)
+	return uint32_t {
+		return (current_fn + f_rrbp_fn_delay(rrbp)) mod 2715648;
+	}
+
+	function f_rlcmac_cs_mcs_is_mcs(CodingScheme cs_mcs) return boolean {
+		if (cs_mcs >= MCS_0) {
+			return true;
+		}
+		return false;
+	}
+
+	function f_rlcmac_mcs2headertype(CodingScheme mcs) return EgprsHeaderType {
+		select (mcs) {
+		case (MCS_0) { return RLCMAC_HDR_TYPE_3; }
+		case (MCS_1) { return RLCMAC_HDR_TYPE_3; }
+		case (MCS_2) { return RLCMAC_HDR_TYPE_3; }
+		case (MCS_3) { return RLCMAC_HDR_TYPE_3; }
+		case (MCS_4) { return RLCMAC_HDR_TYPE_3; }
+		case (MCS_5) { return RLCMAC_HDR_TYPE_2; }
+		case (MCS_6) { return RLCMAC_HDR_TYPE_2; }
+		case (MCS_7) { return RLCMAC_HDR_TYPE_1; }
+		case (MCS_8) { return RLCMAC_HDR_TYPE_1; }
+		case (MCS_9) { return RLCMAC_HDR_TYPE_1; }
+		}
+		return RLCMAC_HDR_TYPE_3;
+	}
+
+	function f_rlcmac_cs_mcs2block_len(CodingScheme cs_mcs) return uint32_t {
+		select (cs_mcs) {
+		case (CS_1) { return 23; }
+		case (CS_2) { return 34; }
+		case (CS_3) { return 40; }
+		case (CS_4) { return 54; }
+		case (MCS_1) { return 27; }
+		case (MCS_2) { return 33; }
+		case (MCS_3) { return 42; }
+		case (MCS_4) { return 49; }
+		case (MCS_5) { return 61; }
+		case (MCS_6) { return 79; }
+		case (MCS_7) { return 119; }
+		case (MCS_8) { return 143; }
+		case (MCS_9) { return 155; }
+		}
+		return 0;
+	}
+
+	function f_rlcmac_block_len2cs_mcs(uint32_t len) return CodingScheme {
+		select (len) {
+			case (23) { return CS_1; }
+			case (34) { return CS_2; }
+			case (40) { return CS_3; }
+			case (54) { return CS_4; }
+			case (27) { return MCS_1; }
+			case (33) { return MCS_2; }
+			case (42) { return MCS_3; }
+			case (49) { return MCS_4; }
+			case (60) { return MCS_5; }
+			case (61) { return MCS_5; }
+			case (78) { return MCS_6; }
+			case (79) { return MCS_6; }
+			case (118) { return MCS_7; }
+			case (119) { return MCS_7; }
+			case (142) { return MCS_8; }
+			case (143) { return MCS_8; }
+			case (154) { return MCS_9; }
+			case (155) { return MCS_9; }
+		}
+		return CS_1;
+	}
+
+	function f_rlcmac_cs_mcs2block_len_no_spare_bits(CodingScheme cs_mcs) return uint32_t {
+		select (cs_mcs) {
+		/* 3GPP TS 44.060 Table 10.2.1: RLC data block size, discounting padding in octet */
+		case (CS_1) { return 23; }
+		case (CS_2) { return 33; }
+		case (CS_3) { return 39; }
+		case (CS_4) { return 53; }
+		case (MCS_1) { return 27; }
+		case (MCS_2) { return 33; }
+		case (MCS_3) { return 42; }
+		case (MCS_4) { return 49; }
+		case (MCS_5) { return 61; }
+		case (MCS_6) { return 79; }
+		case (MCS_7) { return 119; }
+		case (MCS_8) { return 143; }
+		case (MCS_9) { return 155; }
+		}
+		return 0;
+	}
+
+	/* Minimum CodingScheme required to fit RLCMAC block. Spare bits not counted. */
+	function f_rlcmac_block_len_required_cs_mcs(uint32_t len, boolean is_mcs) return CodingScheme {
+		if (is_mcs) {
+			if (len <= 27) { return MCS_1; }
+			if (len <= 33) { return MCS_2; }
+			if (len <= 42) { return MCS_3; }
+			if (len <= 49) { return MCS_4; }
+			if (len <= 60) { return MCS_5; }
+			if (len <= 61) { return MCS_5; }
+			if (len <= 79) { return MCS_6; }
+			if (len <= 119) { return MCS_7; }
+			if (len <= 143) { return MCS_8; }
+			if (len <= 155) { return MCS_9; }
+			return MCS_1; /* error! */
+		} else {
+			/* 3GPP TS 44.060 Table 10.2.1: RLC data block size, discounting padding in octet */
+			if (len <= 23) { return CS_1; }
+			if (len <= 33) { return CS_2; }
+			if (len <= 39) { return CS_3; }
+			if (len <= 53) { return CS_4; }
+			return CS_1; /* error! */
+		}
+	}
+
+	function f_rlcmac_block_ChCodingCommand2cs_mcs(ChCodingCommand chcc) return CodingScheme {
+		select (chcc) {
+			case (CH_CODING_CS1) { return CS_1; }
+			case (CH_CODING_CS2) { return CS_2; }
+			case (CH_CODING_CS3) { return CS_3; }
+			case (CH_CODING_CS4) { return CS_4; }
+		}
+		return CS_1;
+	}
+
+	function f_rlcmac_block_EgprsChCodingCommand2cs_mcs(EgprsChCodingCommand echcc) return CodingScheme {
+		select (echcc) {
+			case (CH_CODING_MCS1) { return MCS_1; }
+			case (CH_CODING_MCS2) { return MCS_2; }
+			case (CH_CODING_MCS3) { return MCS_3; }
+			case (CH_CODING_MCS4) { return MCS_4; }
+			case (CH_CODING_MCS5) { return MCS_5; }
+			case (CH_CODING_MCS6) { return MCS_6; }
+			case (CH_CODING_MCS7) { return MCS_7; }
+			case (CH_CODING_MCS8) { return MCS_8; }
+			case (CH_CODING_MCS9) { return MCS_9; }
+			/* CH_CODING_MCS5_7 */
+			/* CH_CODING_MCS6_9 */
+		}
+		return MCS_1;
+	}
+
+	/* 1 -> CS_1 / MCS_1, 2 -> CS_2 / MCS_2, etc. */
+	function f_rlcmac_block_int2cs_mcs(integer n, boolean is_mcs) return CodingScheme {
+		var CodingScheme cs_mcs;
+		if (not is_mcs) {
+			int2enum(n - 1, cs_mcs);
+			return cs_mcs;
+		} else {
+			cs_mcs := MCS_0;
+			int2enum(enum2int(cs_mcs) + n, cs_mcs);
+			return cs_mcs;
+		}
+	}
+
+	/* Coding and Puncturing Scheme indicator field for Header type 1 in EGPRS TBF or EC TBF or downlink EGPRS2 TBF */
+	function f_rlcmac_cps_htype1_to_mcs(uint3_t cps) return CodingScheme {
+		var CodingSchemeArray egprs_Header_type1_coding_puncturing_scheme_to_mcs := {
+			MCS_9 /* 0x00, "(MCS-9/P1 ; MCS-9/P1)" */,
+			MCS_9 /* 0x01, "(MCS-9/P1 ; MCS-9/P2)" */,
+			MCS_9 /* 0x02, "(MCS-9/P1 ; MCS-9/P3)" */,
+			MCS_0 /* 0x03, "reserved" */,
+			MCS_9 /* 0x04, "(MCS-9/P2 ; MCS-9/P1)" */,
+			MCS_9 /* 0x05, "(MCS-9/P2 ; MCS-9/P2)" */,
+			MCS_9 /* 0x06, "(MCS-9/P2 ; MCS-9/P3)" */,
+			MCS_0 /* 0x07, "reserved" */,
+			MCS_9 /* 0x08, "(MCS-9/P3 ; MCS-9/P1)" */,
+			MCS_9 /* 0x09, "(MCS-9/P3 ; MCS-9/P2)" */,
+			MCS_9 /* 0x0A, "(MCS-9/P3 ; MCS-9/P3)" */,
+			MCS_8 /* 0x0B, "(MCS-8/P1 ; MCS-8/P1)" */,
+			MCS_8 /* 0x0C, "(MCS-8/P1 ; MCS-8/P2)" */,
+			MCS_8 /* 0x0D, "(MCS-8/P1 ; MCS-8/P3)" */,
+			MCS_8 /* 0x0E, "(MCS-8/P2 ; MCS-8/P1)" */,
+			MCS_8 /* 0x0F, "(MCS-8/P2 ; MCS-8/P2)" */,
+			MCS_8 /* 0x10, "(MCS-8/P2 ; MCS-8/P3)" */,
+			MCS_8 /* 0x11, "(MCS-8/P3 ; MCS-8/P1)" */,
+			MCS_8 /* 0x12, "(MCS-8/P3 ; MCS-8/P2)" */,
+			MCS_8 /* 0x13, "(MCS-8/P3 ; MCS-8/P3)" */,
+			MCS_7 /* 0x14, "(MCS-7/P1 ; MCS-7/P1)" */,
+			MCS_7 /* 0x15, "(MCS-7/P1 ; MCS-7/P2)" */,
+			MCS_7 /* 0x16, "(MCS-7/P1 ; MCS-7/P3)" */,
+			MCS_7 /* 0x17, "(MCS-7/P2 ; MCS-7/P1)" */,
+			MCS_7 /* 0x18, "(MCS-7/P2 ; MCS-7/P2)" */,
+			MCS_7 /* 0x19, "(MCS-7/P2 ; MCS-7/P3)" */,
+			MCS_7 /* 0x1A, "(MCS-7/P3 ; MCS-7/P1)" */,
+			MCS_7 /* 0x1B, "(MCS-7/P3 ; MCS-7/P2)" */,
+			MCS_7 /* 0x1C, "(MCS-7/P3 ; MCS-7/P3)" */,
+			MCS_0 /* 0x1D, "reserved" */,
+			MCS_0 /* 0x1E, "reserved" */,
+			MCS_0 /* 0x1F, "reserved" */
+		};
+		return egprs_Header_type1_coding_puncturing_scheme_to_mcs[cps];
+	}
+
+	/* Coding and Puncturing Scheme indicator field for Header type 2 in (EC-)EGPRS TBF or uplink EGPRS2-A TBF */
+	function f_rlcmac_cps_htype2_to_mcs(uint3_t cps) return CodingScheme {
+		var CodingSchemeArray egprs_Header_type2_coding_puncturing_scheme_to_mcs := {
+			MCS_6 /* {0x00, "MCS-6/P1"} */,
+			MCS_6 /* {0x01, "MCS-6/P2"} */,
+			MCS_6 /* {0x02, "MCS-6/P1 with 6 octet padding"} */,
+			MCS_6 /* {0x03, "MCS-6/P2 with 6 octet padding "} */,
+			MCS_5 /* {0x04, "MCS-5/P1"} */,
+			MCS_5 /* {0x05, "MCS-5/P2"} */,
+			MCS_5 /* {0x06, "MCS-6/P1 with 10 octet padding "} */,
+			MCS_5 /* {0x07, "MCS-6/P2 with 10 octet padding "} */
+		 };
+		 return egprs_Header_type2_coding_puncturing_scheme_to_mcs[cps];
+	}
+
+	/* Coding and Puncturing Scheme indicator field for Header type 3 */
+	function f_rlcmac_cps_htype3_to_mcs(uint3_t cps) return CodingScheme {
+		var CodingSchemeArray egprs_Header_type3_coding_puncturing_scheme_to_mcs := {
+			MCS_4 /* {0x00, "MCS-4/P1"} */,
+			MCS_4 /* {0x01, "MCS-4/P2"} */,
+			MCS_4 /* {0x02, "MCS-4/P3"} */,
+			MCS_3 /* {0x03, "MCS-3/P1"} */,
+			MCS_3 /* {0x04, "MCS-3/P2"} */,
+			MCS_3 /* {0x05, "MCS-3/P3"} */,
+			MCS_3 /* {0x06, "MCS-3/P1 with padding"} */,
+			MCS_3 /* {0x07, "MCS-3/P2 with padding"} */,
+			MCS_3 /* {0x08, "MCS-3/P3 with padding"} */,
+			MCS_2 /* {0x09, "MCS-2/P1"} */,
+			MCS_2 /* {0x0A, "MCS-2/P2"} */,
+			MCS_1 /* {0x0B, "MCS-1/P1"} */,
+			MCS_1 /* {0x0C, "MCS-1/P2"} */,
+			MCS_2 /* {0x0D, "MCS-2/P1 with padding"} */,
+			MCS_2 /* {0x0E, "MCS-2/P2 with padding"} */,
+			MCS_0 /* {0x0F, "MCS-0"} */
+		};
+		return egprs_Header_type3_coding_puncturing_scheme_to_mcs[cps];
+	}
+
+	function f_rlcmac_cps_htype_to_mcs(uint3_t cps, EgprsHeaderType htype) return CodingScheme {
+		select (htype) {
+		case (RLCMAC_HDR_TYPE_1) { return f_rlcmac_cps_htype1_to_mcs(cps); }
+		case (RLCMAC_HDR_TYPE_2) { return f_rlcmac_cps_htype2_to_mcs(cps); }
+		case (RLCMAC_HDR_TYPE_3) { return f_rlcmac_cps_htype3_to_mcs(cps); }
+		}
+		//TODO: return error here.
+		return CS_1;
+	}
+
+	function f_rlcmac_mcs_to_cps_htype1(CodingScheme mcs, uint2_t part, boolean with_padding) return uint5_t {
+		//TODO: implement similar to f_rlcmac_mcs_to_cps_htype3()
+		//TODO: return error here.
+		return 0;
+	}
+
+	function f_rlcmac_mcs_to_cps_htype2(CodingScheme mcs, uint2_t part, boolean with_padding) return uint5_t {
+		//TODO: implement similar to f_rlcmac_mcs_to_cps_htype3()
+		//TODO: return error here.
+		return 0;
+	}
+
+	function f_rlcmac_mcs_to_cps_htype3(CodingScheme mcs, uint2_t part, boolean with_padding) return uint5_t {
+		select (mcs) {
+		case (MCS_4) {
+				select (part) {
+				case (1) { return 0; /* {0x00, "MCS-4/P1"} */ }
+				case (2) { return 1; /* {0x01, "MCS-4/P2"} */ }
+				case (3) { return 2; /* {0x01, "MCS-4/P2"} */ }
+				}
+			}
+		case (MCS_3) {
+				if (not with_padding) {
+					select (part) {
+					case (1) { return 3; /* {0x03, "MCS-3/P1"} */ }
+					case (2) { return 4; /* {0x04, "MCS-3/P2"} */ }
+					case (3) { return 5; /* {0x05, "MCS-3/P3"} */ }
+					}
+				} else {
+					select (part) {
+					case (1) { return 6; /* {0x06, "MCS-3/P1 with padding"} */ }
+					case (2) { return 7; /* {0x07, "MCS-3/P2 with padding"} */ }
+					case (3) { return 8; /* {0x08, "MCS-3/P3 with padding"} */ }
+					}
+				}
+			}
+		case (MCS_2) {
+				if (not with_padding) {
+					select (part) {
+					case (1) { return 9; /* {0x09, "MCS-2/P1"} */ }
+					case (2) { return 10; /* {0x0A, "MCS-2/P2"} */ }
+					}
+				} else {
+					select (part) {
+					case (1) { return 13; /* {0x0D, "MCS-2/P1 with padding"} */ }
+					case (2) { return 14; /* {0x0E, "MCS-2/P2 with padding"} */}
+					}
+				}
+			}
+		case (MCS_1) {
+				select (part) {
+				case (1) { return 11; /* {0x0B, "MCS-1/P1"} */ }
+				case (2) { return 12; /* {0x0C, "MCS-1/P2"} */ }
+				}
+			}
+		case (MCS_0) { return 15;  /* {0x0F, "MCS-0"} */ }
+		}
+		//TODO: return error here.
+		return 0;
+	}
+
+	function f_rlcmac_mcs_to_cps(CodingScheme mcs, uint2_t part, boolean with_padding := false) return uint5_t {
+
+		var EgprsHeaderType htype := f_rlcmac_mcs2headertype(mcs);
+		select (htype) {
+		case (RLCMAC_HDR_TYPE_1) { return f_rlcmac_mcs_to_cps_htype1(mcs, part, with_padding); }
+		case (RLCMAC_HDR_TYPE_2) { return f_rlcmac_mcs_to_cps_htype2(mcs, part, with_padding); }
+		case (RLCMAC_HDR_TYPE_3) { return f_rlcmac_mcs_to_cps_htype3(mcs, part, with_padding); }
+		}
+		//TODO: return error here.
+		return 0;
+	}
+
+	template (value) RlcmacUlBlock ts_RLC_UL_CTRL_ACK(template (value) RlcmacUlCtrlMsg ctrl,
+							MacPayloadType pt := MAC_PT_RLCMAC_NO_OPT,
+							boolean retry := false) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := pt,
+				spare := '00000'B,
+				retry := retry
+			},
+			payload := ctrl
+		}
+	}
+
+	private function f_presence_bit_chreq_desc(template (omit) ChannelReqDescription chreq_desc) return BIT1 {
+		if (istemplatekind(chreq_desc, "omit")) {
+			return '0'B;
+		}
+		return '1'B;
+	}
+
+	/* Send Template for Downlink ACK/NACK */
+	template (value) RlcmacUlBlock ts_RLCMAC_DL_ACK_NACK(template (value) uint5_t tfi, AckNackDescription andesc, boolean retry := false,
+						     template (omit) ChannelReqDescription chreq_desc := omit) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := MAC_PT_RLCMAC_NO_OPT,
+				spare := '00000'B,
+				retry := retry
+			},
+			payload := {
+				msg_type := PACKET_DL_ACK_NACK,
+				u := {
+					dl_ack_nack := {
+						dl_tfi := tfi,
+						ack_nack_desc := andesc,
+						chreq_desc_presence := f_presence_bit_chreq_desc(chreq_desc),
+						chreq_desc := chreq_desc,
+						ch_qual_rep := c_ChQualRep_default
+					}
+				}
+			}
+		}
+	}
+
+	/* Send Template for Egprs Downlink ACK/NACK */
+	template (value) RlcmacUlBlock ts_RLCMAC_DL_ACK_NACK_EGPRS(template (value) uint5_t tfi,
+								   EgprsAckNackDescription andesc,
+								   boolean retry := false,
+								   template (omit) ChannelReqDescription chreq_desc := omit) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := MAC_PT_RLCMAC_NO_OPT,
+				spare := '00000'B,
+				retry := retry
+			},
+			payload := {
+				msg_type := PACKET_EGPRS_DL_ACK_NACK,
+				u := {
+					dl_ack_nack_egprs := {
+						dl_tfi := tfi,
+						ms_oom := '0'B,
+						egprs_ch_qual_rep_presence := '0'B,
+						egprs_ch_qual_rep := omit,
+						chreq_desc_presence := f_presence_bit_chreq_desc(chreq_desc),
+						chreq_desc := chreq_desc,
+						pfi_presence := '0'B,
+						pfi := omit,
+						epdan_presence := '0'B,
+						ack_nack_desc_ie := ts_EgprsAckNackDescriptionIE(andesc)
+					}
+				}
+			}
+		}
+	}
+
+	/* Template for uplink Data block */
+	template (value) RlcmacUlBlock t_RLCMAC_UL_DATA(template (value) CodingScheme cs,
+							template (value) uint5_t tfi,
+							template (value) uint4_t cv,
+							template (value) uint7_t bsn,
+							template (value) LlcBlocks blocks := {},
+							template (value) boolean stall := false) := {
+		data := {
+			cs := cs,
+			mac_hdr := {
+				payload_type := MAC_PT_RLC_DATA,
+				countdown := cv,
+				stall_ind := stall,
+				retry := false,
+				spare := '0'B,
+				pfi_ind := false,
+				tfi := tfi,
+				tlli_ind := false,
+				bsn := bsn,
+				e := false
+			},
+			tlli := omit,
+			pfi := omit,
+			blocks := blocks
+		}
+	}
+	template (value) RlcmacUlBlock t_RLCMAC_UL_DATA_TLLI(template (value) CodingScheme cs,
+							     template (value) uint5_t tfi,
+							     template (value) uint4_t cv,
+							     template (value) uint7_t bsn,
+							     template (value) LlcBlocks blocks := {},
+							     template (value) boolean stall := false,
+							     template (value) GprsTlli tlli) := {
+		data := {
+			cs := cs,
+			mac_hdr := {
+				payload_type := MAC_PT_RLC_DATA,
+				countdown := cv,
+				stall_ind := stall,
+				retry := false,
+				spare := '0'B,
+				pfi_ind := false,
+				tfi := tfi,
+				tlli_ind := true,
+				bsn := bsn,
+				e := false
+			},
+			tlli := tlli,
+			pfi := omit,
+			blocks := blocks
+		}
+	}
+
+	/* Template for uplink Data block */
+	template (value) RlcmacUlBlock t_RLCMAC_UL_EGPRS_DATA(CodingScheme mcs,
+							      template (value) uint5_t tfi,
+							      template (value) uint4_t cv,
+							      template (value) uint11_t bsn1,
+							      template (value) uint8_t bsn2_offset := 0,
+							      template (value) EgprsLlcBlocks blocks := {}) := {
+		data_egprs := {
+			mcs := mcs,
+			mac_hdr := {
+				header_type := f_rlcmac_mcs2headertype(mcs),
+				tfi := tfi,
+				countdown := cv,
+				foi_si := '0'B,
+				r_ri := '0'B,
+				bsn1 := bsn1,
+				bsn2_offset := bsn2_offset,
+				cps := f_rlcmac_mcs_to_cps(mcs, 1, false),
+				pfi_ind := false,
+				rsb := '0'B,
+				spb := '00'B
+			},
+			tlli_ind := false,
+			e := false,
+			tlli := omit,
+			pfi := omit,
+			blocks := blocks
+		}
+	}
+
+	template (value) DlMacHeader
+	ts_RLCMAC_DlMacH(template (value) MacPayloadType pt := MAC_PT_RLCMAC_NO_OPT,
+			 template (value) boolean rrbp_valid := false,
+			 template (value) MacRrbp rrbp := RRBP_Nplus13_mod_2715648,
+			 template (value) uint3_t usf := 7) := {
+		payload_type := pt,
+		rrbp := rrbp,
+		rrbp_valid := rrbp_valid,
+		usf := usf
+	}
+	template DlMacHeader
+	t_RLCMAC_DlMacH(template (present) MacPayloadType pt,
+			template (present) boolean rrbp_valid,
+			template (present) MacRrbp rrbp,
+			template (present) uint3_t usf) := {
+		payload_type := pt,
+		rrbp := rrbp,
+		rrbp_valid := rrbp_valid,
+		usf := usf
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_DL_CTRL(template uint3_t usf := ?, template RlcmacDlCtrlMsg dl_ctrl := ?) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := (MAC_PT_RLCMAC_NO_OPT, MAC_PT_RLCMAC_OPT),
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := usf
+			},
+			opt := *,
+			payload := dl_ctrl
+		}
+	}
+
+	template (value) RlcmacDlBlock
+	ts_RLCMAC_DL_DUMMY_CTRL(template (value) DlMacHeader mac_hdr := ts_RLCMAC_DlMacH,
+				template (value) PageMode page_mode := PAGE_MODE_NORMAL) := {
+		ctrl := {
+			mac_hdr := mac_hdr,
+			opt := omit,
+			payload := {
+				msg_type := PACKET_DL_DUMMY_CTRL,
+				u := {
+					dl_dummy := {
+						page_mode := page_mode,
+						persistence_levels_present := '0'B,
+						persistence_levels := omit
+					}
+				}
+			}
+		}
+	}
+	template RlcmacDlBlock tr_RLCMAC_DL_DUMMY_CTRL(template uint3_t usf := ?, template PageMode page_mode := ?) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := (MAC_PT_RLCMAC_NO_OPT, MAC_PT_RLCMAC_OPT),
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := usf
+			},
+			opt := *,
+			payload := {
+				msg_type := PACKET_DL_DUMMY_CTRL,
+				u := {
+					dl_dummy := {
+						page_mode := page_mode,
+						persistence_levels_present := ?,
+						persistence_levels := *
+					}
+				}
+			}
+		}
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_DL_PACKET_ASS(template uint3_t usf := ?) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := (MAC_PT_RLCMAC_NO_OPT, MAC_PT_RLCMAC_OPT),
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := usf
+			},
+			opt := *,
+			payload := {
+				msg_type := PACKET_DL_ASSIGNMENT,
+				u := {
+					dl_assignment := {
+						page_mode := ?,
+						pres1 := ?,
+						persistence_levels := *,
+						tfi_or_tlli := ?,
+						egprs2 := '0'B,
+						mac_mode := ?,
+						rlc_mode := ?,
+						control_ack := ?,
+						timeslot_alloc := ?,
+						pkt_ta := ?,
+						p0_present := ?,
+						p0 := *,
+						reserved := *,
+						pr_mode := *,
+						freq_par_present := ?,
+						freq_par := *,
+						dl_tfi_ass_present := ?,
+						dl_tfi_assignment := *,
+						pwr_ctrl_present := ?,
+						pwr_ctrl := *,
+						tbf_starting_time_present := ?,
+						tbf_starting_time := *,
+						spare := '0'B,
+						rel_additions := *
+					}
+				}
+			}
+		}
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_UL_PACKET_ASS(template uint3_t usf := ?) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := (MAC_PT_RLCMAC_NO_OPT, MAC_PT_RLCMAC_OPT),
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := usf
+			},
+			opt := *,
+			payload := {
+				msg_type := PACKET_UL_ASSIGNMENT,
+				u := {
+					ul_assignment := {
+						page_mode := ?,
+						persistence_levels_present := ?,
+						persistence_levels := *,
+						identity := ?,
+						is_egprs := ?,  /* msg escape */
+						gprs := *,
+						egprs := *
+					}
+				}
+			}
+		}
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_UL_PACKET_ASS_GPRS(template uint3_t usf := ?, template PktUlAssGprs gprs := ?)
+	modifies tr_RLCMAC_UL_PACKET_ASS := {
+		ctrl := {
+			payload := {
+				u := {
+					ul_assignment := {
+						is_egprs := '0'B,
+						gprs := gprs,
+						egprs := omit
+					}
+				}
+			}
+		}
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_UL_PACKET_ASS_EGPRS(template uint3_t usf := ?, template PktUlAssEgprs egprs := ?)
+	modifies tr_RLCMAC_UL_PACKET_ASS := {
+		ctrl := {
+			payload := {
+				u := {
+					ul_assignment := {
+						is_egprs := '1'B,
+						gprs := omit,
+						egprs := egprs
+					}
+				}
+			}
+		}
+	}
+
+	/* Receive Template for Uplink ACK/NACK */
+	template RlcmacDlBlock tr_RLCMAC_UL_ACK_NACK(template uint5_t ul_tfi) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := (MAC_PT_RLCMAC_NO_OPT, MAC_PT_RLCMAC_OPT),
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := ?
+			},
+			opt := *,
+			payload := {
+				msg_type := PACKET_UL_ACK_NACK,
+				u := {
+					ul_ack_nack := {
+						page_mode := ?,
+						msg_excape := ?,
+						uplink_tfi := ul_tfi,
+						is_egprs := ?,
+						gprs := *,
+						egprs := *
+					}
+				}
+			}
+		}
+	};
+
+	template RlcmacDlBlock tr_RLCMAC_UL_ACK_NACK_GPRS(template uint5_t ul_tfi := ?, template UlAckNackGprs gprs := tr_UlAckNackGprs(*))
+	modifies tr_RLCMAC_UL_ACK_NACK := {
+		ctrl := {
+			payload := {
+				u := {
+					ul_ack_nack := {
+						is_egprs := '0'B,
+						gprs := gprs,
+						egprs := omit
+					}
+				}
+			}
+		}
+	};
+
+	template RlcmacDlBlock tr_RLCMAC_UL_ACK_NACK_EGPRS(template uint5_t ul_tfi := ?, template UlAckNackEgprs egprs := tr_UlAckNackEgprs(*))
+	modifies tr_RLCMAC_UL_ACK_NACK := {
+		ctrl := {
+			payload := {
+				u := {
+					ul_ack_nack := {
+						is_egprs := '1'B,
+						gprs := omit,
+						egprs := egprs
+					}
+				}
+			}
+		}
+	};
+
+	template RlcmacDlBlock tr_RLCMAC_PACKET_PAG_REQ(template uint3_t usf := ?) := {
+		ctrl := {
+			mac_hdr := {
+				payload_type := MAC_PT_RLCMAC_NO_OPT,
+				rrbp:= ?,
+				rrbp_valid := ?,
+				usf := usf
+			},
+			opt := *,
+			payload := {
+				msg_type := PACKET_PAGING_REQUEST,
+				u := {
+					paging := {
+						page_mode := ?,
+						persistence_levels_present := ?,
+						persistence_levels := *,
+						nln_present := ?,
+						nln := *,
+						repeated_pageinfo := *,
+						repeated_pageinfo_term := '0'B
+					}
+				}
+			}
+		}
+	}
+
+	/* Either GPRS or EGPRS data block with arbitrary contents */
+	template RlcmacDlBlock tr_RLCMAC_DATA := (tr_RLCMAC_DATA_GPRS, tr_RLCMAC_DATA_EGPRS);
+
+	template RlcmacDlBlock tr_RLCMAC_DATA_GPRS(template (present) boolean rrbp_valid := ?,
+						   template (present) MacRrbp rrbp := ?,
+						   template (present) uint3_t usf := ?) := {
+		data := {
+			cs := ?,
+			mac_hdr := {
+				mac_hdr := {
+					payload_type := MAC_PT_RLC_DATA,
+					rrbp := rrbp,
+					rrbp_valid := rrbp_valid,
+					usf := usf
+				},
+				hdr_ext := ?
+			},
+			blocks := ?
+		}
+	}
+
+	template RlcmacDlBlock tr_RLCMAC_DATA_EGPRS := {
+		data_egprs := {
+			mcs := ?,
+			mac_hdr := ?,
+			fbi := ?,
+			e := ?,
+			blocks := ?
+		}
+	}
+
+	/* Template for Uplink MAC Control Header */
+	template (value) UlMacCtrlHeader t_RLCMAC_UlMacCtrlH(template (value) MacPayloadType pt,
+							     template (value) boolean retry := false) := {
+		payload_type := pt,
+		spare := '00000'B,
+		retry := retry
+	}
+
+	/* Template for Uplink Control ACK */
+	template (value) RlcmacUlBlock
+	ts_RLCMAC_CTRL_ACK(GprsTlli tlli, CtrlAck ack := MS_RCVD_TWO_RLC_SAME_RTI_DIFF_RBSN) := {
+		ctrl := {
+			mac_hdr := t_RLCMAC_UlMacCtrlH(MAC_PT_RLCMAC_NO_OPT),
+			payload := {
+				msg_type := PACKET_CONTROL_ACK,
+				u := {
+					ctrl_ack := {
+						tlli := tlli,
+						ctrl_ack := ack
+					}
+				}
+			}
+		}
+	}
+
+	template (value) RlcmacUlBlock
+	ts_RLCMAC_UL_DUMMY_CTRL(template (value) GprsTlli tlli) := {
+		ctrl := {
+			mac_hdr := t_RLCMAC_UlMacCtrlH(MAC_PT_RLCMAC_NO_OPT),
+			payload := {
+				msg_type := PACKET_UL_DUMMY_CTRL,
+				u := {
+					ul_dummy := {
+						tlli := tlli
+					}
+				}
+			}
+		}
+	}
+
+	template LlcBlockHdr t_RLCMAC_LLCBLOCK_HDR(uint16_t length_ind, boolean more, boolean e) := {
+		length_ind := length_ind,
+		more := more, /* 1 = new LLC PDU starts */
+		e := e /* 0 = another extension octet after LLC PDU, 1 = no more extension octets */
+	}
+
+	template EgprsLlcBlockHdr t_RLCMAC_LLCBLOCK_EGPRS_HDR(uint16_t length_ind, boolean e) := {
+		length_ind := length_ind,
+		e := e /* 0 = another extension octet after LLC PDU, 1 = no more extension octets */
+	}
+
+	/* Template for a LlcBlock (part of a LLC frame inside RlcMacDlDataBlock */
+	template LlcBlock t_RLCMAC_LLCBLOCK(octetstring data, template (omit) LlcBlockHdr llc_hdr := omit) := {
+		hdr := llc_hdr, /* omit = let encoder figure out the header */
+		payload := data
+	}
+
+	/* Template for a LlcBlock (part of a LLC frame inside RlcMacEgprs?lDataBlock */
+	template EgprsLlcBlock t_RLCMAC_LLCBLOCK_EGPRS(octetstring data, template (omit) EgprsLlcBlockHdr llc_hdr := omit) := {
+		/* let encoder figure out the header */
+		hdr := llc_hdr, /* omit = let encoder figure out the header */
+		payload := data
+	}
+
+	template (value) PTCCHDownlinkMsg
+	ts_PTCCHDownlinkMsg(template (value) uint7_t tai0_ta := 0,
+			    template (value) uint7_t tai1_ta := 0,
+			    template (value) uint7_t tai2_ta := 0,
+			    template (value) uint7_t tai3_ta := 0,
+			    template (value) uint7_t tai4_ta := 0,
+			    template (value) uint7_t tai5_ta := 0,
+			    template (value) uint7_t tai6_ta := 0,
+			    template (value) uint7_t tai7_ta := 0,
+			    template (value) uint7_t tai8_ta := 0,
+			    template (value) uint7_t tai9_ta := 0,
+			    template (value) uint7_t tai10_ta := 0,
+			    template (value) uint7_t tai11_ta := 0,
+			    template (value) uint7_t tai12_ta := 0,
+			    template (value) uint7_t tai13_ta := 0,
+			    template (value) uint7_t tai14_ta := 0,
+			    template (value) uint7_t tai15_ta := 0) := {
+		ta_idx := {
+			{ spare := '0'B, ta_val := tai0_ta },
+			{ spare := '0'B, ta_val := tai1_ta },
+			{ spare := '0'B, ta_val := tai2_ta },
+			{ spare := '0'B, ta_val := tai3_ta },
+			{ spare := '0'B, ta_val := tai4_ta },
+			{ spare := '0'B, ta_val := tai5_ta },
+			{ spare := '0'B, ta_val := tai6_ta },
+			{ spare := '0'B, ta_val := tai7_ta },
+			{ spare := '0'B, ta_val := tai8_ta },
+			{ spare := '0'B, ta_val := tai9_ta },
+			{ spare := '0'B, ta_val := tai10_ta },
+			{ spare := '0'B, ta_val := tai11_ta },
+			{ spare := '0'B, ta_val := tai12_ta },
+			{ spare := '0'B, ta_val := tai13_ta },
+			{ spare := '0'B, ta_val := tai14_ta },
+			{ spare := '0'B, ta_val := tai15_ta }
+		},
+		padding := '2B2B2B2B2B2B2B'O
+	}
+	template PTCCHDownlinkMsg
+	tr_PTCCHDownlinkMsg(template (present) uint7_t tai0_ta := ?,
+			    template (present) uint7_t tai1_ta := ?,
+			    template (present) uint7_t tai2_ta := ?,
+			    template (present) uint7_t tai3_ta := ?,
+			    template (present) uint7_t tai4_ta := ?,
+			    template (present) uint7_t tai5_ta := ?,
+			    template (present) uint7_t tai6_ta := ?,
+			    template (present) uint7_t tai7_ta := ?,
+			    template (present) uint7_t tai8_ta := ?,
+			    template (present) uint7_t tai9_ta := ?,
+			    template (present) uint7_t tai10_ta := ?,
+			    template (present) uint7_t tai11_ta := ?,
+			    template (present) uint7_t tai12_ta := ?,
+			    template (present) uint7_t tai13_ta := ?,
+			    template (present) uint7_t tai14_ta := ?,
+			    template (present) uint7_t tai15_ta := ?) := {
+		ta_idx := {
+			{ spare := '0'B, ta_val := tai0_ta },
+			{ spare := '0'B, ta_val := tai1_ta },
+			{ spare := '0'B, ta_val := tai2_ta },
+			{ spare := '0'B, ta_val := tai3_ta },
+			{ spare := '0'B, ta_val := tai4_ta },
+			{ spare := '0'B, ta_val := tai5_ta },
+			{ spare := '0'B, ta_val := tai6_ta },
+			{ spare := '0'B, ta_val := tai7_ta },
+			{ spare := '0'B, ta_val := tai8_ta },
+			{ spare := '0'B, ta_val := tai9_ta },
+			{ spare := '0'B, ta_val := tai10_ta },
+			{ spare := '0'B, ta_val := tai11_ta },
+			{ spare := '0'B, ta_val := tai12_ta },
+			{ spare := '0'B, ta_val := tai13_ta },
+			{ spare := '0'B, ta_val := tai14_ta },
+			{ spare := '0'B, ta_val := tai15_ta }
+		},
+		padding := '2B2B2B2B2B2B2B'O
+	}
+
+} with { encode "RAW"; variant "FIELDORDER(msb)" }

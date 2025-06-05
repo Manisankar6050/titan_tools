@@ -1,0 +1,176 @@
+module Osmocom_CTRL_Types {
+
+/* Definition of abstract types for the CTRL protocol as used in Osmocom.
+ * Uses the TITAN "TEXT" codec to auto-generate encoder/decoder functions.
+ *
+ * (C) 2017-2018 by Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+type charstring CtrlVerb ("GET", "SET") with {
+	/* see https://www.eclipse.org/forums/index.php/t/1088893/ on why this
+	 * match expression is needed here */
+	variant "TEXT_CODING(,convert=upper_case,'((GET)|(SET))',case_insensitive)"
+};
+
+type charstring CtrlReplyVerb ("GET_REPLY", "SET_REPLY") with {
+	variant "TEXT_CODING(,convert=upper_case,'((GET_REPLY)|(SET_REPLY))',case_insensitive)"
+};
+
+type charstring CtrlId	(pattern "\d#(1,9)");
+type charstring CtrlVariable (pattern "[^, \{\}\[\]\(\)<>\|~\\\^`'\"\?=;/\+&%$\#!]#(1,)");
+type charstring CtrlValue (pattern "[^ ]#(0,)");
+type charstring CtrlReason;
+
+
+type record CtrlCommand {
+	CtrlVerb	verb,
+	CtrlId		id,
+	CtrlVariable	variable,
+	CtrlValue	val optional	/* only for SET */
+} with {
+	variant "SEPARATOR(' ',)"
+};
+
+type record CtrlResponse {
+	CtrlReplyVerb	verb,
+	CtrlId		id,
+	CtrlVariable	variable,
+	CtrlValue	val
+} with {
+	variant "SEPARATOR(' ',)"
+};
+
+type record CtrlError {
+	CtrlId		id,
+	CtrlReason	reason
+} with {
+	variant "BEGIN('ERROR ',,case_insensitive)"
+	variant "SEPARATOR(' ',)"
+};
+
+type record CtrlTrap {
+	CtrlVariable	variable,
+	CtrlValue	val
+} with {
+	variant "BEGIN('TRAP 0 ',,case_insensitive)"
+	variant "SEPARATOR(' ',)"
+};
+
+type union CtrlMessage {
+	CtrlCommand	cmd,
+	CtrlResponse	resp,
+	CtrlError	err,
+	CtrlTrap	trap
+} with { variant "BEGIN('')" };
+
+external function enc_CtrlMessage(in CtrlMessage id) return charstring
+	with { extension "prototype(convert) encode(TEXT)"};
+
+external function dec_CtrlMessage(in charstring id) return CtrlMessage
+	with { extension "prototype(convert) decode(TEXT)"};
+
+
+template CtrlMessage ts_CtrlMsgGet(CtrlId id, CtrlVariable variable) := {
+	cmd := {
+		verb := "GET",
+		id := id,
+		variable := variable,
+		val := omit
+	}
+};
+
+template CtrlMessage ts_CtrlMsgSet(CtrlId id, CtrlVariable variable, CtrlValue val) := {
+	cmd := {
+		verb := "SET",
+		id := id,
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage ts_CtrlMsgTrap(CtrlVariable variable, template (omit) CtrlValue val := omit) := {
+	trap := {
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage ts_CtrlMsgGetRepl(CtrlId id, CtrlVariable variable, CtrlValue val) := {
+	resp := {
+		verb := "GET_REPLY",
+		id := id,
+		variable := variable,
+		val := val
+	}
+};
+
+template CtrlMessage ts_CtrlMsgSetRepl(CtrlId id, CtrlVariable variable, CtrlValue val) := {
+	resp := {
+		verb := "SET_REPLY",
+		id := id,
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage tr_CtrlMsgGet(template CtrlId id, template CtrlVariable variable := ?) := {
+	cmd := {
+		verb := "GET",
+		id := id,
+		variable := variable,
+		val := omit
+	}
+}
+
+template CtrlMessage tr_CtrlMsgSet(template CtrlId id, template CtrlVariable variable := ?,
+			   template CtrlValue val := ?) := {
+	cmd := {
+		verb := "SET",
+		id := id,
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage tr_CtrlMsgGetRepl(template CtrlId id, template CtrlVariable variable := ?) := {
+	resp := {
+		verb := "GET_REPLY",
+		id := id,
+		variable := variable,
+		val := ?
+	}
+}
+
+template CtrlMessage tr_CtrlMsgSetRepl(template CtrlId id, template CtrlVariable variable := ?,
+			   template CtrlValue val := ?) := {
+	resp := {
+		verb := "SET_REPLY",
+		id := id,
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage tr_CtrlMsgTrap(template CtrlVariable variable := ?,
+			template CtrlValue val := ?) := {
+	trap := {
+		variable := variable,
+		val := val
+	}
+}
+
+template CtrlMessage tr_CtrlMsgError(template CtrlId id := ?, template CtrlReason reason := ?) := {
+	err := {
+		id := id,
+		reason := reason
+	}
+}
+
+
+} with { encode "TEXT" }

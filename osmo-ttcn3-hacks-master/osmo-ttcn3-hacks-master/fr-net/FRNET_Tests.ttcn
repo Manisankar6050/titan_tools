@@ -1,0 +1,142 @@
+module FRNET_Tests {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Osmocom_Gb_Types all;
+
+import from NS_Emulation all;
+import from BSSGP_Emulation all;
+import from LLC_Types all;
+import from LLC_Templates all;
+
+modulepar {
+	integer mp_num_bvc := 10;
+	NSConfigurations mp_nsconfig := {
+		{
+			nsei := 123,
+			role_sgsn := true,
+			handle_sns := false,
+			nsvc := {
+				{
+					provider := {
+						fr := {
+							netdev := "hdlcnet1",
+							dlci := 21
+						}
+					},
+					nsvci := 101
+				}, {
+					provider := {
+						fr := {
+							netdev := "hdlcnet2",
+							dlci := 22
+						}
+					},
+					nsvci := 102
+				}, {
+					provider := {
+						fr := {
+							netdev := "hdlcnet3",
+							dlci := 23
+						}
+					},
+					nsvci := 103
+				}, {
+					provider := {
+						fr := {
+							netdev := "hdlcnet4",
+							dlci := 24
+						}
+					},
+					nsvci := 104
+				}
+			}
+		}
+	};
+}
+
+type record GbInstance {
+	NS_CT vc_NS,
+	BSSGP_CT vc_BSSGP,
+	BssgpConfig cfg
+};
+
+type record of GbInstance GbInstances;
+type record of NSConfiguration NSConfigurations;
+type record of BssgpCellId BssgpCellIds;
+
+type component test_CT {
+	var GbInstances g_gb;
+};
+
+
+private function CreateCallback(BssgpBvci bvci, BssgpCellId cell_id, OCT4 tlli, BssgpDecoded dec) runs on BSSGP_BVC_CT {
+	if (ischosen(dec.bssgp.pDU_BSSGP_UL_UNITDATA)) {
+		var PDU_LLC llc_rx := dec_PDU_LLC(dec.bssgp.pDU_BSSGP_UL_UNITDATA.lLC_PDU.lLC_PDU)
+		select (llc_rx) {
+		case (tr_LLC_UI(sapi := '0010'B)) {
+			//log("BVCI=", bvci, ", CellId=", cell_id, ", TLLI=", tlli, ", BSSGP=", dec);
+			/* mirror back as DL-UNITDATA */
+			BVC.send(ts_ptp_BnsUdReq(ts_BSSGP_DL_UD(tlli, dec.bssgp.pDU_BSSGP_UL_UNITDATA.lLC_PDU.lLC_PDU), bvci, oct2int(tlli)));
+			}
+		case else {
+			/* simply ignore any inbound traffic for now */
+			}
+		}
+	}
+}
+
+private function f_init_gb(inout GbInstance gb, charstring id, integer offset) runs on test_CT {
+	var charstring id_idx := id & int2str(offset);
+	gb.vc_NS := NS_CT.create(id_idx & "-NSemu") alive;
+	gb.vc_BSSGP := BSSGP_CT.create(id_idx & "-BSSGPemu") alive;
+	connect(gb.vc_BSSGP:BSCP, gb.vc_NS:NS_SP);
+	gb.vc_NS.start(NSStart(mp_nsconfig[offset], id_idx));
+	gb.vc_BSSGP.start(BssgpStart(gb.cfg, testcasename()));
+}
+
+function f_gen_bvc(integer base, integer idx) return BssgpBvcConfig {
+	var BssgpBvcConfig bvc := {
+		bvci := base + 100 + idx,
+		cell_id := {
+			ra_id := {
+				lai := {
+					mcc_mnc := '262F42'H,
+					lac := base + 300 + idx
+				},
+				rac := 1
+			},
+			cell_id := base + 600 + idx
+		},
+		depth := BSSGP_DECODE_DEPTH_LLC,
+		create_cb := refers(CreateCallback)
+	};
+	return bvc;
+}
+
+testcase TC_foo() runs on test_CT {
+
+	for (var integer i := 0; i < lengthof(mp_nsconfig); i := i+1) {
+		g_gb[i].cfg := {
+			nsei := mp_nsconfig[i].nsei,
+			sgsn_role := true,
+			bvc := { }
+		};
+		/* create 'mp_num_bvc' number of BVCs */
+		for (var integer j := 0; j < mp_num_bvc; j := j+1) {
+			g_gb[i].cfg.bvc := g_gb[i].cfg.bvc & { f_gen_bvc(i * 1000, j) };
+		}
+		f_init_gb(g_gb[i], "gb", i);
+	}
+
+	while (true) {
+		f_sleep(100.0);
+	}
+}
+
+control {
+	execute( TC_foo() );
+}
+
+
+}

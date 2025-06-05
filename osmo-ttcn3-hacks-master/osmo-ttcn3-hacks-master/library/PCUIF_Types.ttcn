@@ -1,0 +1,1217 @@
+/* Osmocom PCU Interface Types, as per osmo-pcu/include/osmocom/pcu/pcuif_proto.h
+ * (C) 2018-2019 Harald Welte <laforge@gnumonks.org>
+ * contributions by Vadim Yanitskiy <axilirator@gmail.com>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module PCUIF_Types {
+
+import from General_Types all;
+import from Osmocom_Types all;
+import from Native_Functions all;
+
+modulepar {
+	/* PCUIF version supported by the IUT */
+	PCUIF_Version mp_pcuif_version := 12;
+};
+
+const charstring PCU_SOCK_DEFAULT := "/tmp/pcu_bts";
+type integer PCUIF_Version (11..12); /* supported versions */
+
+type enumerated PCUIF_MsgType {
+	PCU_IF_MSG_DATA_REQ		('00'O),
+	/* RFU, removed in PCUIFv11	('01'O), */
+	PCU_IF_MSG_DATA_IND		('02'O),
+	PCU_IF_MSG_SUSP_REQ		('03'O),
+	PCU_IF_MSG_APP_INFO_REQ		('04'O),
+	PCU_IF_MSG_RTS_REQ		('10'O),
+	PCU_IF_MSG_DATA_CNF_2		('11'O),
+	PCU_IF_MSG_RACH_IND		('22'O),
+	PCU_IF_MSG_INFO_IND		('32'O),
+	PCU_IF_MSG_E1_CCU_IND		('33'O),
+	PCU_IF_MSG_ACT_REQ		('40'O),
+	PCU_IF_MSG_TIME_IND		('52'O),
+	PCU_IF_MSG_INTERF_IND		('53'O),
+	PCU_IF_MSG_PAG_REQ		('60'O),
+	PCU_IF_MSG_TXT_IND		('70'O),
+	PCU_IF_MSG_CONTAINER		('80'O),
+	/* Container payload message types: */
+	PCU_IF_MSG_NEIGH_ADDR_REQ	('81'O),
+	PCU_IF_MSG_NEIGH_ADDR_CNF	('82'O)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated PCUIF_Sapi {
+	PCU_IF_SAPI_UNKNOWN		('00'O),
+	PCU_IF_SAPI_RACH		('01'O),
+	/* RFU, removed in PCUIFv11	('02'O), */
+	/* RFU, removed in PCUIFv11	('03'O), */
+	PCU_IF_SAPI_BCCH		('04'O),
+	PCU_IF_SAPI_PDTCH		('05'O),
+	PCU_IF_SAPI_PRACH		('06'O),
+	PCU_IF_SAPI_PTCCH		('07'O),
+	PCU_IF_SAPI_PCH_2		('08'O),
+	PCU_IF_SAPI_AGCH_2		('09'O)
+} with { variant "FIELDLENGTH(8)" };
+
+type record PCUIF_Flags {
+	boolean		bts_active,
+	boolean		direct_phy,
+	BIT14		spare,
+	boolean		cs1,
+	boolean		cs2,
+	boolean		cs3,
+	boolean		cs4,
+	boolean		mcs1,
+	boolean		mcs2,
+	boolean		mcs3,
+	boolean		mcs4,
+	boolean		mcs5,
+	boolean		mcs6,
+	boolean		mcs7,
+	boolean		mcs8,
+	boolean		mcs9,
+	BIT3		spare2
+} with { variant "" };
+
+type enumerated PCUIF_bts_model {
+	PCU_IF_BTS_MODEL_UNSPEC		('00'O),
+	PCU_IF_BTS_MODEL_LC15		('01'O),
+	PCU_IF_BTS_MODEL_OC2G		('02'O),
+	PCU_IF_BTS_MODEL_OCTPHY		('03'O),
+	PCU_IF_BTS_MODEL_SYSMO		('04'O),
+	PCU_IF_BTS_MODEL_TRX		('05'O),
+	PCU_IF_BTS_MODEL_RBS		('06'O)
+} with { variant "FIELDLENGTH(8)" };
+
+type enumerated PCUIF_TextType {
+	PCU_VERSION			(0),
+	PCU_OML_ALERT			(1)
+} with { variant "FIELDLENGTH(8)" };
+
+type charstring PCUIF_Text length(128) with { variant "FIELDLENGTH(null_terminated)" };
+
+type record PCUIF_txt_ind {
+	PCUIF_TextType	txt_type,
+	PCUIF_Text	text
+} with { variant "" };
+
+type record PCUIF_data {
+	PCUIF_Sapi	sapi,
+	uint8_t		len,
+	octetstring	data length(162),
+	uint32_t	fn,
+	uint16_t	arfcn,
+	uint8_t		trx_nr,
+	uint8_t		ts_nr,
+	uint8_t		block_nr,
+	int8_t		rssi,
+	uint16_t	ber10k,
+	int16_t		ta_offs_qbits,
+	int16_t		lqual_cb
+} with {
+	variant (data) "FIELDLENGTH(162), ALIGN(left)"
+	variant (lqual_cb) "COMP(2scompl)"
+};
+
+type record PCUIF_data_cnf {
+	PCUIF_Sapi	sapi,
+	OCT4		msg_id
+} with {
+	variant (msg_id) "BYTEORDER(last)"
+};
+
+type record PCUIF_rts_req {
+	PCUIF_Sapi	sapi,
+	OCT3		spare,
+	uint32_t	fn,
+	uint16_t	arfcn,
+	uint8_t		trx_nr,
+	uint8_t		ts_nr,
+	uint8_t		block_nr
+} with { variant "" };
+
+type enumerated PCUIF_BurstType {
+	BURST_TYPE_NONE	(0),
+	BURST_TYPE_0	(1),
+	BURST_TYPE_1	(2),
+	BURST_TYPE_2	(3)
+} with { variant "FIELDLENGTH(8)" };
+
+type record PCUIF_rach_ind {
+	PCUIF_Sapi	sapi,
+	uint16_t	ra,
+	int16_t		qta,
+	uint32_t	fn,
+	uint16_t	arfcn,
+	uint8_t		is_11bit,
+	PCUIF_BurstType	burst_type,
+	uint8_t		trx_nr,
+	uint8_t		ts_nr
+} with { variant "" };
+
+type record PCUIF_InfoTrxTs {
+	uint8_t			tsc,
+	uint8_t			hopping,
+	uint8_t			hsn,
+	uint8_t			maio,
+	uint8_t			ma_bit_len,
+	bitstring		ma length(64)
+} with { variant (ma) "BYTEORDER(first), BITORDER(msb)" };
+private type record length(8) of PCUIF_InfoTrxTs PCUIF_InfoTrxTsList;
+
+private type record PCUIF_InfoTrx {
+	uint16_t		arfcn,
+	BIT8			pdch_mask,
+	OCT1			spare,
+	uint32_t		hLayer1,
+	PCUIF_InfoTrxTsList	ts
+} with { variant (pdch_mask) "BITORDER(msb)" };
+type record length(8) of PCUIF_InfoTrx PCUIF_InfoTrxs;
+
+type record PCUIF_info_ind {
+	uint32_t	version,
+	PCUIF_Flags	flags,
+	PCUIF_InfoTrxs	trx,
+	uint8_t		bsic,
+
+	uint16_t	mcc,
+	uint16_t	mnc,
+	uint8_t		mnc_3_digits,
+	uint16_t	lac,
+	uint16_t	rac,
+
+	uint16_t	nsei,
+	record length(7) of uint8_t nse_timer,
+	record length(11) of uint8_t cell_timer,
+
+	uint16_t	cell_id,
+	uint16_t	repeat_time,
+	uint8_t		repeat_count,
+	uint16_t	bvci,
+	uint8_t		t3142,
+	uint8_t		t3169,
+	uint8_t		t3191,
+	uint8_t		t3193_10ms,
+	uint8_t		t3195,
+	uint8_t		n3101,
+	uint8_t		n3103,
+	uint8_t		n3105,
+	uint8_t		cv_countdown,
+	uint16_t	dl_tbf_ext,
+	uint16_t	ul_tbf_ext,
+	uint8_t		initial_cs,
+	uint8_t		initial_mcs,
+
+	record length(2) of uint16_t	nsvci,
+	record length(2) of uint16_t	local_port,
+	record length(2) of uint16_t	remote_port,
+	PCUIF_RemoteAddr		remote_addr,
+
+	/* The bts_model field was introduced with PCUIF v12 as a new mandatory field. This also means that when we
+	 * use the testsuite to test against latest builds (still uses PCUIF v11) this field is not included in
+	 * the PCUIF_info_ind message. Since the testsuite does not check on this field we decided to declare the
+	 * field as an optional field until PCUIF v12 is also used in the latest builds.*/
+	PCUIF_bts_model	bts_model optional
+} with { variant "" };
+
+type enumerated PCUIF_AddrType {
+	PCUIF_ADDR_TYPE_UNSPEC		('00'O),
+	PCUIF_ADDR_TYPE_IPV4		('04'O),
+	PCUIF_ADDR_TYPE_IPV6		('29'O)
+} with { variant "FIELDLENGTH(8)" };
+
+type record PCUIF_RemoteAddr {
+	record length(2) of PCUIF_AddrType	addr_type,
+	record length(2) of octetstring		addr length(16)
+} with { variant "" };
+
+/* E1 CCU connection parameters */
+type record PCUIF_e1_ccu_ind {
+	/* GSM/GPRS air interface */
+	uint8_t		trx_nr,
+	uint8_t		ts_nr,
+	/* E1 line interface */
+	uint8_t		e1_nr,
+	uint8_t		e1_ts,
+	uint8_t		e1_ts_ss
+} with { variant "" };
+
+type record PCUIF_act_req {
+	uint8_t		is_activate,
+	uint8_t		trx_nr,
+	uint8_t		ts_nr,
+	OCT1		spare
+} with { variant "" };
+
+type record PCUIF_time_ind {
+	uint32_t	fn
+} with { variant "" };
+
+type record length(8) of uint8_t PCUIF_interf;
+type record PCUIF_interf_ind {
+	uint8_t		trx_nr,
+	OCT3		spare,
+	uint32_t	fn,
+	PCUIF_interf	interf
+} with { variant "" };
+
+type record PCUIF_pag_req {
+	PCUIF_Sapi	sapi,
+	uint8_t		chan_needed,
+	OCT9		identity_lv
+} with { variant "" };
+
+type record PCUIF_app_info_req {
+	uint8_t		application_type,
+	uint8_t		len,
+	octetstring	data
+} with {
+	variant (len) "LENGTHTO(data)"
+}
+
+type record PCUIF_susp_req {
+	OCT4		tlli,
+	OCT6		ra_id,
+	uint8_t		cause
+} with {
+	variant (tlli) "BYTEORDER(last)"
+};
+
+type record PCUIF_neigh_addr_req {
+	uint16_t	local_lac,
+	uint16_t	local_ci,
+	uint16_t	tgt_arfcn,
+	uint8_t		tgt_bsic
+} with { variant (local_lac) "BYTEORDER(last)"
+	 variant (local_ci) "BYTEORDER(last)"
+	 variant (tgt_arfcn) "BYTEORDER(last)" };
+
+type record PCUIF_neigh_addr_cnf {
+	PCUIF_neigh_addr_req orig_req,
+	uint8_t 	error_code,
+	uint16_t	mcc,
+	uint16_t	mnc,
+	uint8_t		mnc_3_digits,
+	uint16_t	lac,
+	uint8_t		rac,
+	uint16_t	cell_identity
+} with { variant (mcc) "BYTEORDER(last)"
+	 variant (mnc) "BYTEORDER(last)"
+	 variant (lac) "BYTEORDER(last)"
+	 variant (cell_identity) "BYTEORDER(last)" };
+
+type union PCUIF_ContainerMsgUnion {
+	PCUIF_neigh_addr_req	neigh_addr_req,
+	PCUIF_neigh_addr_cnf	neigh_addr_cnf,
+	octetstring	other
+} with { variant "" };
+
+type record PCUIF_container {
+	PCUIF_MsgType	msg_type,
+	OCT1		spare,
+	uint16_t	len, /* network byte order */
+	PCUIF_ContainerMsgUnion	u
+} with {
+	variant (len) "BYTEORDER(last)"
+	variant (len) "LENGTHTO(u)"
+	variant (u) "CROSSTAG(
+			neigh_addr_req,	msg_type = PCU_IF_MSG_NEIGH_ADDR_REQ;
+			neigh_addr_cnf,	msg_type = PCU_IF_MSG_NEIGH_ADDR_CNF;
+			other,		OTHERWISE)"
+};
+
+/* Record to send a (confirmed) IMMEDIATE ASSIGNMENT message via PCH. The record is sent by the PCU to the BTS as a
+ * data request (data_req) under SAPI PCU_IF_SAPI_PCH_2. */
+type record PCUIF_pch {
+	OCT4		msg_id,
+	charstring	imsi length(17),
+	octetstring	data length(23),
+	boolean		confirm
+} with {
+	variant (msg_id) "BYTEORDER(last)"
+	variant (imsi) "FIELDLENGTH(17)"
+	variant (data) "FIELDLENGTH(23)"
+};
+
+external function enc_PCUIF_pch(in PCUIF_pch pdu) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_PCUIF_pch(in octetstring stream) return PCUIF_pch
+	with { extension "prototype(convert) decode(RAW)" };
+
+/* Record to send a (confirmed) IMMEDIATE ASSIGNMENT message via AGCH. The record is sent by the PCU to the BTS as a
+ * data request (data_req) under SAPI PCU_IF_SAPI_AGCH_2. */
+type record PCUIF_agch {
+	OCT4		msg_id,
+	octetstring	data length(23),
+	boolean		confirm
+} with {
+	variant (msg_id) "BYTEORDER(last)"
+	variant (data) "FIELDLENGTH(23)"
+};
+
+external function enc_PCUIF_agch(in PCUIF_agch pdu) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_PCUIF_agch(in octetstring stream) return PCUIF_agch
+	with { extension "prototype(convert) decode(RAW)" };
+
+type union PCUIF_MsgUnion {
+	PCUIF_data		data_req,
+	PCUIF_data_cnf		data_cnf2,
+	PCUIF_data		data_ind,
+	PCUIF_susp_req		susp_req,
+	PCUIF_rts_req		rts_req,
+	PCUIF_rach_ind		rach_ind,
+	PCUIF_txt_ind		txt_ind,
+	PCUIF_info_ind		info_ind,
+	PCUIF_e1_ccu_ind	e1_ccu_ind,
+	PCUIF_act_req		act_req,
+	PCUIF_time_ind		time_ind,
+	PCUIF_interf_ind	interf_ind,
+	PCUIF_pag_req		pag_req,
+	PCUIF_app_info_req	app_info_req,
+	PCUIF_container		container
+} with { variant "" };
+
+type record PCUIF_Message {
+	PCUIF_MsgType	msg_type,
+	uint8_t		bts_nr,
+	OCT2		spare,
+	PCUIF_MsgUnion	u
+} with { variant (u) "CROSSTAG(
+				data_req, 	msg_type = PCU_IF_MSG_DATA_REQ;
+				data_cnf2,	msg_type = PCU_IF_MSG_DATA_CNF_2;
+				data_ind,	msg_type = PCU_IF_MSG_DATA_IND;
+				susp_req,	msg_type = PCU_IF_MSG_SUSP_REQ;
+				rts_req,	msg_type = PCU_IF_MSG_RTS_REQ;
+				rach_ind,	msg_type = PCU_IF_MSG_RACH_IND;
+				txt_ind,	msg_type = PCU_IF_MSG_TXT_IND;
+				info_ind,	msg_type = PCU_IF_MSG_INFO_IND;
+				e1_ccu_ind,	msg_type = PCU_IF_MSG_E1_CCU_IND;
+				act_req,	msg_type = PCU_IF_MSG_ACT_REQ;
+				time_ind,	msg_type = PCU_IF_MSG_TIME_IND;
+				interf_ind,	msg_type = PCU_IF_MSG_INTERF_IND;
+				pag_req,	msg_type = PCU_IF_MSG_PAG_REQ;
+				app_info_req,	msg_type = PCU_IF_MSG_APP_INFO_REQ;
+				container,	msg_type = PCU_IF_MSG_CONTAINER)"
+	/* PCUIFv12: 1007 * 8 = 8056 bits */
+	variant "PADDING(8056)"
+};
+
+external function enc_PCUIF_Message(in PCUIF_Message pdu) return octetstring
+	with { extension "prototype(convert) encode(RAW)" };
+external function dec_PCUIF_Message(in octetstring stream) return PCUIF_Message
+	with { extension "prototype(convert) decode(RAW)" };
+
+/* Generic template for matching messages by type and/or the BTS number */
+template PCUIF_Message tr_PCUIF_MSG(template PCUIF_MsgType msg_type := ?,
+				    template uint8_t bts_nr := ?) := {
+	msg_type := msg_type,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := ?
+}
+
+template (value) PCUIF_Message ts_PCUIF_RTS_REQ(template (value) uint8_t bts_nr,
+						template (value) uint8_t trx_nr,
+						template (value) uint8_t ts_nr,
+						template (value) PCUIF_Sapi sapi,
+						template (value) uint32_t fn,
+						template (value) uint16_t arfcn,
+						template (value) uint8_t block_nr
+					) := {
+	msg_type := PCU_IF_MSG_RTS_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		rts_req := {
+			sapi := sapi,
+			spare := '000000'O,
+			fn := fn,
+			arfcn := arfcn,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			block_nr := block_nr
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_RTS_REQ(template uint8_t bts_nr := ?,
+					template uint8_t trx_nr := ?,
+					template uint8_t ts_nr := ?,
+					template PCUIF_Sapi sapi := ?,
+					template uint32_t fn := ?,
+					template uint8_t block_nr := ?
+					) := {
+	msg_type := PCU_IF_MSG_RTS_REQ,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		rts_req := {
+			sapi := sapi,
+			spare := ?,
+			fn := fn,
+			arfcn := ?,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			block_nr := block_nr
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_TXT_IND(uint8_t bts_nr, PCUIF_TextType tt, charstring text) := {
+	msg_type := PCU_IF_MSG_TXT_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		txt_ind := {
+			txt_type := tt,
+			text := text
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_TXT_IND(template uint8_t bts_nr, template PCUIF_TextType tt,
+					template charstring text := ?) := {
+	msg_type := PCU_IF_MSG_TXT_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		txt_ind := {
+			txt_type := tt,
+			text := text
+		}
+	}
+}
+
+
+
+template (value) PCUIF_Message ts_PCUIF_ACT_REQ(uint8_t bts_nr, uint8_t trx_nr, uint8_t ts_nr) := {
+	msg_type := PCU_IF_MSG_ACT_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		act_req := {
+			is_activate := 1,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			spare := '00'O
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_ACT_REQ(template uint8_t bts_nr, template uint8_t trx_nr,
+					template uint8_t ts_nr) := {
+	msg_type := PCU_IF_MSG_ACT_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		act_req := {
+			is_activate := 1,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			spare := '00'O
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_DEACT_REQ(uint8_t bts_nr, uint8_t trx_nr, uint8_t ts_nr) := {
+	msg_type := PCU_IF_MSG_ACT_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		act_req := {
+			is_activate := 0,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			spare := '00'O
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_DEACT_REQ(template uint8_t bts_nr, template uint8_t trx_nr,
+					  template uint8_t ts_nr) := {
+	msg_type := PCU_IF_MSG_ACT_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		act_req := {
+			is_activate := 0,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			spare := '00'O
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_DATA_IND(template (value) uint8_t bts_nr,
+						 template (value) uint8_t trx_nr,
+						 template (value) uint8_t ts_nr,
+						 template (value) uint8_t block_nr,
+						 template (value) PCUIF_Sapi sapi,
+						 template (value) octetstring data,
+						 template (value) uint32_t fn,
+						 template (value) uint16_t arfcn,
+						 template (value) int8_t rssi := -80,
+						 template (value) uint16_t ber10k := 0,
+						 template (value) int16_t ta_offs_qbits := 0,
+						 template (value) int16_t lqual_cb := 10) := {
+	msg_type := PCU_IF_MSG_DATA_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		data_ind := {
+			sapi := sapi,
+			len := lengthof(valueof(data)),
+			data := data,
+			fn := fn,
+			arfcn := arfcn,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			block_nr := block_nr,
+			rssi := rssi,
+			ber10k := ber10k,
+			ta_offs_qbits := ta_offs_qbits,
+			lqual_cb := lqual_cb
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_DATA_IND(template uint8_t bts_nr := ?,
+					 template uint8_t trx_nr := ?,
+					 template uint8_t ts_nr := ?,
+					 template uint8_t block_nr := ?,
+					 template PCUIF_Sapi sapi := ?,
+					 template octetstring data := ?) := {
+	msg_type := PCU_IF_MSG_DATA_IND,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		data_ind := {
+			sapi := sapi,
+			len := ?,
+			data := data,
+			fn := ?,
+			arfcn := ?,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			block_nr := block_nr,
+			rssi := ?,
+			ber10k := ?,
+			ta_offs_qbits := ?,
+			lqual_cb := ?
+		}
+	}
+}
+
+template PCUIF_data tr_PCUIF_DATA(template uint8_t trx_nr,
+				  template uint8_t ts_nr,
+				  template uint8_t block_nr := ?,
+				  template uint32_t fn := ?,
+				  template PCUIF_Sapi sapi := ?,
+				  template octetstring data := ?) := {
+	sapi := sapi,
+	len := ?,
+	data := data,
+	fn := fn,
+	arfcn := ?, /* unused in BTS */
+	trx_nr := trx_nr,
+	ts_nr := ts_nr,
+	block_nr := block_nr,
+	/* measurement parameters below unused on Tx */
+	rssi := 0,
+	ber10k := 0,
+	ta_offs_qbits := 0,
+	lqual_cb := 0
+
+}
+
+template (value) PCUIF_Message ts_PCUIF_DATA_REQ(uint8_t bts_nr, uint8_t trx_nr,
+						 uint8_t ts_nr, uint8_t block_nr,
+						 uint32_t fn, PCUIF_Sapi sapi,
+						 octetstring data) := {
+	msg_type := PCU_IF_MSG_DATA_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		data_req := {
+			sapi := sapi,
+			len := lengthof(data),
+			data := data,
+			fn := fn,
+			arfcn := 0, /* unused in BTS */
+			trx_nr := trx_nr,
+			ts_nr := ts_nr,
+			block_nr := block_nr,
+			/* measurement parameters below unused on Tx */
+			rssi := 0,
+			ber10k := 0,
+			ta_offs_qbits := 0,
+			lqual_cb := 0
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_DATA_REQ(template uint8_t bts_nr,
+					 template uint8_t trx_nr,
+					 template uint8_t ts_nr,
+					 template uint8_t block_nr := ?,
+					 template uint32_t fn := ?,
+					 template PCUIF_Sapi sapi := ?,
+					 template octetstring data := ?) := {
+	msg_type := PCU_IF_MSG_DATA_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		data_req := tr_PCUIF_DATA(trx_nr, ts_nr, block_nr, fn, sapi, data)
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_DATA_CNF_2(template (value) uint8_t bts_nr,
+						   template (value) PCUIF_Sapi sapi,
+						   template (value) OCT4 msg_id) := {
+	msg_type := PCU_IF_MSG_DATA_CNF_2,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		data_cnf2 := {
+			sapi := sapi,
+			msg_id := msg_id
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_DATA_CNF_2(template uint8_t bts_nr,
+					   template PCUIF_Sapi sapi := ?,
+					   template OCT4 msg_id := ?) := {
+	msg_type := PCU_IF_MSG_DATA_CNF_2,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		data_cnf2 := {
+			sapi := sapi,
+			msg_id := msg_id
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_RACH_IND(template (value) uint8_t bts_nr,
+						 template (value) uint8_t trx_nr,
+						 template (value) uint8_t ts_nr,
+						 template (value) uint16_t ra,
+						 template (value) uint8_t is_11bit,
+						 template (value) PCUIF_BurstType burst_type,
+						 template (value) uint32_t fn,
+						 template (value) uint16_t arfcn,
+						 template (value) int16_t qta := 0,
+						 template (value) PCUIF_Sapi sapi := PCU_IF_SAPI_RACH
+) := {
+	msg_type := PCU_IF_MSG_RACH_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		rach_ind := {
+			sapi := sapi,
+			ra := ra,
+			qta := qta,
+			fn := fn,
+			arfcn := arfcn,
+			is_11bit := is_11bit,
+			burst_type := burst_type,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_RACH_IND(template uint8_t bts_nr := ?,
+					 template uint8_t trx_nr := ?,
+					 template uint8_t ts_nr := ?,
+					 template uint16_t ra := ?,
+					 template uint8_t is_11bit := ?,
+					 template PCUIF_BurstType burst_type := ?,
+					 template uint32_t fn := ?,
+					 template PCUIF_Sapi sapi := PCU_IF_SAPI_RACH) := {
+	msg_type := PCU_IF_MSG_RACH_IND,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		rach_ind := {
+			sapi := sapi,
+			ra := ra,
+			qta := ?,
+			fn := fn,
+			arfcn := ?,
+			is_11bit := is_11bit,
+			burst_type := burst_type,
+			trx_nr := trx_nr,
+			ts_nr := ts_nr
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_PAG_REQ(template (value) uint8_t bts_nr,
+						template (value) OCT9 id_lv,
+						template (value) uint8_t chan_needed,
+						template (value) PCUIF_Sapi sapi) := {
+	msg_type := PCU_IF_MSG_PAG_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		pag_req := {
+			sapi := sapi,
+			chan_needed := chan_needed,
+			identity_lv := id_lv
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_PAG_REQ(template uint8_t bts_nr := ?,
+					 template OCT9 id_lv := ?,
+					 template uint8_t chan_needed := ?,
+					 template PCUIF_Sapi sapi := ?) := {
+	msg_type := PCU_IF_MSG_PAG_REQ,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		pag_req := {
+			sapi := ?,
+			chan_needed := chan_needed,
+			identity_lv := id_lv
+		}
+	}
+}
+
+const PCUIF_Flags c_PCUIF_Flags_default := {
+	bts_active := true,
+	direct_phy := false,
+	spare := '00000000000000'B,
+	cs1 := true,
+	cs2 := true,
+	cs3 := true,
+	cs4 := true,
+	mcs1 := true,
+	mcs2 := true,
+	mcs3 := true,
+	mcs4 := true,
+	mcs5 := true,
+	mcs6 := true,
+	mcs7 := true,
+	mcs8 := true,
+	mcs9 := true,
+	spare2 := '000'B
+};
+
+const PCUIF_Flags c_PCUIF_Flags_noMCS := {
+	bts_active := true,
+	direct_phy := false,
+	spare := '00000000000000'B,
+	cs1 := true,
+	cs2 := true,
+	cs3 := true,
+	cs4 := true,
+	mcs1 := false,
+	mcs2 := false,
+	mcs3 := false,
+	mcs4 := false,
+	mcs5 := false,
+	mcs6 := false,
+	mcs7 := false,
+	mcs8 := false,
+	mcs9 := false,
+	spare2 := '000'B
+};
+
+function f_pcuif_ind_flags_egprs_enabled(PCUIF_Flags flags) return boolean {
+	return flags.mcs1 or flags.mcs2 or flags.mcs3 or flags.mcs4 or
+	       flags.mcs5 or flags.mcs6 or flags.mcs7 or flags.mcs8 or
+	       flags.mcs9;
+}
+
+template (value) PCUIF_InfoTrxTs ts_PCUIF_InfoTrxTsH0(template (value) uint3_t tsc := 7) := {
+	tsc := tsc,
+	hopping := 0,
+	hsn := 0, maio := 0,
+	ma_bit_len := 0,
+	ma := f_pad_bit(''B, 64, '0'B)
+};
+template PCUIF_InfoTrxTs tr_PCUIF_InfoTrxTsH0(template uint3_t tsc := ?) := {
+	tsc := tsc,
+	hopping := 0,
+	hsn := ?, maio := ?,
+	ma_bit_len := ?,
+	ma := ?
+};
+
+template (value) PCUIF_InfoTrxTs ts_PCUIF_InfoTrxTsH1(template (value) uint3_t tsc := 7,
+						      template (value) uint6_t hsn := 0,
+						      template (value) uint6_t maio := 0,
+						      template (value) bitstring ma := ''B) := {
+	tsc := tsc,
+	hopping := 1,
+	hsn := hsn,
+	maio := maio,
+	ma_bit_len := lengthof(valueof(ma)),
+	ma := f_pad_bit(valueof(ma), 64, '0'B)
+};
+template PCUIF_InfoTrxTs tr_PCUIF_InfoTrxTsH1(template uint3_t tsc := ?,
+					      template uint6_t hsn := ?,
+					      template uint6_t maio := ?,
+					      template bitstring ma := ?,
+					      template uint8_t ma_bit_len := ?) := {
+	tsc := tsc,
+	hopping := 1,
+	hsn := hsn,
+	maio := maio,
+	ma_bit_len := ma_bit_len,
+	ma := ma
+};
+
+template (value) PCUIF_InfoTrx
+ts_PCUIF_InfoTrx(template (value) uint16_t arfcn := 871,
+		 template (value) BIT8 pdch_mask := '00000001'B,
+		 template (value) uint3_t tsc := 7) := {
+	arfcn := arfcn,
+	pdch_mask := pdch_mask,
+	spare := '00'O,
+	hLayer1 := 0,
+	ts := {
+		ts_PCUIF_InfoTrxTsH0(tsc), ts_PCUIF_InfoTrxTsH0(tsc),
+		ts_PCUIF_InfoTrxTsH0(tsc), ts_PCUIF_InfoTrxTsH0(tsc),
+		ts_PCUIF_InfoTrxTsH0(tsc), ts_PCUIF_InfoTrxTsH0(tsc),
+		ts_PCUIF_InfoTrxTsH0(tsc), ts_PCUIF_InfoTrxTsH0(tsc)
+	}
+};
+
+template (value) PCUIF_InfoTrxs
+ts_PCUIF_InfoTrxs_def(uint16_t base_arfcn) := {
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 0),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 1),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 2),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 3),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 4),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 5),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 6),
+	ts_PCUIF_InfoTrx(arfcn := base_arfcn + 7)
+};
+
+template (value) PCUIF_Message ts_PCUIF_INFO_IND(template (value) uint8_t bts_nr,
+						 template (value) PCUIF_info_ind info_ind) := {
+	msg_type := PCU_IF_MSG_INFO_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		info_ind := info_ind
+	}
+}
+template PCUIF_Message tr_PCUIF_INFO_IND(template uint8_t bts_nr := ?,
+					 template PCUIF_Flags flags := ?,
+					 template uint32_t version := mp_pcuif_version) := {
+	msg_type := PCU_IF_MSG_INFO_IND,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		info_ind := {
+			version := version,
+			flags := flags,
+			trx := ?,
+			bsic := ?,
+			mcc := ?,
+			mnc :=?,
+			mnc_3_digits := ?,
+			lac := ?,
+			rac := ?,
+			nsei := ?,
+			nse_timer := ?,
+			cell_timer := ?,
+			cell_id := ?,
+			repeat_time := ?,
+			repeat_count := ?,
+			bvci := ?,
+			t3142 := ?,
+			t3169 := ?,
+			t3191 := ?,
+			t3193_10ms := ?,
+			t3195 := ?,
+			n3101 := ?,
+			n3103 := ?,
+			n3105 := ?,
+			cv_countdown := ?,
+			dl_tbf_ext := ?,
+			ul_tbf_ext := ?,
+			initial_cs := ?,
+			initial_mcs := ?,
+			nsvci := ?,
+			local_port := ?,
+			remote_port := ?,
+			remote_addr := ?,
+			/* See note in record PCUIF_info_ind */
+			bts_model := *
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_TIME_IND(template (value) uint8_t bts_nr,
+						 template (value) uint32_t fn) := {
+	msg_type := PCU_IF_MSG_TIME_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		time_ind := {
+			fn := fn
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_TIME_IND(template uint8_t bts_nr,
+					 template uint32_t fn) := {
+	msg_type := PCU_IF_MSG_TIME_IND,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		time_ind := {
+			fn := fn
+		}
+	}
+}
+
+template (value) PCUIF_Message
+ts_PCUIF_INTERF_IND(template (value) uint8_t bts_nr,
+		    template (value) uint8_t trx_nr,
+		    template (value) uint32_t fn,
+		    template (value) PCUIF_interf interf) := {
+	msg_type := PCU_IF_MSG_INTERF_IND,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		interf_ind := {
+			trx_nr := trx_nr,
+			spare := '000000'O,
+			fn := fn,
+			interf := interf
+		}
+	}
+}
+template PCUIF_Message
+tr_PCUIF_INTERF_IND(template (present) uint8_t bts_nr := ?,
+		    template (present) uint8_t trx_nr := ?,
+		    template (present) uint32_t fn := ?,
+		    template (present) PCUIF_interf interf := ?) := {
+	msg_type := PCU_IF_MSG_INTERF_IND,
+	bts_nr := bts_nr,
+	spare := ?,
+	u := {
+		interf_ind := {
+			trx_nr := trx_nr,
+			spare := ?,
+			fn := fn,
+			interf := interf
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_SUSP_REQ(template (value) uint8_t bts_nr,
+						 template (value) OCT4 tlli,
+						 template (value) OCT6 ra_id,
+						 template (value) uint8_t cause) := {
+	msg_type := PCU_IF_MSG_SUSP_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		susp_req := {
+			tlli := tlli,
+			ra_id := ra_id,
+			cause := cause
+		}
+	}
+}
+template PCUIF_Message tr_PCUIF_SUSP_REQ(template uint8_t bts_nr,
+					 template OCT4 tlli,
+					 template OCT6 ra_id,
+					 template uint8_t cause) := {
+	msg_type := PCU_IF_MSG_SUSP_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		susp_req := {
+			tlli := tlli,
+			ra_id := ra_id,
+			cause := cause
+		}
+	}
+}
+
+template (value) PCUIF_Message ts_PCUIF_APP_INFO_REQ(template (value) uint8_t bts_nr,
+						     template (value) uint8_t app_type,
+						     template (value) octetstring app_data) := {
+	msg_type := PCU_IF_MSG_APP_INFO_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		app_info_req := {
+			application_type := app_type,
+			len := 0, /* overwritten */
+			data := app_data
+		}
+	}
+}
+template (present) PCUIF_Message tr_PCUIF_APP_INFO_REQ(template (present) uint8_t bts_nr,
+						       template (present) uint8_t app_type,
+						       template (present) octetstring app_data) := {
+	msg_type := PCU_IF_MSG_APP_INFO_REQ,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		app_info_req := {
+			application_type := app_type,
+			len := ?,
+			data := app_data
+		}
+	}
+}
+
+
+template (value) PCUIF_Message ts_PCUIF_CONTAINER(template (value) uint8_t bts_nr,
+						       template (value) PCUIF_container container) := {
+	msg_type := PCU_IF_MSG_CONTAINER,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		container := container
+	}
+}
+template (present) PCUIF_Message tr_PCUIF_CONTAINER(template (present) uint8_t bts_nr,
+						       template (present) PCUIF_container container) := {
+	msg_type := PCU_IF_MSG_CONTAINER,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		container := container
+	}
+}
+
+template (value) PCUIF_container ts_PCUIF_CONT_OTHER(PCUIF_MsgType msg_type, template (value) octetstring payload) := {
+	msg_type := msg_type,
+	spare := '00'O,
+	len := lengthof(payload),
+	u := {
+		other := payload
+	}
+}
+template (present) PCUIF_container tr_PCUIF_CONT_OTHER(template (present) PCUIF_MsgType msg_type,
+						       template (present) octetstring payload) := {
+	msg_type := msg_type,
+	spare := '00'O,
+	len := ?,
+	u := {
+		other := payload
+	}
+}
+
+template (present) PCUIF_container tr_PCUIF_CONT_NEIGH_ADDR_REQ(template (present) uint16_t local_lac := ?,
+								template (present) uint16_t local_ci := ?,
+								template (present) uint16_t tgt_arfcn := ?,
+								template (present) uint8_t tgt_bsic := ?) := {
+	msg_type := PCU_IF_MSG_NEIGH_ADDR_REQ,
+	spare := '00'O,
+	len := ?,
+	u := {
+		neigh_addr_req := {
+			local_lac := local_lac,
+			local_ci := local_ci,
+			tgt_arfcn := tgt_arfcn,
+			tgt_bsic := tgt_bsic
+		}
+	}
+}
+template (present) PCUIF_Message tr_PCUIF_NEIGH_ADDR_REQ(template (present) uint8_t bts_nr,
+								template (present) uint16_t local_lac := ?,
+								template (present) uint16_t local_ci := ?,
+								template (present) uint16_t tgt_arfcn := ?,
+								template (present) uint8_t tgt_bsic := ?) := {
+	msg_type := PCU_IF_MSG_CONTAINER,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		container := tr_PCUIF_CONT_NEIGH_ADDR_REQ(local_lac, local_ci, tgt_arfcn, tgt_bsic)
+	}
+}
+
+template (value) PCUIF_container ts_PCUIF_CONT_NEIGH_ADDR_CNF(template (value) PCUIF_neigh_addr_req orig_req,
+							template (value) uint8_t error_code := 0,
+							template (value) uint16_t mcc := 0,
+							template (value) uint16_t mnc := 0,
+							template (value) uint8_t mnc_3_digits := 0,
+							template (value) uint16_t lac := 0,
+							template (value) uint8_t rac := 0,
+							template (value) uint16_t cell_identity := 0) := {
+	msg_type := PCU_IF_MSG_NEIGH_ADDR_CNF,
+	spare := '00'O,
+	len := 0, /* overwritten */
+	u := {
+		neigh_addr_cnf := {
+			orig_req := orig_req,
+			error_code := error_code,
+			mcc := mcc,
+			mnc := mnc,
+			mnc_3_digits := mnc_3_digits,
+			lac := lac,
+			rac := rac,
+			cell_identity := cell_identity
+		}
+	}
+}
+template (value) PCUIF_Message ts_PCUIF_NEIGH_ADDR_CNF(template (value) uint8_t bts_nr,
+							template (value) PCUIF_neigh_addr_req orig_req,
+							template (value) uint8_t error_code := 0,
+							template (value) uint16_t mcc := 0,
+							template (value) uint16_t mnc := 0,
+							template (value) uint8_t mnc_3_digits := 0,
+							template (value) uint16_t lac := 0,
+							template (value) uint8_t rac := 0,
+							template (value) uint16_t cell_identity := 0) := {
+	msg_type := PCU_IF_MSG_CONTAINER,
+	bts_nr := bts_nr,
+	spare := '0000'O,
+	u := {
+		container := ts_PCUIF_CONT_NEIGH_ADDR_CNF(orig_req, error_code, mcc, mnc, mnc_3_digits,
+							  lac, rac, cell_identity)
+	}
+}
+
+function f_PCUIF_PDCHMask_set(inout PCUIF_info_ind info, BIT8 pdch_mask,
+			      template (present) uint8_t trx_nr := ?)
+{
+	for (var integer nr := 0; nr < lengthof(info.trx); nr := nr + 1) {
+		if (match(nr, trx_nr)) {
+			info.trx[nr].pdch_mask := pdch_mask;
+		}
+	}
+}
+
+function f_PCUIF_AF2addr_type(AddressFamily address_family)
+return PCUIF_AddrType {
+	if (address_family == AF_INET) {
+		return PCUIF_ADDR_TYPE_IPV4;
+	} else if (address_family == AF_INET6) {
+		return PCUIF_ADDR_TYPE_IPV6;
+	} else {
+		return PCUIF_ADDR_TYPE_UNSPEC;
+	}
+}
+
+/* TODO: second (redundant) NSVC connection is not (yet) supported */
+function f_PCUIF_RemoteAddr(PCUIF_AddrType addr_type,
+			    charstring addr_str)
+return PCUIF_RemoteAddr {
+	var PCUIF_RemoteAddr remote_addr;
+
+	remote_addr.addr_type[0] := addr_type;
+	if (addr_type == PCUIF_ADDR_TYPE_IPV4)  {
+		remote_addr.addr[0] := f_inet_addr(addr_str);
+	} else {
+		remote_addr.addr[0] := f_inet6_addr(addr_str);
+	}
+
+	remote_addr.addr_type[1] := PCUIF_ADDR_TYPE_UNSPEC;
+	remote_addr.addr[1] := f_pad_oct(''O, 16, '00'O);
+
+	return remote_addr;
+}
+
+
+} with { encode "RAW" variant "BYTEORDER(first)" };

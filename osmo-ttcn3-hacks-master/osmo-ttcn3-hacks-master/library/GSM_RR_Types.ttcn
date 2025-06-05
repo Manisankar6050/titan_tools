@@ -1,0 +1,1089 @@
+/* Encoding/Decoding routines for GSM System Information messages
+ * according to 3GPP TS 44.018 Version 12.3.0 Release 12
+ *
+ * (C) 2017-2019 Harald Welte <laforge@gnumonks.org>
+ * All rights reserved.
+ *
+ * Released under the terms of GNU General Public License, Version 2 or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+module GSM_RR_Types {
+
+	import from General_Types all;
+	import from Osmocom_Types all;
+	import from GSM_Types all;
+	import from GSM_RestOctets all;
+	import from RLCMAC_CSN1_Types all;
+	import from MobileL3_CommonIE_Types all;
+	import from MobileL3_RRM_Types all;
+
+	/* Table 10.4.1 of Section 10.4 / 3GPP TS 44.018 */
+	type enumerated RrMessageType {
+		ADDITIONAL_ASSIGNMENT		('00111011'B),
+		IMMEDIATE_ASSIGNMENT		('00111111'B),
+		IMMEDIATE_ASSIGNMENT_EXTENDED	('00111001'B),
+		IMMEDIATE_ASSIGNMENT_REJECT	('00111010'B),
+		IMMEDIATE_PACKET_ASSIGNMENT	('01101001'B),
+
+		CIPHERING_MODE_COMMAND		('00110101'B),
+		CIPHERING_MODE_COMPLETE		('00110010'B),
+
+		CONFIGURATION_CHANGE_COMMAND	('00110000'B),
+		CONFIGURATION_CHANGE_ACK	('00110001'B),
+		CONFIGURATION_CHANGE_REJECT	('00110011'B),
+
+		ASSIGNMENT_COMMAND		('00101110'B),
+		ASSIGNMENT_COMPLETE		('00101001'B),
+		ASSIGNMENT_FAILURE		('00101111'B),
+		HANDOVER_COMMAND		('00101011'B),
+		HANDOVER_COMPLETE		('00101100'B),
+		HANDOVER_FAILURE		('00101000'B),
+		PHYSICAL_INFORMATION		('00101101'B),
+
+		CHANNEL_RELEASE			('00001101'B),
+		PARTIAL_RELEASE			('00001010'B),
+		PARTIAL_RELEASE_COMPLETE	('00001111'B),
+
+		PAGING_REQUEST_TYPE_1		('00100001'B),
+		PAGING_REQUEST_TYPE_2		('00100010'B),
+		PAGING_REQUEST_TYPE_3		('00100100'B),
+		PAGING_RESPONSE			('00100111'B),
+		NOTIFICATION_NCH		('00100000'B),
+		NOTIFICATION_RESPOSNE		('00100110'B),
+
+		SYSTEM_INFORMATION_TYPE_8	('00011000'B),
+		SYSTEM_INFORMATION_TYPE_1	('00011001'B),
+		SYSTEM_INFORMATION_TYPE_2	('00011010'B),
+		SYSTEM_INFORMATION_TYPE_3	('00011011'B),
+		SYSTEM_INFORMATION_TYPE_4	('00011100'B),
+		SYSTEM_INFORMATION_TYPE_5	('00011101'B),
+		SYSTEM_INFORMATION_TYPE_6	('00011110'B),
+		SYSTEM_INFORMATION_TYPE_7	('00011111'B),
+		SYSTEM_INFORMATION_TYPE_2bis	('00000010'B),
+		SYSTEM_INFORMATION_TYPE_2ter	('00000011'B),
+		SYSTEM_INFORMATION_TYPE_2quater	('00000111'B),
+		SYSTEM_INFORMATION_TYPE_5bis	('00000101'B),
+		SYSTEM_INFORMATION_TYPE_5ter	('00000110'B),
+		SYSTEM_INFORMATION_TYPE_9	('00000100'B),
+		SYSTEM_INFORMATION_TYPE_13	('00000000'B),
+
+		SYSTEM_INFORMATION_TYPE_16	('00111101'B),
+		SYSTEM_INFORMATION_TYPE_17	('00111110'B),
+
+		CHANNEL_MODE_MODIFY		('00010000'B),
+		RR_STATUS			('00010010'B),
+		CHANNEL_MODE_MODIFY_ACKNOWLEDGE	('00010111'B),
+		FREQUENCY_REDEFINITION		('00010100'B),
+		MEASUREMENT_REPORT		('00010101'B),
+		CLASSMARK_CHANGE		('00010110'B),
+		CLASSMARK_ENQUIRY		('00010011'B),
+		EXTENDED_MEASUREMENT_REPORT	('00110110'B),
+		EXTENDED_MEASUREMENT_ORDER	('00110111'B),
+		GPRS_SUSPENSION_REQUEST		('00110100'B),
+		//MBMS_ANNOUNCEMENT		('00010110'B), duplicate, DL only
+		//SERVICE_INFORMATION		('00110110'B), duplicate, DL only
+
+		VGCS_UPLINK_GRANT		('00001001'B),
+		UPLINK_RELEASE			('00001110'B),
+		UPLINK_BUSY			('00101010'B),
+		TALKER_INDICATION		('00010001'B),
+		PRIORITY_UPLINK_REQUEST		('01100110'B),
+		DATA_INDICATION			('01100111'B),
+		DATA_INDICATION2		('01101000'B),
+
+		APPLICATION_INFORMATION		('00111000'B),
+
+		SYSTEM_INFORMATION_TYPE_14	('00000001'B),
+		SYSTEM_INFORMATION_TYPE_15	('01000011'B),
+		SYSTEM_INFORMATION_TYPE_18	('01000000'B),
+		SYSTEM_INFORMATION_TYPE_19	('01000001'B),
+		SYSTEM_INFORMATION_TYPE_20	('01000010'B),
+		SYSTEM_INFORMATION_TYPE_13alt	('01000100'B),
+		SYSTEM_INFORMATION_TYPE_2n	('01000101'B),
+		SYSTEM_INFORMATION_TYPE_21	('01000110'B),
+		SYSTEM_INFORMATION_TYPE_22	('01000111'B),
+		SYSTEM_INFORMATION_TYPE_23	('01001111'B),
+
+		DTM_ASSIGNMENT_FAILURE		('01001000'B),
+		DTM_REJECT			('01001001'B),
+		DTM_REQUEST			('01001010'B),
+		PACKET_ASSIGNMENT		('01001011'B),
+		DTM_ASSIGNMENT_COMMAND		('01001100'B),
+		DTM_INFORMATION			('01001101'B),
+		PACKET_INFORMATION		('01001110'B),
+
+		UTRAN_CLASSMARK_CHANGE		('01100000'B),
+		CDMA2000_CLASSMARK_CHANGE	('01100010'B),
+		INTERSYS_TO_UTRAN_HO_CMD	('01100011'B),
+		INTERSYS_TO_CDMA2000_HO_CMD	('01100100'B),
+		GERAN_IU_MODE_CLASSMARK_CHG	('01100101'B)
+		//INTERSYS_TO_EUTRAN_HO_CMD	('01100110'B) duplicate, DL only
+	} with { variant "FIELDLENGTH(8)" };
+
+	/* Table 10.4.2 of Section 10.4 / 3GPP TS 44.018 */
+	type enumerated RrShortDisc {
+		SYSTEM_INFORMATION_TYPE_10	('00000'B),
+		NOTIFICATION_FACCH		('00001'B),
+		UPLINK_FREE			('00010'B),
+		ENHAN_MEAS_REP_UL		('00100'B),
+		MEAS_INFO_DL			('00101'B),
+		VBS_VGCS_RECON			('00110'B),
+		VBS_VGCS_RECON2			('00111'B),
+		VGCS_ADD_INFO			('01000'B),
+		VGCS_SMS_INFO			('01001'B),
+		SYSTEM_INFORMATION_TYPE_10bis	('01010'B),
+		SYSTEM_INFORMATION_TYPE_10ter	('01011'B),
+		VGCS_NEIGH_CELL_INFO		('01100'B),
+		NOTIFY_APP_DATA			('01101'B)
+	} with { variant "FIELDLENGTH(5)" };
+
+	type enumerated RR_Cause {
+		GSM48_RR_CAUSE_NORMAL		('00'O),
+		GSM48_RR_CAUSE_ABNORMAL_UNSPEC	('01'O),
+		GSM48_RR_CAUSE_ABNORMAL_UNACCT	('02'O),
+		GSM48_RR_CAUSE_ABNORMAL_TIMER	('03'O),
+		GSM48_RR_CAUSE_ABNORMAL_NOACT	('04'O),
+		GSM48_RR_CAUSE_PREMPTIVE_REL	('05'O),
+		GSM48_RR_CAUSE_HNDOVER_IMP	('08'O),
+		GSM48_RR_CAUSE_CHAN_MODE_UNACCT	('09'O),
+		GSM48_RR_CAUSE_FREQ_NOT_IMPL	('0a'O),
+		GSM48_RR_CAUSE_CALL_CLEARED	('41'O),
+		GSM48_RR_CAUSE_SEMANT_INCORR	('5f'O),
+		GSM48_RR_CAUSE_INVALID_MAND_INF ('60'O),
+		GSM48_RR_CAUSE_MSG_TYPE_N	('61'O),
+		GSM48_RR_CAUSE_MSG_TYPE_N_COMPAT('62'O),
+		GSM48_RR_CAUSE_COND_IE_ERROR	('64'O),
+		GSM48_RR_CAUSE_NO_CELL_ALLOC_A	('65'O),
+		GSM48_RR_CAUSE_PROT_ERROR_UNSPC ('6f'O)
+	} with { variant "FIELDLENGTH(8)" };
+
+	type octetstring RestOctets  with { variant "PADDING(yes), PADDING_PATTERN('00101011'B)" };
+
+	type record L2PseudoLength {
+		uint6_t		l2_plen,
+		BIT2		zero_one
+	} with { variant "" };
+
+	template L2PseudoLength tr_L2Pseudolength(template uint6_t len) := {
+		l2_plen := len,
+		zero_one := '01'B
+	};
+
+	template (value) L2PseudoLength ts_L2Pseudolength(uint6_t len) := {
+		l2_plen := len,
+		zero_one := '01'B
+	};
+
+	type record RrHeader {
+		L2PseudoLength	l2_plen,
+		uint4_t		skip_indicator,
+		uint4_t		rr_protocol_discriminator,
+		RrMessageType	message_type
+	} with { variant "" };
+
+	template RrHeader t_RrHeader(RrMessageType msg_type, template uint6_t len) := {
+		l2_plen := tr_L2Pseudolength(len),
+		skip_indicator := 0,
+		rr_protocol_discriminator := 6,
+		message_type := msg_type
+	};
+
+	template (value) RrHeader ts_RrHeader(RrMessageType msg_type, uint6_t len) := {
+		l2_plen := ts_L2Pseudolength(len),
+		skip_indicator := 0,
+		rr_protocol_discriminator := 6,
+		message_type := msg_type
+	};
+
+
+	type record RrL3Header {
+		uint4_t		skip_indicator,
+		uint4_t		rr_protocol_discriminator,
+		RrMessageType	message_type
+	} with { variant "" };
+
+	template RrL3Header t_RrL3Header(RrMessageType msg_type) := {
+		skip_indicator := 0,
+		rr_protocol_discriminator := 6,
+		message_type := msg_type
+	}
+
+	/* TS 44.004 7.2.1 */
+	type record SacchL1Header {
+		uint2_t		reserved,
+		boolean		fpc,
+		uint5_t		ms_power_lvl,
+		uint8_t		actual_ta
+	} with { variant "FIELDORDER(msb)" };
+
+	external function enc_SacchL1Header(in SacchL1Header hdr) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_SacchL1Header(in octetstring stream) return SacchL1Header
+		with { extension "prototype(convert) decode(RAW)" };
+
+	template (value) SacchL1Header
+	ts_SacchL1Header(uint5_t ms_power_lvl,
+			 uint8_t actual_ta,
+			 boolean fpc := false) := {
+		reserved := 0,
+		fpc := fpc,
+		ms_power_lvl := ms_power_lvl,
+		actual_ta := actual_ta
+	};
+
+	type record MaioHsn {
+		uint6_t		maio,
+		uint6_t		hsn
+	} with { variant "" };
+
+	/* It's more handy to pass HSN first, so the arguments' order is reversed. */
+	template (value) MaioHsn ts_HsnMaio(template (value) uint6_t hsn,
+					    template (value) uint6_t maio) := {
+		maio := maio,
+		hsn := hsn
+	};
+	template MaioHsn tr_HsnMaio(template (present) uint6_t hsn,
+				    template (present) uint6_t maio) := {
+		maio := maio,
+		hsn := hsn
+	};
+
+	/* TS 24.008 10.5.1.2 */
+	type uint4_t CipheringKeySeqNr (0..7);
+
+	/* TS 24.008 10.5.1.4 */
+	type enumerated MobileIdentityType {
+		MI_TYPE_NONE	(0),
+		MI_TYPE_IMSI,
+		MI_TYPE_IMEI,
+		MI_TYPE_IMEISV,
+		MI_TYPE_TMSI,
+		MI_TYPE_TMGI
+	} with { variant "FIELDLENGTH(3)" };
+
+	/* TS 24.008 10.5.1.5 */
+	type record MsClassmark1 {
+		BIT1		spare,
+		uint2_t		rev_level,
+		boolean		es_ind,
+		boolean		a51,
+		uint3_t		rf_pwr_cap
+	} with { variant "" };
+
+	/* TS 24.008 10.5.1.6 */
+	type record MsClassmark2 {
+		BIT1		spare,
+		uint2_t		rev_level,
+		boolean		es_ind,
+		boolean		a51,
+		uint3_t		rf_pwr_cap,
+		BIT1		spare1,
+		boolean		ps_cap,
+		uint2_t		ss_screen_ind,
+		boolean		sm_cap,
+		boolean		vbs,
+		boolean		vgcs,
+		boolean		fc,
+		boolean		cm3,
+		BIT1		spare2,
+		boolean		lcsva_cap,
+		boolean		ucs2,
+		boolean		solsa,
+		boolean		cmsp,
+		boolean		a53,
+		boolean		a52
+	} with { variant "" };
+	type record MsClassmark2LV {
+		uint8_t		len,
+		MsClassmark2	cm2
+	} with { variant (len) "LENGTHTO(cm2)" };
+
+
+	/* 44.018 10.5.2.5 */
+	type record ChannelDescription {
+		RslChannelNr	chan_nr,
+		uint3_t		tsc,
+		boolean		h,
+		uint12_t	arfcn optional,
+		MaioHsn		maio_hsn optional
+	} with { variant (arfcn) "PRESENCE(h = false)"
+		 variant (maio_hsn) "PRESENCE(h = true)" };
+
+	type record ChannelDescriptionTV {
+		OCT1		iei,
+		ChannelDescription v
+	} with { variant "" };
+
+	/* 10.5.2.21 */
+	type record MobileAllocationLV {
+		uint8_t 	len,
+		bitstring	ma length (0..64)
+	} with {
+		variant (len) "LENGTHTO(ma)"
+		variant (ma) "BYTEORDER(first), BITORDER(msb)"
+	};
+
+	type record MobileAllocationTLV {
+		OCT1			iei ('72'O),
+		MobileAllocationLV	v
+	} with { variant "" };
+
+	/* 10.5.2.25a */
+	type record PktChDesc0Ind {
+		uint6_t		maio,
+		BIT1		ma_number_ind,
+		BIT1		change_mark1_valid,
+		BIT2		change_mark1
+	} with { variant "" };
+	type record PktChDesc0 {
+		BIT1		hopping,
+		BIT1		spare ('0'B),
+		uint10_t	arfcn optional,
+		PktChDesc0Ind	indirect optional
+	} with {
+		variant (arfcn) "PRESENCE(hopping = '0'B)"
+		variant (indirect) "PRESENCE(hopping = '1'B)"
+	};
+	type record PktChDesc1 {
+		uint6_t		maio,
+		uint6_t		hsn
+	} with { variant "" };
+	type record PacketChannelDescription {
+		uint5_t		channel_Type_spare,
+		uint3_t		tn,
+		uint3_t		tsc,
+		BIT1		presence,
+		PktChDesc0	zero optional,
+		PktChDesc1	one optional
+	} with {
+		variant (zero)	"PRESENCE(presence = '0'B)"
+		variant (one)	"PRESENCE(presence = '1'B)"
+	};
+
+	/* 10.5.2.25b */
+	type record DedicatedModeOrTbf {
+		BIT1	spare,
+		boolean	tma,
+		boolean	downlink,
+		boolean tbf
+	} with { variant "" };
+
+	/* 10.5.2.26 */
+	type enumerated PageMode {
+		PAGE_MODE_NORMAL,
+		PAGE_MODE_EXTENDED,
+		PAGE_MODE_REORGANIZATION,
+		PAGE_MODE_SAME_AS_BEFORE
+	} with { variant "FIELDLENGTH(4)" };
+
+	/* 10.5.2.30 */
+	type record RequestReference {
+		bitstring	ra length(8),
+		uint5_t 	t1p,
+		uint6_t 	t3,
+		uint5_t		t2
+	} with { variant "" };
+
+	template RequestReference t_RequestReference(template bitstring ra, template uint5_t t1p, template uint6_t t3, template uint5_t t2) := {
+		ra := ra,
+		t1p := t1p,
+		t3 := t3,
+		t2 := t2
+	}
+
+	/* compute the expected request reference for given RA + FN */
+	function f_compute_ReqRef(uint8_t ra, GsmFrameNumber fn) return RequestReference {
+		var RequestReference req_ref := { ra := int2bit(ra, 8) };
+		req_ref.t1p := (fn / 1326) mod 32;
+		req_ref.t2 := fn mod 26;
+		req_ref.t3 := fn mod 51;
+		return req_ref
+	}
+	function tr_compute_ReqRef(template uint8_t ra, template GsmFrameNumber fn)
+	return template RequestReference {
+		var template RequestReference req_ref;
+		if (istemplatekind(ra, "?")) {
+			req_ref.ra := ?;
+		} else {
+			req_ref.ra := int2bit(valueof(ra), 8);
+		}
+		if (istemplatekind(fn, "?")) {
+			req_ref.t1p := ?;
+			req_ref.t2 := ?;
+			req_ref.t3 := ?;
+		} else {
+			var GsmFrameNumber fn_v := valueof(fn);
+			req_ref.t1p := (fn_v / 1326) mod 32;
+			req_ref.t2 := fn_v mod 26;
+			req_ref.t3 := fn_v mod 51;
+		}
+		return req_ref;
+	}
+
+	/* 10.5.2.40 */
+	type integer TimingAdvance (0..219);
+
+	/* 10.5.2.43 */
+	type uint8_t WaitIndication;
+
+	/* 10.5.2.76 */
+	type record FeatureIndicator {
+		BIT2		peo_bcch_change_mark,
+		boolean		cs_ir,
+		boolean		ps_ir
+	} with {
+		variant (cs_ir) "FIELDLENGTH(1)"
+		variant (ps_ir) "FIELDLENGTH(1)"
+	};
+
+	/* 24.008 10.5.5.6 */
+	type record DrxParameter {
+		uint8_t		split_pg_cycle_code,
+		uint4_t		drx_cycle_len_coeff,
+		boolean		split_on_ccch,
+		uint3_t		non_drx_timer
+	} with { variant "" };
+
+	type record MeasurementResults {
+		BIT1		ba_used,
+		BIT1		dtx_used,
+		uint6_t		rxlev_full_srv_cell,
+		BIT1		threeg_ba_used,
+		BIT1		meas_valid,
+		uint6_t		rxlev_sub_srv_cell,
+		BIT1		si23_ba_used,
+		uint3_t		rxqual_full_srv_cell,
+		uint3_t		rxqual_sub_srv_cell,
+		uint3_t		no_ncell_m,
+		NcellReports	ncell_reports optional
+	} with { variant (no_ncell_m) "LENGTHTO(ncell_reports)"
+		 variant (no_ncell_m) "UNIT(elements)"
+		 /* FIXME: pad to 16 octets */
+	};
+
+	type record NcellReport {
+		uint6_t		rxlev,
+		uint5_t		bcch_freq,
+		uint6_t		bsic
+	} with { variant ""};
+	type record of NcellReport NcellReports;
+
+
+	/* 3GPP TS 44.018, section 9.1.2 (minimalistic implementation) */
+	type record AssignmentCommand {
+		ChannelDescription		chan_desc,
+		PowerCommand_V			power_cmd,
+		FrequencyList_TLV		freq_list_at optional,
+		CellChannelDescription_TV	cell_chan_desc optional,
+		/* TODO: Multislot Allocation IE */
+		ChannelMode_TV			chan1_mode optional,
+		ChannelMode_TV			chan2_mode optional,
+		/* TODO: Mode of Channel Set 3..8 IE */
+		MobileAllocationTLV		mobile_allocation optional
+		/* TODO: more optional IEs... */
+	} with {
+		variant "TAG(
+			freq_list_at,		elementIdentifier = '05'O;
+			cell_chan_desc,		elementIdentifier = '62'O;
+			chan1_mode,		elementIdentifier = '63'O;
+			chan2_mode,		elementIdentifier = '11'O;
+			mobile_allocation,	iei = '72'O;
+		)"
+	};
+
+	/* 3GPP TS 44.018, section 9.1.15 (minimalistic implementation) */
+	type record HandoverCommand {
+		CellDescriptionV		cell_desc,
+		ChannelDescription		chan_desc,
+		OCT1				ho_ref,
+		PowerCommandAndAccesstype_V	power_cmd_acc_type,
+		FrequencyList_TLV		freq_list_at optional,
+		CellChannelDescription_TV	cell_chan_desc optional,
+		ChannelMode_TV			chan1_mode optional,
+		ChannelMode_TV			chan2_mode optional,
+		/* TODO: Mode of Channel Set 3..8 IE */
+		MobileAllocationTLV		mobile_allocation optional
+		/* TODO: more optional IEs... */
+	} with {
+		variant "TAG(
+			freq_list_at,		elementIdentifier = '05'O;
+			cell_chan_desc,		elementIdentifier = '62'O;
+			chan1_mode,		elementIdentifier = '63'O;
+			chan2_mode,		elementIdentifier = '11'O;
+			mobile_allocation,	iei = '72'O;
+		)"
+	};
+
+	/* 10.5.2.2 Cell Description IE */
+	type record CellDescriptionV {
+		uint3_t				bcc, /* PLMN colour code */
+		uint3_t				ncc, /* BS colour code */
+		uint10_t			bcch_arfcn
+	} with { variant "FIELDORDER(lsb)" };
+
+
+	/* 9.1.18 */
+	type record ImmediateAssignment {
+		DedicatedModeOrTbf		ded_or_tbf,
+		PageMode			page_mode,
+		ChannelDescription		chan_desc optional,
+		PacketChannelDescription	pkt_chan_desc optional,
+		RequestReference		req_ref,
+		TimingAdvance			timing_advance,
+		MobileAllocationLV		mobile_allocation,
+		/* TODO: starting time TLV */
+		IaRestOctets			rest_octets
+	} with { variant (chan_desc) "PRESENCE(ded_or_tbf.tbf = false)"
+		 variant (pkt_chan_desc) "PRESENCE(ded_or_tbf.tbf = true)" };
+
+	/* 9.1.20 */
+	type record ReqRefWaitInd {
+		RequestReference		req_ref,
+		WaitIndication			wait_ind
+	} with { variant "" };
+	type record length(4) of ReqRefWaitInd ReqRefWaitInd4;
+	type record ImmediateAssignmentReject {
+		FeatureIndicator		feature_ind,
+		PageMode			page_mode,
+		ReqRefWaitInd4			payload,
+		IARRestOctets			rest_octets
+	} with { variant "" };
+
+	/* 9.1.21 */
+	type record MeasurementReport {
+		MeasurementResults		meas_res
+	} with { variant "" };
+
+	/* 9.1.22 */
+	type record PagingRequestType1 {
+		ChannelNeeded12			chan_needed,
+		PageMode			page_mode,
+		MobileIdentityLV		mi1,
+		MobileIdentityTLV		mi2 optional,
+		RestOctets			rest_octets
+	} with { variant "TAG(mi2, elementIdentifier = '0010111'B)" };
+
+	/* 9.1.23 */
+	type record PagingRequestType2 {
+		ChannelNeeded12			chan_needed,
+		PageMode			page_mode,
+		GsmTmsi				mi1,
+		GsmTmsi				mi2,
+		MobileIdentityTLV		mi3 optional,
+		RestOctets			rest_octets
+	} with { variant "TAG(mi3, elementIdentifier = '0010111'B)" };
+
+	/* 9.1.24 */
+	type record length(4) of GsmTmsi GsmTmsi4;
+	type record PagingRequestType3 {
+		ChannelNeeded12			chan_needed,
+		PageMode			page_mode,
+		GsmTmsi4			mi,
+		RestOctets			rest_octets
+	} with { variant "" };
+
+	/* 9.1.44 */
+	type record CipheringKeySeqNrTV {
+		HEX1			tag,
+		CipheringKeySeqNr	cksn
+	}
+	type record TalkerIndication {
+		MsClassmark2LV		cm2,
+		MobileIdentityLV	mi,
+		CipheringKeySeqNrTV	cksn optional
+	} with { variant "TAG(cksn, tag = 'B'H)" };
+
+	/* 9.1.44a */
+	type record PriorityUplinkRequest {
+		OCT1			est_cause,
+		OCT4			token,
+		OCT4			reduced_gcr,
+		MobileIdentityLV	mi
+	} with { variant "" };
+
+	/* 9.1.44b */
+	type record DataIndication {
+		GsmTmsi			tmsi,
+		OCT9			app_data,
+		OCT1			data_id
+	} with { variant "" };
+
+	/* 9.1.44c */
+	type record DataIndication2 {
+		GsmTmsi			tmsi,
+		OCT4			reduced_gcr,
+		OCT9			app_data,
+		OCT1			data_id
+	} with { variant "" };
+
+	/* 9.1.46 */
+	type record UplinkBusy {
+		TalkerPrioEmergIndTLV	prio optional,
+		TokenTV			token optional,
+		TalkerIdentityTLV	talker_id optional,
+		UplinkAccessIndTV	ul_access_ind optional
+	} with { variant "" };
+
+	/* 9.1.48 */
+	type record UplinkRelease {
+		RR_Cause		cause
+	} with { variant "" };
+
+	/* 9.1.49 */
+	type record VgcsUplinkGrant {
+		RequestReference	req_ref,
+		TimingAdvance		ta
+	} with { variant "" };
+
+
+	/* 10.5.2.64 */
+	type record TalkerPrioEmergIndTLV {
+		OCT1			iei ('31'O),
+		uint8_t			len,
+		boolean			es,
+		BIT3			spare,
+		boolean			uai_rach,
+		uint3_t			priority
+	} with { variant (len) "LENGTHTO(es,spare,uai_rach,priority)"
+	         variant "PRESENCE(iei = '31'O)" };
+
+	/* 10.5.2.65 */
+	type record TokenTV {
+		OCT1			iei ('32'O),
+		OCT4			token
+	} with { variant "PRESENCE(iei = '32'O)" };
+
+	/* 10.5.2.66 */
+	type record TalkerIdentityTLV {
+		OCT1			iei ('33'O),
+		uint8_t			len,
+		octetstring		talker_id
+	} with { variant (len) "LENGTHTO(talker_id)"
+		 variant "PRESENCE(iei = '33'O)" };
+
+	/* 10.5.2.74 */
+	type record UplinkAccessIndTV {
+		HEX1			iei ('8'H),
+		BIT3			spare ('000'B),
+		boolean			uai_rach
+	} with { variant "PRESENCE(iei = '8'H)" };
+
+	type union RrUnion {
+/*
+		SystemInformationType1		si1,
+		SystemInformationType2		si2,
+		SystemInformationType2bis	si2bis,
+		SystemInformationType2ter	si2ter,
+		SystemInformationType3		si3,
+		SystemInformationType4		si4,
+		SystemInformationType5		si5,
+		SystemInformationType5bis	si5bis,
+		SystemInformationType5ter	si5ter,
+		SystemInformationType6		si6,
+*/
+		ImmediateAssignment		imm_ass,
+		ImmediateAssignmentReject	imm_ass_rej,
+		PagingRequestType1		pag_req_1,
+		PagingRequestType2		pag_req_2,
+		PagingRequestType3		pag_req_3,
+		octetstring			other
+	} with { variant "" };
+
+	/* Special RR Message on BCCH / CCCH Dowlink */
+
+	type record GsmRrMessage {
+		RrHeader	header,
+		RrUnion		payload
+	} with { variant (payload) "CROSSTAG(
+/*
+			      si1, header.message_type = SYSTEM_INFORMATION_TYPE_1;
+			      si2, header.message_type = SYSTEM_INFORMATION_TYPE_2;
+			      si2bis, header.message_type = SYSTEM_INFORMATION_TYPE_2bis;
+			      si2ter, header.message_type = SYSTEM_INFORMATION_TYPE_2ter;
+			      si3, header.message_type = SYSTEM_INFORMATION_TYPE_3;
+			      si4, header.message_type = SYSTEM_INFORMATION_TYPE_4;
+			      si5, header.message_type = SYSTEM_INFORMATION_TYPE_5;
+			      si5bis, header.message_type = SYSTEM_INFORMATION_TYPE_5bis;
+			      si5ter, header.message_type = SYSTEM_INFORMATION_TYPE_5ter;
+			      si6, header.message_type = SYSTEM_INFORMATION_TYPE_6;
+*/
+				imm_ass, header.message_type = IMMEDIATE_ASSIGNMENT;
+				imm_ass_rej, header.message_type = IMMEDIATE_ASSIGNMENT_REJECT;
+				pag_req_1, header.message_type = PAGING_REQUEST_TYPE_1;
+				pag_req_2, header.message_type = PAGING_REQUEST_TYPE_2;
+				pag_req_3, header.message_type = PAGING_REQUEST_TYPE_3;
+			      other, OTHERWISE;
+			)"
+		 /* Total message length: 184 = 23 * 8. Pad spare bits with '2B'O. */
+		 variant "PADDING(184), PADDING_PATTERN('00101011'B)"
+	};
+
+	external function enc_GsmRrMessage(in GsmRrMessage msg) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_GsmRrMessage(in octetstring stream) return GsmRrMessage
+		with { extension "prototype(convert) decode(RAW)" };
+
+	/* Normal L3 Message on Dedicated Channel */
+
+	/* 9.1.25 Paging Response */
+	type record PagingResponse {
+		uint4_t			spare_half_octet,
+		CipheringKeySeqNr	cksn,
+		MsClassmark2LV		cm2,
+		MobileIdentityLV	mi,
+		uint8_t			addl_upd_par optional
+	} with { variant "" };
+
+	type union RrL3Union {
+		PagingResponse		paging_response,
+		MeasurementReport	meas_rep,
+		AssignmentCommand	ass_cmd,
+		HandoverCommand		ho_cmd,
+		TalkerIndication	talker_ind,
+		PriorityUplinkRequest	priority_ul_req,
+		UplinkBusy		uplink_busy,
+		UplinkRelease		uplink_release,
+		VgcsUplinkGrant		vgcs_ul_grant,
+		DataIndication		data_ind,
+		DataIndication2		data_ind2,
+		octetstring		other
+	};
+
+	type record GsmRrL3Message {
+		RrL3Header	header,
+		RrL3Union	payload
+	} with { variant (payload) "CROSSTAG(
+				paging_response, header.message_type = PAGING_RESPONSE;
+				meas_rep, header.message_type = MEASUREMENT_REPORT;
+				ass_cmd, header.message_type = ASSIGNMENT_COMMAND;
+				ho_cmd, header.message_type = HANDOVER_COMMAND;
+				talker_ind, header.message_type = TALKER_INDICATION;
+				priority_ul_req, header.message_type = PRIORITY_UPLINK_REQUEST;
+				uplink_busy, header.message_type = UPLINK_BUSY;
+				uplink_release, header.message_type = UPLINK_RELEASE;
+				vgcs_ul_grant, header.message_type = VGCS_UPLINK_GRANT;
+				data_ind, header.message_type = DATA_INDICATION;
+				data_ind2, header.message_type = DATA_INDICATION2;
+				other, OTHERWISE;
+		)" }
+
+	external function enc_GsmRrL3Message(in GsmRrL3Message msg) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_GsmRrL3Message(in octetstring stream) return GsmRrL3Message
+		with { extension "prototype(convert) decode(RAW)" };
+
+
+	template (value) GsmRrMessage ts_IMM_ASS(uint8_t ra, GsmFrameNumber fn, TimingAdvance ta,
+						ChannelDescription ch_desc, MobileAllocationLV ma) := {
+		header := ts_RrHeader(IMMEDIATE_ASSIGNMENT, 0),
+		payload := {
+			imm_ass := {
+				ded_or_tbf := {
+					spare := '0'B,
+					tma := false,
+					downlink := false,
+					tbf := false
+				},
+				page_mode := PAGE_MODE_NORMAL,
+				chan_desc := ch_desc,
+				pkt_chan_desc := omit,
+				req_ref := f_compute_ReqRef(ra, fn),
+				timing_advance := ta,
+				mobile_allocation := ma,
+				rest_octets := {
+					presence := '00'B, /* LL */
+					ll := {
+						compressed_irat_ho_info_ind := '0'B /* L */
+					},
+					lh := omit, hl := omit, hh := omit
+				}
+			}
+		}
+	};
+
+	template GsmRrMessage tr_IMM_ASS(template uint8_t ra := ?, template GsmFrameNumber fn := ?,
+					 template TimingAdvance ta := ?,
+					 template ChannelDescription ch_desc := ?,
+					 template MobileAllocationLV ma := ?,
+					 template PageMode page_mode := PAGE_MODE_NORMAL) := {
+		header := t_RrHeader(IMMEDIATE_ASSIGNMENT, ?),
+		payload := {
+			imm_ass := {
+				ded_or_tbf := {
+					spare := '0'B,
+					tma := false,
+					downlink := false,
+					tbf := false
+				},
+				page_mode := page_mode,
+				chan_desc := ch_desc,
+				pkt_chan_desc := omit,
+				req_ref := tr_compute_ReqRef(ra, fn),
+				timing_advance := ta,
+				mobile_allocation := ma,
+				rest_octets := ?
+			}
+		}
+	};
+
+	/* TODO: implement send version of this template */
+	template GsmRrMessage tr_IMM_TBF_ASS(template boolean dl := ?,
+					     template uint8_t ra := ?,
+					     template GsmFrameNumber fn := ?,
+					     template TimingAdvance ta := ?,
+					     template PacketChannelDescription ch_desc := ?,
+					     template MobileAllocationLV ma := ?,
+					     template IaRestOctets rest := ?) := {
+		header := t_RrHeader(IMMEDIATE_ASSIGNMENT, ?),
+		payload := {
+			imm_ass := {
+				ded_or_tbf := {
+					spare := ?,
+					tma := ?,
+					downlink := dl,
+					tbf := true
+				},
+				page_mode := ?,
+				chan_desc := omit,
+				pkt_chan_desc := ch_desc,
+				req_ref := tr_compute_ReqRef(ra, fn),
+				timing_advance := ta,
+				mobile_allocation := ma,
+				rest_octets := rest
+			}
+		}
+	};
+
+	template GsmRrMessage tr_PAG_REQ1(template MobileIdentityLV mi1 := ?,
+					  template MobileIdentityTLV mi2 := omit) := {
+		header := t_RrHeader(PAGING_REQUEST_TYPE_1, ?),
+		payload := {
+			pag_req_1 := {
+				chan_needed := {
+					second := ?,
+					first := ?
+				},
+				page_mode := PAGE_MODE_NORMAL,
+				mi1 := mi1,
+				mi2 := mi2,
+				rest_octets := ?
+			}
+		}
+	};
+
+	template (value) MeasurementResults
+	ts_MeasurementResults(template (value) uint6_t rxl_f := 63,
+			      template (value) uint6_t rxl_s := 63,
+			      template (value) uint3_t rxq_f := 0,
+			      template (value) uint3_t rxq_s := 0,
+			      boolean dtx_used := false,
+			      boolean valid := true,
+			      template (omit) NcellReports reps := omit) := {
+		ba_used := '0'B,
+		dtx_used := bool2bit(dtx_used),
+		rxlev_full_srv_cell := rxl_f,
+		threeg_ba_used := '0'B,
+		meas_valid := bool2bit(not valid),
+		rxlev_sub_srv_cell := rxl_s,
+		si23_ba_used := '0'B,
+		rxqual_full_srv_cell := rxq_f,
+		rxqual_sub_srv_cell := rxq_s,
+		no_ncell_m := 0,
+		ncell_reports := reps
+	};
+
+	template (value) GsmRrL3Message ts_MEAS_REP(boolean valid,
+						    template (value) uint6_t rxl_f,
+						    template (value) uint6_t rxl_s,
+						    template (value) uint3_t rxq_f := 0,
+						    template (value) uint3_t rxq_s := 0,
+						    template (omit) NcellReports reps := omit) := {
+		header := t_RrL3Header(MEASUREMENT_REPORT),
+		payload := {
+			meas_rep := {
+				meas_res := {
+					ba_used := '0'B,
+					dtx_used := '0'B,
+					rxlev_full_srv_cell := rxl_f,
+					threeg_ba_used := '0'B,
+					meas_valid := bool2bit(not valid),
+					rxlev_sub_srv_cell := rxl_s,
+					si23_ba_used := '0'B,
+					rxqual_full_srv_cell := rxq_f,
+					rxqual_sub_srv_cell := rxq_s,
+					no_ncell_m := 0,
+					ncell_reports := reps
+				}
+			}
+		}
+	};
+
+	template GsmRrMessage tr_IMM_ASS_REJ(template FeatureIndicator feature_ind := ?,
+					     template ReqRefWaitInd4 rr_wi_list := ?,
+					     template IARRestOctets rest_octets := ?) := {
+		header := t_RrHeader(IMMEDIATE_ASSIGNMENT_REJECT, ?),
+		payload := {
+			imm_ass_rej := {
+				feature_ind := feature_ind,
+				page_mode := ?,
+				payload := rr_wi_list,
+				rest_octets := rest_octets
+			}
+		}
+	};
+
+	template ReqRefWaitInd tr_ReqRefWaitInd(template RequestReference ref := ?,
+						template WaitIndication wi := ?) := {
+		req_ref := ref,
+		wait_ind := wi
+	};
+
+	template (value) ChannelDescription ts_ChanDescH0(template (value) RslChannelNr chan_nr,
+							  template (value) uint12_t arfcn,
+							  template (value) uint3_t tsc := 7) := {
+		chan_nr := chan_nr,
+		tsc := tsc,
+		h := false,
+		arfcn := arfcn,
+		maio_hsn := omit
+	}
+	template ChannelDescription tr_ChanDescH0(template (present) RslChannelNr chan_nr := ?,
+						  template (present) uint12_t arfcn := ?,
+						  template (present) uint3_t tsc := ?) := {
+		chan_nr := chan_nr,
+		tsc := tsc,
+		h := false,
+		arfcn := arfcn,
+		maio_hsn := omit
+	}
+
+	template (value) ChannelDescription ts_ChanDescH1(template (value) RslChannelNr chan_nr,
+							  template (value) MaioHsn maio_hsn,
+							  template (value) uint3_t tsc := 7) := {
+		chan_nr := chan_nr,
+		tsc := tsc,
+		h := true,
+		arfcn := omit,
+		maio_hsn := maio_hsn
+	}
+	template ChannelDescription tr_ChanDescH1(template (present) RslChannelNr chan_nr := ?,
+						  template (present) MaioHsn maio_hsn := ?,
+						  template (present) uint3_t tsc := ?) := {
+		chan_nr := chan_nr,
+		tsc := tsc,
+		h := true,
+		arfcn := omit,
+		maio_hsn := maio_hsn
+	}
+
+
+	/* Templates for the RR Channel Release message's "Cell selection indicator after release of all TCH and SDCCH" IE.
+	 * See 3GPP TS 44.018 9.1.7 and 10.5.2.1e */
+
+	/* 3GPP TS 44.018 10.5.2.1e, Cell Selection Indicator after release of all TCH and SDCCH value part */
+	type record CellSelIndValue {
+		BIT3         discr,
+		CellSelIndValueEnum value_list,
+		BIT1         value_list_term ('0'B)
+	} with {
+		variant (value_list) "CROSSTAG(
+		  gsm, discr='000'B;
+		  utran_fdd, discr='001'B;
+		  utran_tdd, discr='010'B;
+		  eutran, discr='011'B;
+		)"
+	};
+
+	/* 3GPP TS 44.018 10.5.2.1e, Cell Selection Indicator after release of all TCH and SDCCH value part */
+	private type union CellSelIndValueEnum {
+		CellSelIndValue_GSM_Descrs gsm,
+		CellSelIndValue_UTRAN_Descrs utran_fdd,
+		CellSelIndValue_UTRAN_Descrs utran_tdd,
+		CellSelIndValue_EUTRAN_Descrs eutran
+	} with { variant "" };
+
+	type record of CellSelIndValue_GSM_Descr CellSelIndValue_GSM_Descrs;
+	/* 3GPP TS 44.018 10.5.2.1e, GSM Description struct */
+	type record CellSelIndValue_GSM_Descr {
+		BIT1        item_ind ('1'B),
+		BIT1        band_indicator,
+		uint10_t    arfcn,
+		uint6_t     bsic
+	} with {
+		variant "PRESENCE(item_ind = '1'B)"
+	};
+
+	type record of CellSelIndValue_UTRAN_Descr CellSelIndValue_UTRAN_Descrs;
+	/* 3GPP TS 44.018 10.5.2.1e, UTRAN {FDD,TDD} Description struct */
+	type record CellSelIndValue_UTRAN_Descr {
+		BIT1        item_ind ('1'B),
+		BIT1        bandwidth_presence,
+		uint3_t     bandwidth optional,
+		uint14_t    arfcn,
+		BIT1        cell_info_presence,
+		UTRAN_CellInfo cell_info optional
+	} with {
+		variant "PRESENCE(item_ind = '1'B)"
+		variant (bandwidth) "PRESENCE(bandwidth_presence = '1'B)"
+		variant (cell_info) "PRESENCE(cell_info_presence = '1'B)"
+	};
+	type record UTRAN_CellInfo {
+		BIT1        indic0,
+		uint5_t     nr_of_cells,
+		// TODO: define cell_information_field
+		octetstring cell_information_field
+	} with { variant "" };
+
+	type record of CellSelIndValue_EUTRAN_Descr CellSelIndValue_EUTRAN_Descrs;
+	/* 3GPP TS 44.018 10.5.2.1e, E-UTRAN Description struct */
+	type record CellSelIndValue_EUTRAN_Descr {
+		BIT1        item_ind ('1'B),
+		uint16_t    earfcn,
+		BIT1        meas_bw_presence,
+		uint3_t     meas_bw optional,
+		BIT1        not_allowed_cells_presence,
+		// define not_allowed_cells
+		octetstring not_allowed_cells optional,
+		BIT1        target_pcid_presence,
+		uint9_t     target_pcid optional
+	} with {
+		variant "PRESENCE(item_ind = '1'B)"
+		variant (meas_bw) "PRESENCE(meas_bw_presence = '1'B)"
+		variant (not_allowed_cells) "PRESENCE(not_allowed_cells_presence = '1'B)"
+		variant (target_pcid) "PRESENCE(target_pcid_presence = '1'B)"
+	};
+
+	template CellSelIndValue tr_CellSelIndValue_EUTRAN(
+			template CellSelIndValue_EUTRAN_Descrs cells := {})
+	:= {
+		discr := '011'B,
+		value_list := {
+			eutran := cells
+		},
+		value_list_term := '0'B
+	};
+
+	template CellSelIndValue_EUTRAN_Descr tr_CellSelIndValue_EUTRAN_Descr(
+			template (present) uint16_t earfcn,
+			template (present) BIT1 meas_bw_presence := ?,
+			template uint3_t meas_bw := *)
+	:= {
+		item_ind := '1'B,
+		earfcn := earfcn,
+		meas_bw_presence := meas_bw_presence,
+		meas_bw := meas_bw,
+		not_allowed_cells_presence := '0'B,
+		not_allowed_cells := omit,
+		target_pcid_presence := '0'B,
+		target_pcid := omit
+	};
+
+	external function enc_CellSelIndValue(in CellSelIndValue ro) return octetstring
+		with { extension "prototype(convert) encode(RAW)" };
+	external function dec_CellSelIndValue(in octetstring stream) return CellSelIndValue
+		with { extension "prototype(convert) decode(RAW)" };
+
+} with { encode "RAW" ; variant "FIELDORDER(msb)" }
